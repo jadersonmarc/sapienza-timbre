@@ -23,6 +23,7 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/db"
 	"github.com/jadersonmarc/sapienza-timbre/internal/gateweb"
 	"github.com/jadersonmarc/sapienza-timbre/internal/inventory"
+	"github.com/jadersonmarc/sapienza-timbre/internal/ledger"
 	"github.com/jadersonmarc/sapienza-timbre/internal/notify"
 	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
 	"github.com/jadersonmarc/sapienza-timbre/internal/producer"
@@ -63,16 +64,28 @@ func main() {
 		pay = payment.NewAsaas(key, os.Getenv("ASAAS_BASE_URL"))
 		payKind = "asaas"
 	}
+	// Rede: Base se configurada (RPC + contrato), senão Noop (chain desligada — a venda
+	// nunca depende de rede). A emissão on-chain roda numa fila em segundo plano.
+	var chainDriver chain.ChainDriver = chain.NoopChainDriver{}
+	chainKind := "noop"
+	if rpc := os.Getenv("CHAIN_RPC_URL"); rpc != "" {
+		chainDriver = chain.NewBase(rpc, os.Getenv("CHAIN_CONTRACT"))
+		chainKind = "base"
+	}
 	seams := api.Seams{
-		Chain:   chain.NoopChainDriver{},
+		Chain:   chainDriver,
 		Payment: pay,
 		Wallet:  wallet.NoopWalletProvider{},
 		Notify:  notify.NewLogNotifier(),
 	}
-	slog.Info("seams", "chain", "noop", "payment", payKind, "wallet", "noop", "notify", "log")
+	slog.Info("seams", "chain", chainKind, "chain_enabled", chainDriver.Enabled(), "payment", payKind, "wallet", "noop", "notify", "log")
 
 	// Varredura de expiração de holds (motor de reserva) por produtor, em segundo plano.
 	go inventory.NewSweeper(pool).Run(ctx)
+	// Worker de emissão on-chain (fila chain_jobs), em segundo plano.
+	go chain.NewWorker(pool, chainDriver).Run(ctx)
+	// Fechamento de repasses (payouts) por produtor, em segundo plano.
+	go ledger.NewSettler(pool).Run(ctx)
 
 	// Chave de assinatura dos ingressos (Ed25519). Persistente em produção (a portaria
 	// embarca a pública); efêmera em dev — o QR muda a cada restart.
