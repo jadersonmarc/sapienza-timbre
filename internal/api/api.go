@@ -97,6 +97,11 @@ func (s *Server) Handler() http.Handler {
 	// Lista de convidados / cortesias — do owner.
 	mux.HandleFunc("POST /api/v1/events/{id}/guests", s.requireOwner(s.createGuest))
 	mux.HandleFunc("GET /api/v1/events/{id}/guests", s.authed(s.listGuests))
+	// Portaria (Etapa 1.6): validação e sync exigem a permissão granular 'checkin'.
+	mux.HandleFunc("GET /api/v1/gate/config", s.requirePermission("checkin", s.gateConfig))
+	mux.HandleFunc("GET /api/v1/gate/events/{id}/seatmap", s.requirePermission("checkin", s.gateSeatmap))
+	mux.HandleFunc("POST /api/v1/gate/validate", s.requirePermission("checkin", s.gateValidate))
+	mux.HandleFunc("POST /api/v1/gate/sync", s.requirePermission("checkin", s.gateSync))
 	return accessLog(mux)
 }
 
