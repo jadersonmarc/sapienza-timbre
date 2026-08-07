@@ -74,6 +74,26 @@ curl -sX POST https://timbre.suaempresa.com/api/v1/producers \
 Push na branch de produção → Coolify re-builda e faz deploy (auto-deploy on push, se
 habilitado). O boot re-aplica migrations idempotentes.
 
+## CI/CD (deploy gated pelos testes)
+
+O `.github/workflows/ci.yml` roda `vet → build → test` a cada push/PR. Em **push na
+`main`**, depois que o gate `check` passa, o job `deploy` dispara o webhook de deploy do
+Coolify — assim nada vai para produção sem passar nos testes.
+
+Setup (uma vez):
+
+1. **Coolify → o app → Webhooks/Deploy** → copie a **Deploy Webhook URL** (algo como
+   `https://<coolify>/api/v1/deploy?uuid=<uuid>&force=false`) e gere um **API Token**.
+2. **GitHub → repo → Settings → Secrets and variables → Actions** → crie:
+   - `COOLIFY_WEBHOOK` = a Deploy Webhook URL
+   - `COOLIFY_TOKEN` = o API Token do Coolify
+3. **Coolify → o app → Desligue "Auto Deploy on push"** (Git webhook), para o CI ser o
+   único gatilho. Sem os secrets, o job `deploy` apenas pula (deploy manual pelo Coolify
+   continua funcionando).
+
+Fluxo: `git push origin main` → CI roda testes → se verde, dispara o deploy no Coolify →
+Coolify rebuilda o Dockerfile e sobe. O boot re-aplica migrations idempotentes.
+
 ## Operação
 
 - **Rotacionar `TIMBRE_JWT_SECRET`** invalida todas as sessões (todo mundo reloga) — é o

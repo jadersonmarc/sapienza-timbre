@@ -36,3 +36,27 @@ jobs:
         run: go build ./...
       - name: Test (integração, -p 1)
         run: go test -p 1 ./...
+
+  # CD: só dispara o deploy no Coolify depois que o gate `check` passa, e só em push
+  # na branch principal. Requer os secrets COOLIFY_WEBHOOK (URL de deploy do recurso,
+  # ex.: https://<coolify>/api/v1/deploy?uuid=<uuid>&force=false) e COOLIFY_TOKEN
+  # (API token do Coolify). Sem o webhook, o job apenas pula. IMPORTANTE: desligue o
+  # "auto deploy on push" do Coolify para o CI ser o único gatilho (senão o deploy
+  # acontece sem passar pelos testes).
+  deploy:
+    name: Deploy (Coolify)
+    needs: check
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Coolify deploy
+        env:
+          COOLIFY_WEBHOOK: ${{ secrets.COOLIFY_WEBHOOK }}
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+        run: |
+          if [ -z "$COOLIFY_WEBHOOK" ]; then
+            echo "COOLIFY_WEBHOOK não configurado — pulando deploy."
+            exit 0
+          fi
+          curl -fsS -X GET "$COOLIFY_WEBHOOK" -H "Authorization: Bearer $COOLIFY_TOKEN"
+          echo "Deploy disparado no Coolify."
