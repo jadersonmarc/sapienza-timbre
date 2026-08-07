@@ -64,6 +64,10 @@ func GenerateSigner() *Signer {
 // PublicKeyB64 é a chave pública em base64 — é ela que a portaria embarca.
 func (s *Signer) PublicKeyB64() string { return b64.EncodeToString(s.pub) }
 
+// Verifier devolve um verificador com a chave pública deste signer (validação
+// offline sem expor a privada).
+func (s *Signer) Verifier() *Verifier { return &Verifier{pub: s.pub} }
+
 // Token assina o payload e devolve o token compacto "b64(payload).b64(assinatura)".
 func (s *Signer) Token(p Payload) (string, error) {
 	msg, err := json.Marshal(p)
