@@ -1,14 +1,25 @@
-// Package payment define o gateway de pagamento (Asaas, com split no ato da venda).
-// Interface trocável; a implementação real chega na Etapa 1.4. Aqui só o seam.
+// Package payment define o gateway de pagamento (Asaas, com split no ato da venda) e
+// suas implementações: FakeGateway (determinístico, default e usado em testes) e
+// AsaasGateway (HTTP real). Interface trocável, no espírito dos drivers da Margot.
 package payment
 
 import (
 	"context"
-	"errors"
+	"time"
 )
 
-// ErrNotImplemented é devolvido pelo stub até a Etapa 1.4 ligar o Asaas.
-var ErrNotImplemented = errors.New("payment: gateway não implementado (Etapa 1.4)")
+// Method de pagamento.
+const (
+	MethodPix  = "pix"
+	MethodCard = "credit_card"
+)
+
+// SplitItem é uma fatia do split (destinatário Asaas + valor/percentual).
+type SplitItem struct {
+	WalletID   string  `json:"wallet_id"`
+	Percent    float64 `json:"percent,omitempty"`
+	FixedCents int64   `json:"fixed_cents,omitempty"`
+}
 
 // ChargeRequest descreve uma cobrança (Pix ou cartão com parcelamento).
 type ChargeRequest struct {
@@ -16,52 +27,31 @@ type ChargeRequest struct {
 	Method       string // "pix" | "credit_card"
 	AmountCents  int64
 	Installments int
+	BuyerName    string
+	BuyerEmail   string
+	BuyerCPF     string
+	DueDate      time.Time
 	Split        []SplitItem // divisão automática no ato da venda
-}
-
-// SplitItem é uma fatia do split (destinatário Asaas + valor/percentual).
-type SplitItem struct {
-	WalletID   string
-	Percent    float64
-	FixedCents int64
 }
 
 // Charge é a cobrança criada.
 type Charge struct {
 	AsaasRef string
 	Status   string
-	PixCode  string // quando method = pix
+	PixCode  string // "copia e cola" do Pix (quando method = pix)
 }
 
-// WebhookEvent é o evento decodificado do webhook do gateway (com idempotência a
-// cargo do chamador).
+// WebhookEvent é o evento decodificado do webhook do gateway. A idempotência é do
+// chamador (o checkout ignora um asaas_ref já confirmado).
 type WebhookEvent struct {
-	AsaasRef string
-	Type     string
-	Status   string
+	AsaasRef  string
+	Type      string
+	Confirmed bool // true quando o pagamento foi confirmado/recebido
 }
 
 // PaymentGateway é a interface com o gateway.
 type PaymentGateway interface {
 	CreateCharge(ctx context.Context, req ChargeRequest) (Charge, error)
 	HandleWebhook(ctx context.Context, payload []byte) (WebhookEvent, error)
-}
-
-// AsaasGateway é o stub do gateway Asaas. Configured() é false até haver credenciais;
-// os métodos devolvem ErrNotImplemented nesta etapa.
-type AsaasGateway struct {
-	apiKey string
-}
-
-// NewAsaasStub constrói o stub (apiKey pode ser vazio nesta etapa).
-func NewAsaasStub(apiKey string) *AsaasGateway { return &AsaasGateway{apiKey: apiKey} }
-
-// Configured diz se há credenciais para operar.
-func (g *AsaasGateway) Configured() bool { return g.apiKey != "" }
-
-func (g *AsaasGateway) CreateCharge(context.Context, ChargeRequest) (Charge, error) {
-	return Charge{}, ErrNotImplemented
-}
-func (g *AsaasGateway) HandleWebhook(context.Context, []byte) (WebhookEvent, error) {
-	return WebhookEvent{}, ErrNotImplemented
+	Configured() bool
 }
