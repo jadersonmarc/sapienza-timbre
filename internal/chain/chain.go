@@ -42,8 +42,10 @@ type TokenStatus struct {
 	Minted  bool
 }
 
-// ChainDriver é a interface única com a rede.
+// ChainDriver é a interface única com a rede. Enabled diz se há rede de verdade por
+// trás — quando false, a emissão nem enfileira mint (chain_status fica 'none').
 type ChainDriver interface {
+	Enabled() bool
 	Mint(ctx context.Context, req MintRequest) (MintResult, error)
 	Transfer(ctx context.Context, req TransferRequest) (TransferResult, error)
 	Burn(ctx context.Context, tokenID string) error
@@ -52,8 +54,11 @@ type ChainDriver interface {
 
 // NoopChainDriver é o driver default: não fala com rede nenhuma. Deixa a venda e a
 // entrada no evento totalmente independentes de RPC (guardrail: a rede nunca
-// bloqueia a venda). A implementação real (BaseChainDriver) chega na Etapa 1.8.
+// bloqueia a venda). A rede real (BaseChainDriver) liga quando configurada.
 type NoopChainDriver struct{}
+
+// Enabled é false: sem rede, a emissão não enfileira mint.
+func (NoopChainDriver) Enabled() bool { return false }
 
 func (NoopChainDriver) Mint(context.Context, MintRequest) (MintResult, error) {
 	return MintResult{}, nil
