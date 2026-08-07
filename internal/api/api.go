@@ -108,6 +108,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/dash/events/{id}", s.requirePermission("relatorios", s.dashOverview))
 	mux.HandleFunc("GET /api/v1/dash/events/{id}/export.csv", s.requirePermission("relatorios", s.dashExportCSV))
 	mux.HandleFunc("GET /api/v1/dash/payouts", s.requirePermission("relatorios", s.dashPayouts))
+	// Transferência restrita (Etapa 2.1) — por ora operada pelo owner.
+	mux.HandleFunc("POST /api/v1/tickets/{id}/transfer", s.requireOwner(s.transferTicket))
 	// Painel administrativo (plataforma) — X-Admin-Token.
 	mux.HandleFunc("GET /api/v1/admin/summary", s.requireAdmin(s.adminSummary))
 	mux.HandleFunc("POST /api/v1/admin/producers/{id}/approve", s.requireAdmin(s.adminSetProducerStatus("active")))
