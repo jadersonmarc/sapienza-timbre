@@ -73,11 +73,12 @@ config, implementação trocável sem tocar no chamador. Default até suas etapa
 - `attendance_records` não tem coluna de transferência.
 - Nenhuma tabela de payload de rede referencia dado pessoal.
 
-**A fechar na Etapa 1.3** (motor de reserva): a exclusão hold×ticket (cross-table) não
-cabe num único índice entre duas tabelas. Recomendação: unificar a ocupação numa tabela
-`seat_occupancy(event_id, seat_id, kind, ref_id, status)` com um índice único parcial
-`WHERE status='active'`, onde tanto `Hold` quanto a emissão escrevem — com `FOR UPDATE
-SKIP LOCKED`, varredura de expiração e TTL default de 10 min.
+**Resolvido na Etapa 1.3** (migration 0006): a exclusão hold×ticket (cross-table) virou um
+único índice via `seat_occupancy (event_id, seat_id) WHERE NOT released`, onde tanto `Hold`
+quanto a emissão de ingresso escrevem. `holds` passou a ser a reserva (grupo de N assentos).
+Motor em `internal/inventory`: `Hold/Release/Confirm` + varredura de expiração (`FOR UPDATE
+SKIP LOCKED`, TTL default 10 min, sweeper por tenant). Teste de concorrência (N goroutines →
+1 vencedor) fecha a etapa.
 
 ## Roadmap (resumo)
 

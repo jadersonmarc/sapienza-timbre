@@ -37,8 +37,9 @@ make compose-up     # sobe Postgres próprio + binário
 - `internal/auth` — JWT nativo do Timbre (HS256) + bcrypt + permissões granulares.
 - `internal/producer` — cria produtor e provisiona o schema tenant_<id>.
 - `internal/store` — pgx à mão (control plane em `public`).
-- `internal/catalog` — eventos/lotes/cupons + virada automática de lote (Etapa 1.2).
-- `internal/api` — API do produto: guard/requirePermission/withTenant + handlers de catálogo.
+- `internal/catalog` — eventos/lotes/cupons (1.2) + setores/assentos/preços (1.3).
+- `internal/inventory` — motor de reserva: Hold/Release/Confirm + varredura de expiração (1.3).
+- `internal/api` — API do produto: guard/requirePermission/withTenant + handlers de catálogo/inventário.
 - `internal/{chain,payment,wallet,notify}` — seams (interfaces + Noop/stub).
 
 ## Convenções (regras de ouro)
