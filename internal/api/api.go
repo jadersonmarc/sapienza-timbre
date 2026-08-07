@@ -65,6 +65,15 @@ func (s *Server) Handler() http.Handler {
 	// Colaboradores com permissões granulares — administração é do owner.
 	mux.HandleFunc("POST /api/v1/collaborators", s.requireOwner(s.createCollaborator))
 	mux.HandleFunc("GET /api/v1/collaborators", s.requirePermission("relatorios", s.listCollaborators))
+	// Catálogo (Etapa 1.2): escritas são do owner; leituras, de qualquer colaborador.
+	mux.HandleFunc("POST /api/v1/events", s.requireOwner(s.createEvent))
+	mux.HandleFunc("GET /api/v1/events", s.authed(s.listEvents))
+	mux.HandleFunc("GET /api/v1/events/{id}", s.authed(s.getEvent))
+	mux.HandleFunc("POST /api/v1/events/{id}/publish", s.requireOwner(s.publishEvent))
+	mux.HandleFunc("POST /api/v1/events/{id}/lots", s.requireOwner(s.createLot))
+	mux.HandleFunc("GET /api/v1/events/{id}/lots", s.authed(s.listLots))
+	mux.HandleFunc("POST /api/v1/events/{id}/coupons", s.requireOwner(s.createCoupon))
+	mux.HandleFunc("GET /api/v1/events/{id}/coupons", s.authed(s.listCoupons))
 	return accessLog(mux)
 }
 
@@ -325,6 +334,18 @@ func pgxTx(ctx context.Context, pool *pgxpool.Pool, fn func(tx pgx.Tx) error) er
 
 func decode(w http.ResponseWriter, r *http.Request, v any) error {
 	return json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(v)
+}
+
+// parseTimePtr converte um ponteiro de string RFC3339 em *time.Time (nil se vazio).
+func parseTimePtr(s *string) (*time.Time, error) {
+	if s == nil || *s == "" {
+		return nil, nil
+	}
+	t, err := time.Parse(time.RFC3339, *s)
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
 }
 
 func bearer(r *http.Request) string {
