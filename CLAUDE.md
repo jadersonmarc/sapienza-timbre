@@ -44,7 +44,9 @@ make compose-up     # sobe Postgres próprio + binário
 - `internal/ticketing` — assinatura Ed25519 dos ingressos + verificador offline (só chave pública) (1.5).
 - `internal/gate` — portaria: valida QR offline, check-in com auditoria, reconciliação do sync (1.6).
 - `internal/gateweb` — PWA da portaria (assets embutidos, servida em /gate) (1.6).
-- `internal/api` — API do produto: guard/withTenant + handlers de catálogo/inventário/checkout/portaria.
+- `internal/dash` — agregações dos painéis (produtor + plataforma) (1.7).
+- `internal/dashweb` — painel do produtor em tempo real (assets embutidos, /dash) (1.7).
+- `internal/api` — API do produto: guard/withTenant + handlers de catálogo/inventário/checkout/portaria/painel/admin.
 - `internal/{chain,payment,wallet,notify}` — seams (interfaces + Noop/stub).
 
 ## Convenções (regras de ouro)
