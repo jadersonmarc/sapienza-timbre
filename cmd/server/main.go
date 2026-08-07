@@ -20,6 +20,7 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/chain"
 	"github.com/jadersonmarc/sapienza-timbre/internal/config"
 	"github.com/jadersonmarc/sapienza-timbre/internal/db"
+	"github.com/jadersonmarc/sapienza-timbre/internal/inventory"
 	"github.com/jadersonmarc/sapienza-timbre/internal/notify"
 	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
 	"github.com/jadersonmarc/sapienza-timbre/internal/producer"
@@ -62,6 +63,9 @@ func main() {
 	}
 	slog.Info("seams",
 		"chain", "noop", "payment_configured", pay.Configured(), "wallet", "noop", "notify", "log")
+
+	// Varredura de expiração de holds (motor de reserva) por produtor, em segundo plano.
+	go inventory.NewSweeper(pool).Run(ctx)
 
 	authz := auth.New(cfg.JWTSecret)
 	prov := producer.New(pool, runner)
