@@ -74,6 +74,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/events/{id}/lots", s.authed(s.listLots))
 	mux.HandleFunc("POST /api/v1/events/{id}/coupons", s.requireOwner(s.createCoupon))
 	mux.HandleFunc("GET /api/v1/events/{id}/coupons", s.authed(s.listCoupons))
+	// Inventário e mapa de assentos (Etapa 1.3): editor por grade/setores e preços.
+	mux.HandleFunc("POST /api/v1/events/{id}/sectors", s.requireOwner(s.createSector))
+	mux.HandleFunc("GET /api/v1/events/{id}/sectors", s.authed(s.listSectors))
+	mux.HandleFunc("POST /api/v1/sectors/{id}/seats/generate", s.requireOwner(s.generateSeats))
+	mux.HandleFunc("GET /api/v1/sectors/{id}/seats", s.authed(s.listSeats))
+	mux.HandleFunc("POST /api/v1/seats/{id}/block", s.requireOwner(s.blockSeat))
+	mux.HandleFunc("POST /api/v1/lots/{id}/prices", s.requireOwner(s.setSectorPrice))
+	mux.HandleFunc("GET /api/v1/lots/{id}/prices", s.authed(s.listSectorPrices))
 	return accessLog(mux)
 }
 
