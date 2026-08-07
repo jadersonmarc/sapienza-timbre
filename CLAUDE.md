@@ -39,7 +39,9 @@ make compose-up     # sobe Postgres próprio + binário
 - `internal/store` — pgx à mão (control plane em `public`).
 - `internal/catalog` — eventos/lotes/cupons (1.2) + setores/assentos/preços (1.3).
 - `internal/inventory` — motor de reserva: Hold/Release/Confirm + varredura de expiração (1.3).
-- `internal/api` — API do produto: guard/requirePermission/withTenant + handlers de catálogo/inventário.
+- `internal/payment` — PaymentGateway: FakeGateway (default) e AsaasGateway (HTTP, split).
+- `internal/checkout` — compra: StartCheckout + webhook idempotente + split + ledger + cortesias (1.4).
+- `internal/api` — API do produto: guard/withTenant + handlers de catálogo/inventário/checkout.
 - `internal/{chain,payment,wallet,notify}` — seams (interfaces + Noop/stub).
 
 ## Convenções (regras de ouro)
