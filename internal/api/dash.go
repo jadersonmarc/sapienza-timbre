@@ -3,12 +3,14 @@ package api
 import (
 	"encoding/csv"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/jadersonmarc/sapienza-timbre/internal/auth"
 	"github.com/jadersonmarc/sapienza-timbre/internal/dash"
+	"github.com/jadersonmarc/sapienza-timbre/internal/ledger"
 )
 
 // dashOverview devolve, em uma chamada, o que o painel do produtor mostra em tempo
@@ -59,6 +61,43 @@ func (s *Server) dashSummary(w http.ResponseWriter, r *http.Request, claims *aut
 		return
 	}
 	writeJSON(w, http.StatusOK, sum)
+}
+
+type payoutRow struct {
+	ID           uuid.UUID  `json:"id"`
+	AmountCents  int64      `json:"amount_cents"`
+	Status       string     `json:"status"`
+	ScheduledFor *time.Time `json:"scheduled_for,omitempty"`
+	SentAt       *time.Time `json:"sent_at,omitempty"`
+}
+
+// dashPayouts mostra o extrato de repasses: o líquido disponível agora e os payouts.
+func (s *Server) dashPayouts(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
+	var netDue int64
+	var payouts []payoutRow
+	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
+		var e error
+		if netDue, e = ledger.NetDue(r.Context(), tx); e != nil {
+			return e
+		}
+		rows, e := tx.Query(r.Context(), `SELECT id, amount_cents, status, scheduled_for, sent_at FROM payouts ORDER BY created_at DESC`)
+		if e != nil {
+			return e
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var p payoutRow
+			if e := rows.Scan(&p.ID, &p.AmountCents, &p.Status, &p.ScheduledFor, &p.SentAt); e != nil {
+				return e
+			}
+			payouts = append(payouts, p)
+		}
+		return rows.Err()
+	}); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"net_due_cents": netDue, "payouts": payouts})
 }
 
 // dashExportCSV exporta os ingressos do evento em CSV.
