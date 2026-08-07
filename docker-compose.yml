@@ -1,0 +1,42 @@
+# Compose local do Timbre. Banco PRÓPRIO do Timbre (não é o do core): o Timbre tem
+# tenancy de produtor nativa, então `public` é dele e os schemas tenant_<id> não
+# colidem com os do core/Margot. Em produção use um database dedicado.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: timbre
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d timbre"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  timbre:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/timbre
+      PORT: "8082"
+      # Fail-closed (`:?`): sem segredo forte qualquer um forja um JWT e assume um
+      # produtor arbitrário. Gere com: openssl rand -base64 48
+      TIMBRE_JWT_SECRET: ${TIMBRE_JWT_SECRET:?defina TIMBRE_JWT_SECRET (forte)}
+      # Bootstrap de produtor: vazio DESLIGA POST /api/v1/producers.
+      TIMBRE_ADMIN_TOKEN: ${TIMBRE_ADMIN_TOKEN:-}
+      # Reservado (AES-256-GCM por-tenant) — não usado nesta etapa.
+      TIMBRE_ENC_KEY: ${TIMBRE_ENC_KEY:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      ASAAS_API_KEY: ${ASAAS_API_KEY:-}
+    ports:
+      - "8082:8082"
+
+volumes:
+  pgdata:
