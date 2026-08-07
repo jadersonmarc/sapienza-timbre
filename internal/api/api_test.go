@@ -37,12 +37,16 @@ func setup(t *testing.T) (*httptest.Server, *pgxpool.Pool) {
 }
 
 func setupSigned(t *testing.T) (*httptest.Server, *pgxpool.Pool, *ticketing.Signer) {
+	return setupCore(t, chain.NoopChainDriver{})
+}
+
+func setupCore(t *testing.T, chainDriver chain.ChainDriver) (*httptest.Server, *pgxpool.Pool, *ticketing.Signer) {
 	t.Helper()
 	pool := testutil.Pool(t)
 	runner := tenancy.NewMigrationRunner(pool, migrations.Tenant)
 	signer := ticketing.GenerateSigner()
 	srv := api.NewServer(pool, auth.New("test-secret"), producer.New(pool, runner), signer, adminToken, "", api.Seams{
-		Chain:   chain.NoopChainDriver{},
+		Chain:   chainDriver,
 		Payment: payment.NewFakeGateway(),
 		Wallet:  wallet.NoopWalletProvider{},
 		Notify:  notify.NewLogNotifier(),
