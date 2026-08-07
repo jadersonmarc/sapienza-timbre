@@ -1,0 +1,387 @@
+// Package api é a API do produto Timbre. A autenticação é NATIVA do Timbre (JWT
+// próprio, validado por internal/auth) — o produtor é criado e autenticado aqui.
+// Cada rota autenticada recebe as claims (colaborador + produtor + permissões
+// granulares). Dados de operação por-produtor (etapas seguintes) entram por
+// withTenant (search_path = tenant_<id>, public).
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/jadersonmarc/sapienza-kit/tenancy"
+
+	"github.com/jadersonmarc/sapienza-timbre/internal/auth"
+	"github.com/jadersonmarc/sapienza-timbre/internal/chain"
+	"github.com/jadersonmarc/sapienza-timbre/internal/notify"
+	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
+	"github.com/jadersonmarc/sapienza-timbre/internal/producer"
+	"github.com/jadersonmarc/sapienza-timbre/internal/store"
+	"github.com/jadersonmarc/sapienza-timbre/internal/wallet"
+)
+
+// Seams reúne os drivers trocáveis (rede, pagamento, carteira, notificação). São
+// injetados com defaults (Noop/stub) nesta etapa e consumidos pelos handlers de
+// operação das próximas etapas — o padrão espelha o WhatsAppDriver da Margot.
+type Seams struct {
+	Chain   chain.ChainDriver
+	Payment payment.PaymentGateway
+	Wallet  wallet.WalletProvider
+	Notify  notify.Notifier
+}
+
+// Server guarda as dependências da API.
+type Server struct {
+	pool       *pgxpool.Pool
+	auth       *auth.Authenticator
+	prov       *producer.Provisioner
+	adminToken string // gate do bootstrap de produtor (vazio = criação desligada)
+	seams      Seams  // consumido pelos handlers de operação (etapas seguintes)
+}
+
+// NewServer constrói o servidor da API.
+func NewServer(pool *pgxpool.Pool, authz *auth.Authenticator, prov *producer.Provisioner, adminToken string, seams Seams) *Server {
+	return &Server{pool: pool, auth: authz, prov: prov, adminToken: adminToken, seams: seams}
+}
+
+// Handler devolve o mux da superfície /api/v1, embrulhado no log de acesso.
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+	// Bootstrap de produtor (aprovação de produtor vira UI de admin na Etapa 1.7).
+	mux.HandleFunc("POST /api/v1/producers", s.createProducer)
+	// Sessão nativa do Timbre.
+	mux.HandleFunc("POST /api/v1/auth/login", s.login)
+	mux.HandleFunc("GET /api/v1/me", s.authed(s.me))
+	// Colaboradores com permissões granulares — administração é do owner.
+	mux.HandleFunc("POST /api/v1/collaborators", s.requireOwner(s.createCollaborator))
+	mux.HandleFunc("GET /api/v1/collaborators", s.requirePermission("relatorios", s.listCollaborators))
+	return accessLog(mux)
+}
+
+// ── middleware ───────────────────────────────────────────────────────────────
+
+type authedHandler func(w http.ResponseWriter, r *http.Request, claims *auth.Claims)
+
+// authed valida o JWT do Timbre e injeta as claims. Sem token válido → 401.
+func (s *Server) authed(fn authedHandler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tok := bearer(r)
+		if tok == "" {
+			writeErr(w, http.StatusUnauthorized, "missing bearer token")
+			return
+		}
+		claims, err := s.auth.Verify(tok)
+		if err != nil {
+			writeErr(w, http.StatusUnauthorized, "invalid token")
+			return
+		}
+		fn(w, r, claims)
+	}
+}
+
+// requirePermission exige uma permissão granular (o owner passa sempre).
+func (s *Server) requirePermission(perm string, fn authedHandler) http.HandlerFunc {
+	return s.authed(func(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
+		if !claims.Has(perm) {
+			writeErr(w, http.StatusForbidden, "requer permissão "+perm)
+			return
+		}
+		fn(w, r, claims)
+	})
+}
+
+// requireOwner exige que o colaborador seja owner do produtor.
+func (s *Server) requireOwner(fn authedHandler) http.HandlerFunc {
+	return s.authed(func(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
+		if !claims.Owner {
+			writeErr(w, http.StatusForbidden, "requer owner")
+			return
+		}
+		fn(w, r, claims)
+	})
+}
+
+// withTenant roda fn numa transação escopada ao schema do produtor. Base para os
+// handlers de operação das próximas etapas (catálogo, venda, ...).
+func (s *Server) withTenant(ctx context.Context, producerID uuid.UUID, fn func(tx pgx.Tx) error) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := tenancy.WithTenant(ctx, tx, producerID); err != nil {
+		return err
+	}
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// ── handlers ─────────────────────────────────────────────────────────────────
+
+type createProducerReq struct {
+	Name          string `json:"name"`
+	OwnerEmail    string `json:"owner_email"`
+	OwnerPassword string `json:"owner_password"`
+}
+
+// createProducer cria um produtor + owner e provisiona o schema. Gate por token de
+// admin no header X-Admin-Token (bootstrap; a aprovação de produtor vem na 1.7).
+func (s *Server) createProducer(w http.ResponseWriter, r *http.Request) {
+	if s.adminToken == "" {
+		writeErr(w, http.StatusServiceUnavailable, "criação de produtor desligada (defina TIMBRE_ADMIN_TOKEN)")
+		return
+	}
+	if !subtleCompare(r.Header.Get("X-Admin-Token"), s.adminToken) {
+		writeErr(w, http.StatusUnauthorized, "token de admin inválido")
+		return
+	}
+	var body createProducerReq
+	if err := decode(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, "corpo inválido")
+		return
+	}
+	if strings.TrimSpace(body.Name) == "" || strings.TrimSpace(body.OwnerEmail) == "" || len(body.OwnerPassword) < 8 {
+		writeErr(w, http.StatusBadRequest, "name, owner_email e owner_password (mín. 8) obrigatórios")
+		return
+	}
+	res, err := s.prov.Create(r.Context(), body.Name, body.OwnerEmail, body.OwnerPassword)
+	if err != nil {
+		if isUniqueViolation(err) {
+			writeErr(w, http.StatusConflict, "e-mail já usado neste produtor")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, res)
+}
+
+type loginReq struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+// login confere e-mail+senha e devolve um JWT do Timbre. O mesmo e-mail pode existir
+// em produtores diferentes; conferimos a senha em cada candidato.
+func (s *Server) login(w http.ResponseWriter, r *http.Request) {
+	var body loginReq
+	if err := decode(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, "corpo inválido")
+		return
+	}
+	email := strings.ToLower(strings.TrimSpace(body.Email))
+	cands, err := store.FindCollaboratorsByEmail(r.Context(), s.pool, email)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	for _, c := range cands {
+		if !auth.ComparePassword(c.PasswordHash, body.Password) {
+			continue
+		}
+		perms, err := store.ListPermissions(r.Context(), s.pool, c.ID)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		tok, err := s.auth.Issue(auth.Identity{
+			CollaboratorID: c.ID, ProducerID: c.ProducerID, Owner: c.IsOwner,
+			SessionVersion: c.SessionVersion, Permissions: perms,
+		})
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"token": tok})
+		return
+	}
+	writeErr(w, http.StatusUnauthorized, "credenciais inválidas")
+}
+
+// me devolve o colaborador autenticado + produtor + permissões (prova a auth).
+func (s *Server) me(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
+	cid, err := claims.CollaboratorID()
+	if err != nil {
+		writeErr(w, http.StatusUnauthorized, "token inválido")
+		return
+	}
+	collab, err := store.GetCollaborator(r.Context(), s.pool, cid)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	prod, err := store.GetProducer(r.Context(), s.pool, collab.ProducerID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	perms, err := store.ListPermissions(r.Context(), s.pool, cid)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"collaborator": collab,
+		"producer":     prod,
+		"permissions":  perms,
+	})
+}
+
+type createCollaboratorReq struct {
+	Email       string   `json:"email"`
+	Password    string   `json:"password"`
+	Permissions []string `json:"permissions"`
+}
+
+// createCollaborator convida um colaborador com permissões granulares (owner only).
+func (s *Server) createCollaborator(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
+	var body createCollaboratorReq
+	if err := decode(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, "corpo inválido")
+		return
+	}
+	if strings.TrimSpace(body.Email) == "" || len(body.Password) < 8 {
+		writeErr(w, http.StatusBadRequest, "email e password (mín. 8) obrigatórios")
+		return
+	}
+	for _, p := range body.Permissions {
+		if !auth.ValidPermission(p) {
+			writeErr(w, http.StatusBadRequest, "permissão inválida: "+p)
+			return
+		}
+	}
+	hash, err := auth.HashPassword(body.Password)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	email := strings.ToLower(strings.TrimSpace(body.Email))
+
+	var collab store.Collaborator
+	err = pgxTx(r.Context(), s.pool, func(tx pgx.Tx) error {
+		c, err := store.CreateCollaborator(r.Context(), tx, claims.ProducerID, email, hash, false)
+		if err != nil {
+			return err
+		}
+		for _, p := range body.Permissions {
+			if err := store.AddPermission(r.Context(), tx, c.ID, p); err != nil {
+				return err
+			}
+		}
+		collab = c
+		return nil
+	})
+	if err != nil {
+		if isUniqueViolation(err) {
+			writeErr(w, http.StatusConflict, "e-mail já usado neste produtor")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"collaborator": collab,
+		"permissions":  body.Permissions,
+	})
+}
+
+// listCollaborators lista os colaboradores do produtor (owner ou permissão relatorios).
+func (s *Server) listCollaborators(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
+	list, err := store.ListCollaborators(r.Context(), s.pool, claims.ProducerID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"collaborators": list})
+}
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+
+// pgxTx roda fn numa transação simples (sem escopo de tenant), para escritas no
+// control plane em `public`.
+func pgxTx(ctx context.Context, pool *pgxpool.Pool, fn func(tx pgx.Tx) error) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func decode(w http.ResponseWriter, r *http.Request, v any) error {
+	return json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(v)
+}
+
+func bearer(r *http.Request) string {
+	if after, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
+		return strings.TrimSpace(after)
+	}
+	return ""
+}
+
+// subtleCompare compara dois tokens em tempo constante.
+func subtleCompare(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	var v byte
+	for i := 0; i < len(a); i++ {
+		v |= a[i] ^ b[i]
+	}
+	return v == 0
+}
+
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func writeErr(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// accessLog registra cada requisição com um request-id e a duração (observabilidade
+// mínima desta etapa).
+func accessLog(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqID := uuid.NewString()
+		w.Header().Set("X-Request-Id", reqID)
+		start := time.Now()
+		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(sw, r)
+		slog.Info("request",
+			"id", reqID, "method", r.Method, "path", r.URL.Path,
+			"status", sw.status, "dur_ms", time.Since(start).Milliseconds())
+	})
+}
+
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusWriter) WriteHeader(code int) {
+	s.status = code
+	s.ResponseWriter.WriteHeader(code)
+}
