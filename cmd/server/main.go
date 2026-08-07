@@ -19,6 +19,7 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/auth"
 	"github.com/jadersonmarc/sapienza-timbre/internal/chain"
 	"github.com/jadersonmarc/sapienza-timbre/internal/config"
+	"github.com/jadersonmarc/sapienza-timbre/internal/dashweb"
 	"github.com/jadersonmarc/sapienza-timbre/internal/db"
 	"github.com/jadersonmarc/sapienza-timbre/internal/gateweb"
 	"github.com/jadersonmarc/sapienza-timbre/internal/inventory"
@@ -97,6 +98,11 @@ func main() {
 	mux.Handle("/gate/", http.StripPrefix("/gate/", http.FileServer(http.FS(gateweb.FS()))))
 	mux.HandleFunc("/gate", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/gate/", http.StatusFound)
+	})
+	// Painel do produtor (tempo real, celular) — assets estáticos embutidos.
+	mux.Handle("/dash/", http.StripPrefix("/dash/", http.FileServer(http.FS(dashweb.FS()))))
+	mux.HandleFunc("/dash", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/dash/", http.StatusFound)
 	})
 
 	addr := ":" + cfg.Port
