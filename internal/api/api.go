@@ -58,9 +58,10 @@ func NewServer(pool *pgxpool.Pool, authz *auth.Authenticator, prov *producer.Pro
 	return &Server{pool: pool, auth: authz, prov: prov, signer: signer, adminToken: adminToken, webhookToken: webhookToken, seams: seams}
 }
 
-// emitter monta o emissor (assinatura + entrega) a partir das dependências do server.
+// emitter monta o emissor (assinatura + entrega + fila on-chain) a partir das
+// dependências do server.
 func (s *Server) emitter() checkout.Emitter {
-	return checkout.Emitter{Signer: s.signer, Notify: s.seams.Notify}
+	return checkout.Emitter{Signer: s.signer, Notify: s.seams.Notify, Chain: s.seams.Chain}
 }
 
 // Handler devolve o mux da superfície /api/v1, embrulhado no log de acesso.
@@ -106,6 +107,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/dash/summary", s.requirePermission("relatorios", s.dashSummary))
 	mux.HandleFunc("GET /api/v1/dash/events/{id}", s.requirePermission("relatorios", s.dashOverview))
 	mux.HandleFunc("GET /api/v1/dash/events/{id}/export.csv", s.requirePermission("relatorios", s.dashExportCSV))
+	mux.HandleFunc("GET /api/v1/dash/payouts", s.requirePermission("relatorios", s.dashPayouts))
 	// Painel administrativo (plataforma) — X-Admin-Token.
 	mux.HandleFunc("GET /api/v1/admin/summary", s.requireAdmin(s.adminSummary))
 	mux.HandleFunc("POST /api/v1/admin/producers/{id}/approve", s.requireAdmin(s.adminSetProducerStatus("active")))
