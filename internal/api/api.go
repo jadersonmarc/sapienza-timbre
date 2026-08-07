@@ -23,10 +23,12 @@ import (
 
 	"github.com/jadersonmarc/sapienza-timbre/internal/auth"
 	"github.com/jadersonmarc/sapienza-timbre/internal/chain"
+	"github.com/jadersonmarc/sapienza-timbre/internal/checkout"
 	"github.com/jadersonmarc/sapienza-timbre/internal/notify"
 	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
 	"github.com/jadersonmarc/sapienza-timbre/internal/producer"
 	"github.com/jadersonmarc/sapienza-timbre/internal/store"
+	"github.com/jadersonmarc/sapienza-timbre/internal/ticketing"
 	"github.com/jadersonmarc/sapienza-timbre/internal/wallet"
 )
 
@@ -45,14 +47,20 @@ type Server struct {
 	pool         *pgxpool.Pool
 	auth         *auth.Authenticator
 	prov         *producer.Provisioner
-	adminToken   string // gate do bootstrap de produtor (vazio = criação desligada)
-	webhookToken string // valida o header do webhook do Asaas (vazio = sem checagem)
-	seams        Seams  // drivers de rede/pagamento/carteira/notificação
+	signer       *ticketing.Signer // assina ingressos (Ed25519) na emissão
+	adminToken   string            // gate do bootstrap de produtor (vazio = criação desligada)
+	webhookToken string            // valida o header do webhook do Asaas (vazio = sem checagem)
+	seams        Seams             // drivers de rede/pagamento/carteira/notificação
 }
 
 // NewServer constrói o servidor da API.
-func NewServer(pool *pgxpool.Pool, authz *auth.Authenticator, prov *producer.Provisioner, adminToken, webhookToken string, seams Seams) *Server {
-	return &Server{pool: pool, auth: authz, prov: prov, adminToken: adminToken, webhookToken: webhookToken, seams: seams}
+func NewServer(pool *pgxpool.Pool, authz *auth.Authenticator, prov *producer.Provisioner, signer *ticketing.Signer, adminToken, webhookToken string, seams Seams) *Server {
+	return &Server{pool: pool, auth: authz, prov: prov, signer: signer, adminToken: adminToken, webhookToken: webhookToken, seams: seams}
+}
+
+// emitter monta o emissor (assinatura + entrega) a partir das dependências do server.
+func (s *Server) emitter() checkout.Emitter {
+	return checkout.Emitter{Signer: s.signer, Notify: s.seams.Notify}
 }
 
 // Handler devolve o mux da superfície /api/v1, embrulhado no log de acesso.

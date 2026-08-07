@@ -11,24 +11,26 @@ import (
 
 // Config é a configuração resolvida do processo.
 type Config struct {
-	DatabaseURL string // obrigatório
-	Port        string // default 8082
-	JWTSecret   string // obrigatório — assina/valida o JWT nativo do Timbre
-	AdminToken  string // bootstrap: cria produtor (aprovação de produtor vem na 1.7)
-	EncKey      string // reservado (AES-256-GCM por-tenant); vazio nesta etapa
-	LogLevel    string // debug|info|warn|error (default info)
+	DatabaseURL      string // obrigatório
+	Port             string // default 8082
+	JWTSecret        string // obrigatório — assina/valida o JWT nativo do Timbre
+	AdminToken       string // bootstrap: cria produtor (aprovação de produtor vem na 1.7)
+	EncKey           string // reservado (AES-256-GCM por-tenant); vazio nesta etapa
+	TicketSigningKey string // seed Ed25519 base64 p/ assinar ingressos (vazio = efêmera)
+	LogLevel         string // debug|info|warn|error (default info)
 }
 
 // Load lê o ambiente e valida os campos obrigatórios. Retorna erro em vez de
 // abortar para o main decidir como reportar.
 func Load() (Config, error) {
 	c := Config{
-		DatabaseURL: os.Getenv("DATABASE_URL"),
-		Port:        getenv("PORT", "8082"),
-		JWTSecret:   os.Getenv("TIMBRE_JWT_SECRET"),
-		AdminToken:  os.Getenv("TIMBRE_ADMIN_TOKEN"),
-		EncKey:      os.Getenv("TIMBRE_ENC_KEY"),
-		LogLevel:    getenv("LOG_LEVEL", "info"),
+		DatabaseURL:      os.Getenv("DATABASE_URL"),
+		Port:             getenv("PORT", "8082"),
+		JWTSecret:        os.Getenv("TIMBRE_JWT_SECRET"),
+		AdminToken:       os.Getenv("TIMBRE_ADMIN_TOKEN"),
+		EncKey:           os.Getenv("TIMBRE_ENC_KEY"),
+		TicketSigningKey: os.Getenv("TIMBRE_TICKET_SIGNING_KEY"),
+		LogLevel:         getenv("LOG_LEVEL", "info"),
 	}
 
 	var missing []string

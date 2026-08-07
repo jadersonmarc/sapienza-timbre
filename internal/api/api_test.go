@@ -25,16 +25,23 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
 	"github.com/jadersonmarc/sapienza-timbre/internal/producer"
 	"github.com/jadersonmarc/sapienza-timbre/internal/testutil"
+	"github.com/jadersonmarc/sapienza-timbre/internal/ticketing"
 	"github.com/jadersonmarc/sapienza-timbre/internal/wallet"
 )
 
 const adminToken = "test-admin"
 
 func setup(t *testing.T) (*httptest.Server, *pgxpool.Pool) {
+	ts, pool, _ := setupSigned(t)
+	return ts, pool
+}
+
+func setupSigned(t *testing.T) (*httptest.Server, *pgxpool.Pool, *ticketing.Signer) {
 	t.Helper()
 	pool := testutil.Pool(t)
 	runner := tenancy.NewMigrationRunner(pool, migrations.Tenant)
-	srv := api.NewServer(pool, auth.New("test-secret"), producer.New(pool, runner), adminToken, "", api.Seams{
+	signer := ticketing.GenerateSigner()
+	srv := api.NewServer(pool, auth.New("test-secret"), producer.New(pool, runner), signer, adminToken, "", api.Seams{
 		Chain:   chain.NoopChainDriver{},
 		Payment: payment.NewFakeGateway(),
 		Wallet:  wallet.NoopWalletProvider{},
@@ -42,7 +49,7 @@ func setup(t *testing.T) (*httptest.Server, *pgxpool.Pool) {
 	})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	return ts, pool
+	return ts, pool, signer
 }
 
 // do faz uma requisição JSON e devolve status + corpo decodificado.

@@ -24,6 +24,7 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/notify"
 	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
 	"github.com/jadersonmarc/sapienza-timbre/internal/producer"
+	"github.com/jadersonmarc/sapienza-timbre/internal/ticketing"
 	"github.com/jadersonmarc/sapienza-timbre/internal/wallet"
 )
 
@@ -71,9 +72,22 @@ func main() {
 	// Varredura de expiração de holds (motor de reserva) por produtor, em segundo plano.
 	go inventory.NewSweeper(pool).Run(ctx)
 
+	// Chave de assinatura dos ingressos (Ed25519). Persistente em produção (a portaria
+	// embarca a pública); efêmera em dev — o QR muda a cada restart.
+	var signer *ticketing.Signer
+	if cfg.TicketSigningKey != "" {
+		if signer, err = ticketing.NewSigner(cfg.TicketSigningKey); err != nil {
+			log.Fatalf("ticket signing key: %v", err)
+		}
+	} else {
+		signer = ticketing.GenerateSigner()
+		slog.Warn("TIMBRE_TICKET_SIGNING_KEY ausente — chave efêmera (QR muda a cada restart)")
+	}
+	slog.Info("ticketing", "public_key", signer.PublicKeyB64())
+
 	authz := auth.New(cfg.JWTSecret)
 	prov := producer.New(pool, runner)
-	srv := api.NewServer(pool, authz, prov, cfg.AdminToken, os.Getenv("ASAAS_WEBHOOK_TOKEN"), seams)
+	srv := api.NewServer(pool, authz, prov, signer, cfg.AdminToken, os.Getenv("ASAAS_WEBHOOK_TOKEN"), seams)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler(pool))

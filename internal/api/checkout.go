@@ -72,8 +72,8 @@ func (s *Server) asaasWebhook(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "webhook ilegível")
 		return
 	}
-	// Só a confirmação nos interessa; os demais eventos são reconhecidos com 200.
-	if !evt.Confirmed || evt.AsaasRef == "" {
+	// Interessam confirmação e estorno; os demais são reconhecidos com 200.
+	if evt.AsaasRef == "" || (!evt.Confirmed && !evt.Refunded) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
@@ -86,8 +86,12 @@ func (s *Server) asaasWebhook(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	em := s.emitter()
 	if err := s.withTenant(r.Context(), producerID, func(tx pgx.Tx) error {
-		_, e := checkout.ConfirmPayment(r.Context(), tx, evt.AsaasRef)
+		if evt.Refunded {
+			return checkout.RefundPayment(r.Context(), tx, evt.AsaasRef)
+		}
+		_, e := checkout.ConfirmPayment(r.Context(), tx, em, evt.AsaasRef)
 		return e
 	}); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -161,9 +165,10 @@ func (s *Server) createGuest(w http.ResponseWriter, r *http.Request, claims *aut
 		return
 	}
 	var ticketID uuid.UUID
+	em := s.emitter()
 	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
 		var e error
-		ticketID, e = checkout.IssueCourtesy(r.Context(), tx, eventID, lotID, seatID, body.Name, body.CPF)
+		ticketID, e = checkout.IssueCourtesy(r.Context(), tx, em, eventID, lotID, seatID, body.Name, body.CPF)
 		return e
 	}); err != nil {
 		if errors.Is(err, inventory.ErrSeatUnavailable) {
