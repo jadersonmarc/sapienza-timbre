@@ -102,6 +102,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/gate/events/{id}/seatmap", s.requirePermission("checkin", s.gateSeatmap))
 	mux.HandleFunc("POST /api/v1/gate/validate", s.requirePermission("checkin", s.gateValidate))
 	mux.HandleFunc("POST /api/v1/gate/sync", s.requirePermission("checkin", s.gateSync))
+	// Painel do produtor (Etapa 1.7) — permissão relatorios.
+	mux.HandleFunc("GET /api/v1/dash/summary", s.requirePermission("relatorios", s.dashSummary))
+	mux.HandleFunc("GET /api/v1/dash/events/{id}", s.requirePermission("relatorios", s.dashOverview))
+	mux.HandleFunc("GET /api/v1/dash/events/{id}/export.csv", s.requirePermission("relatorios", s.dashExportCSV))
+	// Painel administrativo (plataforma) — X-Admin-Token.
+	mux.HandleFunc("GET /api/v1/admin/summary", s.requireAdmin(s.adminSummary))
+	mux.HandleFunc("POST /api/v1/admin/producers/{id}/approve", s.requireAdmin(s.adminSetProducerStatus("active")))
+	mux.HandleFunc("POST /api/v1/admin/producers/{id}/suspend", s.requireAdmin(s.adminSetProducerStatus("suspended")))
+	mux.HandleFunc("POST /api/v1/admin/producers/{pid}/events/{eid}/suspend", s.requireAdmin(s.adminSuspendEvent))
 	return accessLog(mux)
 }
 
