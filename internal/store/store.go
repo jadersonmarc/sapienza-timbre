@@ -24,12 +24,13 @@ type DBTX interface {
 
 // Producer é uma linha de public.producers (o tenant).
 type Producer struct {
-	ID           uuid.UUID `json:"id"`
-	Name         string    `json:"name"`
-	Tier         string    `json:"tier"`
-	RetentionPct float64   `json:"retention_pct"`
-	Status       string    `json:"status"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID            uuid.UUID `json:"id"`
+	Name          string    `json:"name"`
+	Tier          string    `json:"tier"`
+	RetentionPct  float64   `json:"retention_pct"`
+	Status        string    `json:"status"`
+	AsaasWalletID *string   `json:"asaas_wallet_id,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 // Collaborator é uma linha de public.collaborators (sem o hash de senha).
@@ -120,9 +121,9 @@ func GetCollaborator(ctx context.Context, db DBTX, id uuid.UUID) (Collaborator, 
 func GetProducer(ctx context.Context, db DBTX, id uuid.UUID) (Producer, error) {
 	var p Producer
 	err := db.QueryRow(ctx, `
-		SELECT id, name, tier, retention_pct, status, created_at
+		SELECT id, name, tier, retention_pct, status, asaas_wallet_id, created_at
 		  FROM producers WHERE id = $1`, id,
-	).Scan(&p.ID, &p.Name, &p.Tier, &p.RetentionPct, &p.Status, &p.CreatedAt)
+	).Scan(&p.ID, &p.Name, &p.Tier, &p.RetentionPct, &p.Status, &p.AsaasWalletID, &p.CreatedAt)
 	return p, err
 }
 

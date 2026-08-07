@@ -109,7 +109,7 @@ func (s *Server) publishEvent(w http.ResponseWriter, r *http.Request, claims *au
 		return
 	}
 	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
-		return catalog.PublishEvent(r.Context(), tx, id)
+		return catalog.PublishEvent(r.Context(), tx, claims.ProducerID, id)
 	}); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return

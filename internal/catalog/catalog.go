@@ -169,16 +169,30 @@ func GetLot(ctx context.Context, tx pgx.Tx, id uuid.UUID) (Lot, error) {
 	return scanLot(tx.QueryRow(ctx, `SELECT `+lotCols+` FROM lots WHERE id = $1`, id))
 }
 
-// PublishEvent publica o evento e ativa o lote inicial (o primeiro elegível por
+// PublishEvent publica o evento, registra-o no diretório público (para o comprador
+// sem conta resolver evento→produtor) e ativa o lote inicial (o primeiro elegível por
 // posição/data), se ainda não houver lote ativo. Idempotente.
-func PublishEvent(ctx context.Context, tx pgx.Tx, eventID uuid.UUID) error {
-	tag, err := tx.Exec(ctx, `UPDATE events SET status='published', updated_at=now()
-		WHERE id=$1 AND status IN ('draft','published')`, eventID)
+func PublishEvent(ctx context.Context, tx pgx.Tx, producerID, eventID uuid.UUID) error {
+	var title, category string
+	var startsAt *time.Time
+	err := tx.QueryRow(ctx, `UPDATE events SET status='published', updated_at=now()
+		WHERE id=$1 AND status IN ('draft','published')
+		RETURNING title, category, starts_at`, eventID).Scan(&title, &category, &startsAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("evento não encontrado ou em estado não publicável")
+	}
 	if err != nil {
 		return fmt.Errorf("publicar evento: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("evento não encontrado ou em estado não publicável")
+	// Diretório público (public está no search_path do WithTenant).
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO public.event_directory (event_id, producer_id, title, category, starts_at)
+		VALUES ($1,$2,$3,$4,$5)
+		ON CONFLICT (event_id) DO UPDATE
+		   SET producer_id = EXCLUDED.producer_id, title = EXCLUDED.title,
+		       category = EXCLUDED.category, starts_at = EXCLUDED.starts_at`,
+		eventID, producerID, title, category, startsAt); err != nil {
+		return fmt.Errorf("registrar no diretório público: %w", err)
 	}
 	return activateNextLot(ctx, tx, eventID, -1)
 }
