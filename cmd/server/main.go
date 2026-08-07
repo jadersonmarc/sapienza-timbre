@@ -20,6 +20,7 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/chain"
 	"github.com/jadersonmarc/sapienza-timbre/internal/config"
 	"github.com/jadersonmarc/sapienza-timbre/internal/db"
+	"github.com/jadersonmarc/sapienza-timbre/internal/gateweb"
 	"github.com/jadersonmarc/sapienza-timbre/internal/inventory"
 	"github.com/jadersonmarc/sapienza-timbre/internal/notify"
 	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
@@ -92,6 +93,11 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler(pool))
 	mux.Handle("/api/v1/", srv.Handler())
+	// PWA da portaria (offline) — assets estáticos embutidos.
+	mux.Handle("/gate/", http.StripPrefix("/gate/", http.FileServer(http.FS(gateweb.FS()))))
+	mux.HandleFunc("/gate", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/gate/", http.StatusFound)
+	})
 
 	addr := ":" + cfg.Port
 	httpSrv := &http.Server{
