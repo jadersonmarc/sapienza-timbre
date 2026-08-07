@@ -1,0 +1,15 @@
+# Go
+/bin/
+*.test
+*.out
+# Ancorado na raiz de propósito: sem a barra inicial, `coverage.*` casa em qualquer
+# subdiretório e engoliria arquivos legítimos de vendor/. Só o da raiz é artefato.
+/coverage.*
+
+# vendor/ é entrada de build (imagem hermética, `go build -mod=vendor`): nada aqui
+# dentro pode ser ignorado, ou a imagem compila um pacote incompleto.
+!vendor/**
+
+# Env
+.env
+.env.local
