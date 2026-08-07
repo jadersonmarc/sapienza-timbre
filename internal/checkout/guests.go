@@ -15,7 +15,7 @@ import (
 // IssueCourtesy emite uma cortesia: registra o convidado e emite um ingresso ativo
 // (transferível imediatamente). Com assento específico, ocupa-o para não ser vendido
 // — se já estiver ocupado (hold ou ingresso), falha com inventory.ErrSeatUnavailable.
-func IssueCourtesy(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, lotID, seatID *uuid.UUID, name, cpf string) (uuid.UUID, error) {
+func IssueCourtesy(ctx context.Context, tx pgx.Tx, em Emitter, eventID uuid.UUID, lotID, seatID *uuid.UUID, name, cpf string) (uuid.UUID, error) {
 	// Resolve o lote (cortesia precisa de um, para portaria/relatório).
 	var lot uuid.UUID
 	if lotID != nil {
@@ -53,6 +53,10 @@ func IssueCourtesy(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, lotID, sea
 			}
 			return uuid.Nil, fmt.Errorf("ocupar assento da cortesia: %w", err)
 		}
+	}
+	// Assina a cortesia (sem entrega — o convidado recebe por outro canal).
+	if err := em.emit(ctx, tx, []uuid.UUID{ticketID}, ""); err != nil {
+		return uuid.Nil, err
 	}
 	return ticketID, nil
 }

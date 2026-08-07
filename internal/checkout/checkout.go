@@ -193,7 +193,7 @@ func StartCheckout(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, pr
 // ConfirmPayment confirma um pagamento (idempotente): emite ingressos, marca ordem
 // paga e escreve o razão. Chamado pelo webhook após resolver o tenant. Devolve os
 // ingressos emitidos (vazio se já estava confirmado).
-func ConfirmPayment(ctx context.Context, tx pgx.Tx, asaasRef string) ([]uuid.UUID, error) {
+func ConfirmPayment(ctx context.Context, tx pgx.Tx, em Emitter, asaasRef string) ([]uuid.UUID, error) {
 	var paymentID, orderID uuid.UUID
 	var method, status string
 	var amount int64
@@ -215,7 +215,8 @@ func ConfirmPayment(ctx context.Context, tx pgx.Tx, asaasRef string) ([]uuid.UUI
 	// Dados da ordem e do item (lote/quantidade).
 	var eventID uuid.UUID
 	var couponID *uuid.UUID
-	if err := tx.QueryRow(ctx, `SELECT event_id, coupon_id FROM orders WHERE id=$1`, orderID).Scan(&eventID, &couponID); err != nil {
+	var buyerEmail *string
+	if err := tx.QueryRow(ctx, `SELECT event_id, coupon_id, buyer_email FROM orders WHERE id=$1`, orderID).Scan(&eventID, &couponID, &buyerEmail); err != nil {
 		return nil, err
 	}
 	var lotID uuid.UUID
@@ -271,6 +272,15 @@ func ConfirmPayment(ctx context.Context, tx pgx.Tx, asaasRef string) ([]uuid.UUI
 		if _, err := tx.Exec(ctx, `INSERT INTO coupon_redemptions (coupon_id, order_id) VALUES ($1,$2)`, *couponID, orderID); err != nil {
 			return nil, err
 		}
+	}
+
+	// Assina os ingressos (Ed25519) e entrega o QR ao comprador.
+	deliverTo := ""
+	if buyerEmail != nil {
+		deliverTo = *buyerEmail
+	}
+	if err := em.emit(ctx, tx, tickets, deliverTo); err != nil {
+		return nil, err
 	}
 
 	// Razão: taxa (plataforma), repasse (produtor, D+2 após o evento) e, no cartão,

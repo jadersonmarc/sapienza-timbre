@@ -42,11 +42,12 @@ type Charge struct {
 }
 
 // WebhookEvent é o evento decodificado do webhook do gateway. A idempotência é do
-// chamador (o checkout ignora um asaas_ref já confirmado).
+// chamador (o checkout ignora um asaas_ref já confirmado/estornado).
 type WebhookEvent struct {
 	AsaasRef  string
 	Type      string
-	Confirmed bool // true quando o pagamento foi confirmado/recebido
+	Confirmed bool // pagamento confirmado/recebido
+	Refunded  bool // estorno/contestação (queima os ingressos)
 }
 
 // PaymentGateway é a interface com o gateway.

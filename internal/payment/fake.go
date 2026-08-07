@@ -30,6 +30,7 @@ type fakeWebhook struct {
 	AsaasRef  string `json:"asaas_ref"`
 	Type      string `json:"type"`
 	Confirmed bool   `json:"confirmed"`
+	Refunded  bool   `json:"refunded"`
 }
 
 // HandleWebhook decodifica o payload de teste.
@@ -38,5 +39,5 @@ func (*FakeGateway) HandleWebhook(_ context.Context, payload []byte) (WebhookEve
 	if err := json.Unmarshal(payload, &e); err != nil {
 		return WebhookEvent{}, err
 	}
-	return WebhookEvent{AsaasRef: e.AsaasRef, Type: e.Type, Confirmed: e.Confirmed}, nil
+	return WebhookEvent{AsaasRef: e.AsaasRef, Type: e.Type, Confirmed: e.Confirmed, Refunded: e.Refunded}, nil
 }

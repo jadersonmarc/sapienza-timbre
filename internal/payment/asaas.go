@@ -138,7 +138,8 @@ func (g *AsaasGateway) HandleWebhook(_ context.Context, payload []byte) (Webhook
 		return WebhookEvent{}, err
 	}
 	confirmed := e.Event == "PAYMENT_CONFIRMED" || e.Event == "PAYMENT_RECEIVED"
-	return WebhookEvent{AsaasRef: e.Payment.ID, Type: e.Event, Confirmed: confirmed}, nil
+	refunded := e.Event == "PAYMENT_REFUNDED" || e.Event == "PAYMENT_CHARGEBACK_REQUESTED"
+	return WebhookEvent{AsaasRef: e.Payment.ID, Type: e.Event, Confirmed: confirmed, Refunded: refunded}, nil
 }
 
 func reais(cents int64) string { return fmt.Sprintf("%.2f", float64(cents)/100.0) }
