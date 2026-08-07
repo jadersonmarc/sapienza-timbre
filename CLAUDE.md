@@ -46,8 +46,9 @@ make compose-up     # sobe Postgres próprio + binário
 - `internal/gateweb` — PWA da portaria (assets embutidos, servida em /gate) (1.6).
 - `internal/dash` — agregações dos painéis (produtor + plataforma) (1.7).
 - `internal/dashweb` — painel do produtor em tempo real (assets embutidos, /dash) (1.7).
-- `internal/chain` — emissão on-chain assíncrona: interface + Noop/Base + fila chain_jobs/worker (1.8).
+- `internal/chain` — emissão/transferência on-chain assíncrona: interface + Noop/Base + fila chain_jobs/worker (1.8/2.1).
 - `internal/ledger` — fechamento de repasse em payouts (D+2, retenção, estorno) (1.8).
+- `internal/transfer` — transferência restrita: teto de revenda + royalty + reatribuição de dono (2.1).
 - `internal/api` — API do produto: guard/withTenant + handlers de catálogo/inventário/checkout/portaria/painel/admin.
 - `internal/{chain,payment,wallet,notify}` — seams (interfaces + Noop/stub).
 
