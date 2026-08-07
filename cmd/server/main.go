@@ -53,23 +53,27 @@ func main() {
 		log.Fatalf("migrate tenants (catch-up): %v", err)
 	}
 
-	// Seams com defaults (Noop/stub) — a operação real chega nas etapas seguintes.
-	pay := payment.NewAsaasStub(os.Getenv("ASAAS_API_KEY"))
+	// Gateway de pagamento: Asaas real se houver credencial, senão o Fake (default).
+	var pay payment.PaymentGateway = payment.NewFakeGateway()
+	payKind := "fake"
+	if key := os.Getenv("ASAAS_API_KEY"); key != "" {
+		pay = payment.NewAsaas(key, os.Getenv("ASAAS_BASE_URL"))
+		payKind = "asaas"
+	}
 	seams := api.Seams{
 		Chain:   chain.NoopChainDriver{},
 		Payment: pay,
 		Wallet:  wallet.NoopWalletProvider{},
 		Notify:  notify.NewLogNotifier(),
 	}
-	slog.Info("seams",
-		"chain", "noop", "payment_configured", pay.Configured(), "wallet", "noop", "notify", "log")
+	slog.Info("seams", "chain", "noop", "payment", payKind, "wallet", "noop", "notify", "log")
 
 	// Varredura de expiração de holds (motor de reserva) por produtor, em segundo plano.
 	go inventory.NewSweeper(pool).Run(ctx)
 
 	authz := auth.New(cfg.JWTSecret)
 	prov := producer.New(pool, runner)
-	srv := api.NewServer(pool, authz, prov, cfg.AdminToken, seams)
+	srv := api.NewServer(pool, authz, prov, cfg.AdminToken, os.Getenv("ASAAS_WEBHOOK_TOKEN"), seams)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler(pool))

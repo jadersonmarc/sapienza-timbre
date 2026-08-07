@@ -34,9 +34,9 @@ func setup(t *testing.T) (*httptest.Server, *pgxpool.Pool) {
 	t.Helper()
 	pool := testutil.Pool(t)
 	runner := tenancy.NewMigrationRunner(pool, migrations.Tenant)
-	srv := api.NewServer(pool, auth.New("test-secret"), producer.New(pool, runner), adminToken, api.Seams{
+	srv := api.NewServer(pool, auth.New("test-secret"), producer.New(pool, runner), adminToken, "", api.Seams{
 		Chain:   chain.NoopChainDriver{},
-		Payment: payment.NewAsaasStub(""),
+		Payment: payment.NewFakeGateway(),
 		Wallet:  wallet.NoopWalletProvider{},
 		Notify:  notify.NewLogNotifier(),
 	})

@@ -42,16 +42,17 @@ type Seams struct {
 
 // Server guarda as dependências da API.
 type Server struct {
-	pool       *pgxpool.Pool
-	auth       *auth.Authenticator
-	prov       *producer.Provisioner
-	adminToken string // gate do bootstrap de produtor (vazio = criação desligada)
-	seams      Seams  // consumido pelos handlers de operação (etapas seguintes)
+	pool         *pgxpool.Pool
+	auth         *auth.Authenticator
+	prov         *producer.Provisioner
+	adminToken   string // gate do bootstrap de produtor (vazio = criação desligada)
+	webhookToken string // valida o header do webhook do Asaas (vazio = sem checagem)
+	seams        Seams  // drivers de rede/pagamento/carteira/notificação
 }
 
 // NewServer constrói o servidor da API.
-func NewServer(pool *pgxpool.Pool, authz *auth.Authenticator, prov *producer.Provisioner, adminToken string, seams Seams) *Server {
-	return &Server{pool: pool, auth: authz, prov: prov, adminToken: adminToken, seams: seams}
+func NewServer(pool *pgxpool.Pool, authz *auth.Authenticator, prov *producer.Provisioner, adminToken, webhookToken string, seams Seams) *Server {
+	return &Server{pool: pool, auth: authz, prov: prov, adminToken: adminToken, webhookToken: webhookToken, seams: seams}
 }
 
 // Handler devolve o mux da superfície /api/v1, embrulhado no log de acesso.
@@ -82,6 +83,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/seats/{id}/block", s.requireOwner(s.blockSeat))
 	mux.HandleFunc("POST /api/v1/lots/{id}/prices", s.requireOwner(s.setSectorPrice))
 	mux.HandleFunc("GET /api/v1/lots/{id}/prices", s.authed(s.listSectorPrices))
+	// Checkout (Etapa 1.4): compra é PÚBLICA (comprador sem conta); webhook é global.
+	mux.HandleFunc("POST /api/v1/public/checkout", s.publicCheckout)
+	mux.HandleFunc("POST /api/v1/webhooks/asaas", s.asaasWebhook)
+	// Lista de convidados / cortesias — do owner.
+	mux.HandleFunc("POST /api/v1/events/{id}/guests", s.requireOwner(s.createGuest))
+	mux.HandleFunc("GET /api/v1/events/{id}/guests", s.authed(s.listGuests))
 	return accessLog(mux)
 }
 
