@@ -2,6 +2,7 @@ package chain
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -25,6 +26,7 @@ func EnqueueMint(ctx context.Context, tx pgx.Tx, ticketID uuid.UUID) error {
 
 type job struct {
 	id, ticketID   uuid.UUID
+	kind           string
 	eventID, lotID uuid.UUID
 	seatID         *uuid.UUID
 	attempts, max  int
@@ -49,17 +51,58 @@ func ProcessTenant(ctx context.Context, pool *pgxpool.Pool, driver ChainDriver, 
 	if err != nil {
 		return 0, err
 	}
-	minted := 0
+	done := 0
 	for _, j := range jobs {
+		if j.kind == "transfer" {
+			ok, err := processTransfer(ctx, pool, driver, tenantID, j)
+			if err != nil {
+				return done, err
+			}
+			if ok {
+				done++
+			}
+			continue
+		}
 		res, mErr := driver.Mint(ctx, MintRequest{TokenID: j.tokenID(), ToAddress: deref(j.ownerAddr), Amount: 1})
 		if err := finish(ctx, pool, tenantID, j, res, mErr); err != nil {
-			return minted, err
+			return done, err
 		}
 		if mErr == nil {
-			minted++
+			done++
 		}
 	}
-	return minted, nil
+	return done, nil
+}
+
+// processTransfer executa a transferência on-chain do último transfer pendente do
+// ingresso e confirma a linha em transfers. from/to vêm do próprio transfer.
+func processTransfer(ctx context.Context, pool *pgxpool.Pool, driver ChainDriver, tenantID uuid.UUID, j job) (bool, error) {
+	var transferID uuid.UUID
+	var fromAddr, toAddr *string
+	var price int64
+	err := readTenant(ctx, pool, tenantID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `
+			SELECT tr.id, fw.address, tw.address, tr.price_cents
+			  FROM transfers tr
+			  LEFT JOIN public.wallets fw ON fw.id = tr.from_wallet_id
+			  LEFT JOIN public.wallets tw ON tw.id = tr.to_wallet_id
+			 WHERE tr.ticket_id = $1 AND tr.status = 'pending'
+			 ORDER BY tr.created_at DESC LIMIT 1`, j.ticketID).Scan(&transferID, &fromAddr, &toAddr, &price)
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Nada pendente: encerra o job sem ação.
+		return false, markJobDone(ctx, pool, tenantID, j.id)
+	}
+	if err != nil {
+		return false, err
+	}
+	res, mErr := driver.Transfer(ctx, TransferRequest{
+		TokenID: j.tokenID(), FromAddress: deref(fromAddr), ToAddress: deref(toAddr), PriceCents: price,
+	})
+	if mErr != nil {
+		return false, backoffJob(ctx, pool, tenantID, j, mErr)
+	}
+	return true, finishTransfer(ctx, pool, tenantID, j.id, transferID, res.TxHash)
 }
 
 func claim(ctx context.Context, pool *pgxpool.Pool, tenantID uuid.UUID, limit int) ([]job, error) {
@@ -72,12 +115,12 @@ func claim(ctx context.Context, pool *pgxpool.Pool, tenantID uuid.UUID, limit in
 		return nil, err
 	}
 	rows, err := tx.Query(ctx, `
-		SELECT j.id, j.ticket_id, j.attempts, j.max_attempts,
+		SELECT j.id, j.ticket_id, j.kind, j.attempts, j.max_attempts,
 		       t.event_id, t.lot_id, t.seat_id, w.address
 		  FROM chain_jobs j
 		  JOIN tickets t ON t.id = j.ticket_id
 		  LEFT JOIN public.wallets w ON w.id = t.owner_wallet_id
-		 WHERE j.kind='mint' AND j.status='pending' AND j.next_attempt_at <= now()
+		 WHERE j.kind IN ('mint','transfer') AND j.status='pending' AND j.next_attempt_at <= now()
 		 ORDER BY j.next_attempt_at
 		 FOR UPDATE OF j SKIP LOCKED
 		 LIMIT $1`, limit)
@@ -87,7 +130,7 @@ func claim(ctx context.Context, pool *pgxpool.Pool, tenantID uuid.UUID, limit in
 	var jobs []job
 	for rows.Next() {
 		var j job
-		if err := rows.Scan(&j.id, &j.ticketID, &j.attempts, &j.max, &j.eventID, &j.lotID, &j.seatID, &j.ownerAddr); err != nil {
+		if err := rows.Scan(&j.id, &j.ticketID, &j.kind, &j.attempts, &j.max, &j.eventID, &j.lotID, &j.seatID, &j.ownerAddr); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -148,6 +191,64 @@ func finish(ctx context.Context, pool *pgxpool.Pool, tenantID uuid.UUID, j job, 
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// readTenant roda fn numa tx read-only escopada ao tenant.
+func readTenant(ctx context.Context, pool *pgxpool.Pool, tenantID uuid.UUID, fn func(pgx.Tx) error) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := tenancy.WithTenant(ctx, tx, tenantID); err != nil {
+		return err
+	}
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func markJobDone(ctx context.Context, pool *pgxpool.Pool, tenantID, jobID uuid.UUID) error {
+	return readTenant(ctx, pool, tenantID, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE chain_jobs SET status='done', updated_at=now() WHERE id=$1`, jobID)
+		return err
+	})
+}
+
+// backoffJob registra a falha de um job (attempts++, failed ou pending+backoff), sem
+// tocar no ingresso (usado pela transferência).
+func backoffJob(ctx context.Context, pool *pgxpool.Pool, tenantID uuid.UUID, j job, mErr error) error {
+	return readTenant(ctx, pool, tenantID, func(tx pgx.Tx) error {
+		attempts := j.attempts + 1
+		if attempts >= j.max {
+			_, err := tx.Exec(ctx, `UPDATE chain_jobs SET status='failed', attempts=$2, last_error=$3, updated_at=now() WHERE id=$1`, j.id, attempts, mErr.Error())
+			return err
+		}
+		_, err := tx.Exec(ctx, `
+			UPDATE chain_jobs SET status='pending', attempts=$2, last_error=$3,
+			       next_attempt_at = now() + ($2::int * interval '15 seconds'), updated_at=now()
+			 WHERE id=$1`, j.id, attempts, mErr.Error())
+		return err
+	})
+}
+
+// finishTransfer confirma a transferência on-chain e encerra o job.
+func finishTransfer(ctx context.Context, pool *pgxpool.Pool, tenantID, jobID, transferID uuid.UUID, txHash string) error {
+	return readTenant(ctx, pool, tenantID, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `UPDATE transfers SET status='confirmed', tx_hash=$2 WHERE id=$1`, transferID, nilStr(txHash)); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `UPDATE chain_jobs SET status='done', attempts=attempts+1, updated_at=now() WHERE id=$1`, jobID)
+		return err
+	})
+}
+
+func nilStr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 func deref(s *string) string {
