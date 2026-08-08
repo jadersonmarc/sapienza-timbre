@@ -20,6 +20,12 @@ type Emitter struct {
 	Chain  chain.ChainDriver
 }
 
+// EmitTickets assina + entrega + enfileira o mint de um conjunto de ingressos. Exposto
+// para outros fluxos de emissão (passe de temporada, cortesias) reusarem.
+func (e Emitter) EmitTickets(ctx context.Context, tx pgx.Tx, ticketIDs []uuid.UUID, deliverTo string) error {
+	return e.emit(ctx, tx, ticketIDs, deliverTo)
+}
+
 // emit assina cada ingresso e, havendo destinatário, entrega o token do QR. A entrega
 // é só para o comprador (o QR é a credencial de entrada — nunca exposto por id público).
 func (e Emitter) emit(ctx context.Context, tx pgx.Tx, ticketIDs []uuid.UUID, deliverTo string) error {
