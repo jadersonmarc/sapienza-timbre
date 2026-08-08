@@ -55,6 +55,7 @@ make compose-up     # sobe Postgres próprio + binário
 - `internal/season` — passe de temporada: emite um ingresso por data, destacável/repassável (2.3).
 - `internal/panorama` — panorama de passeios: mapa/linha do tempo + retrospectiva anual (2.5).
 - `internal/trust` — descoberta e confiança: reviews (só quem entrou), reputação, descoberta (2.6).
+- `internal/promo` — divulgação: campanhas UTM/pixels, lista de espera + aviso na virada, perfil do público (2.8).
 - `internal/api` — API do produto: guard/withTenant + handlers de catálogo/inventário/checkout/portaria/painel/admin.
 - `internal/{chain,payment,wallet,notify}` — seams (interfaces + Noop/stub).
 
