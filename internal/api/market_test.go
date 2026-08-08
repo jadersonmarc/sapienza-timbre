@@ -15,7 +15,6 @@ func TestSecondaryMarketResale(t *testing.T) {
 	ts, pool, _ := setupCore(t, okChain{})
 	_, owner := createProducer(t, ts, "Casa Revenda", "owner@revenda.com", "senha1234")
 	pid := producerID(t, ts, owner)
-	setRetention(t, pool, pid, 10)
 	ctx := context.Background()
 	soldStandingTicket(t, ts, owner) // Pix: transferível já; face 5000
 	tid := firstTicket(t, ctx, pool, pid)
@@ -60,8 +59,8 @@ func TestSecondaryMarketResale(t *testing.T) {
 	if n := scanInt(t, ctx, pool, pid, `SELECT count(*) FROM royalty_entries WHERE amount_cents=400`); n != 1 {
 		t.Fatalf("esperava royalty de 400 (10%% de 4000), veio %d", n)
 	}
-	if n := scanInt(t, ctx, pool, pid, `SELECT count(*) FROM ledger_entries WHERE kind='taxa' AND amount_cents=400`); n != 1 {
-		t.Fatalf("esperava taxa de revenda 400, veio %d", n)
+	if n := scanInt(t, ctx, pool, pid, `SELECT count(*) FROM ledger_entries WHERE kind='taxa' AND amount_cents=540`); n != 1 {
+		t.Fatalf("esperava taxa de revenda 540 (13,5%% de 4000), veio %d", n)
 	}
 
 	// Procedência: cadeia de posse com o elo da revenda.

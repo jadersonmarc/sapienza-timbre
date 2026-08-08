@@ -15,7 +15,6 @@ func TestSeasonPassIssuesPerDate(t *testing.T) {
 	ts, pool := setup(t)
 	pidStr, owner := createProducer(t, ts, "Casa Temporada", "owner@temporada.com", "senha1234")
 	pid := producerID(t, ts, owner)
-	setRetention(t, pool, pid, 10)
 	ctx := context.Background()
 
 	eventID := createEvent(t, ts, owner, "Festival", "festas")
@@ -44,9 +43,9 @@ func TestSeasonPassIssuesPerDate(t *testing.T) {
 	if n := scanInt(t, ctx, pool, pid, `SELECT count(*) FROM tickets WHERE season_pass_id=$1 AND status='active'`, uuid.MustParse(passID)); n != 2 {
 		t.Fatalf("esperava 2 ingressos do passe, veio %d", n)
 	}
-	// Taxa do passe (10% de 8000).
-	if n := scanInt(t, ctx, pool, pid, `SELECT count(*) FROM ledger_entries WHERE kind='taxa' AND amount_cents=800`); n != 1 {
-		t.Fatalf("esperava taxa 800, veio %d", n)
+	// Taxa do passe (13,5% de 8000).
+	if n := scanInt(t, ctx, pool, pid, `SELECT count(*) FROM ledger_entries WHERE kind='taxa' AND amount_cents=1080`); n != 1 {
+		t.Fatalf("esperava taxa 1080, veio %d", n)
 	}
 
 	// Cada ingresso é destacável/transferível individualmente.

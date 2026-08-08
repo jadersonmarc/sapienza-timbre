@@ -167,9 +167,8 @@ func TestPayoutSettlement(t *testing.T) {
 	ts, pool := setup(t)
 	_, owner := createProducer(t, ts, "Casa Payout", "owner@payout.com", "senha1234")
 	pid := producerID(t, ts, owner)
-	setRetention(t, pool, pid, 10)
 	ctx := context.Background()
-	soldStandingTicket(t, ts, owner) // 5000, retenção 10% → repasse 4500
+	soldStandingTicket(t, ts, owner) // 5000; taxa 13,5% (675) → repasse 4325
 
 	// O repasse nasce disponível D+2 (futuro); antecipamos para o passado no teste.
 	inTenant(t, ctx, pool, pid, func(tx pgx.Tx) {
@@ -185,11 +184,11 @@ func TestPayoutSettlement(t *testing.T) {
 			t.Fatalf("settle: %v", e)
 		}
 	})
-	if amount != 4500 {
-		t.Fatalf("esperava payout 4500, veio %d", amount)
+	if amount != 4325 {
+		t.Fatalf("esperava payout 4325, veio %d", amount)
 	}
-	if n := scanInt(t, ctx, pool, pid, `SELECT count(*) FROM payouts WHERE amount_cents=4500 AND status='pending'`); n != 1 {
-		t.Fatalf("esperava 1 payout de 4500, veio %d", n)
+	if n := scanInt(t, ctx, pool, pid, `SELECT count(*) FROM payouts WHERE amount_cents=4325 AND status='pending'`); n != 1 {
+		t.Fatalf("esperava 1 payout de 4325, veio %d", n)
 	}
 	// Idempotente: já pago → nada novo.
 	inTenant(t, ctx, pool, pid, func(tx pgx.Tx) {

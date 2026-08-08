@@ -11,11 +11,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// setRetention define o percentual retido pela plataforma para o produtor (public).
-func setRetention(t *testing.T, pool *pgxpool.Pool, pid uuid.UUID, pct float64) {
+// setTier registra o nível do produtor via endpoint de admin (para os testes de apuração).
+func setTier(t *testing.T, ts *httptest.Server, pidStr, tier string) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(), `UPDATE producers SET retention_pct=$2 WHERE id=$1`, pid, pct); err != nil {
-		t.Fatalf("set retention: %v", err)
+	if code, _ := do(t, ts, "POST", "/api/v1/admin/producers/"+pidStr+"/tier",
+		map[string]string{"X-Admin-Token": adminToken}, map[string]any{"tier": tier}); code != http.StatusOK {
+		t.Fatalf("set tier %s: %d", tier, code)
 	}
 }
 
@@ -46,8 +47,8 @@ func TestCheckoutPixStandingCycle(t *testing.T) {
 	ts, pool := setup(t)
 	_, owner := createProducer(t, ts, "Casa Pix", "owner@pix.com", "senha1234")
 	pid := producerID(t, ts, owner)
-	setRetention(t, pool, pid, 10) // plataforma retém 10%
 	ctx := context.Background()
+	// Nível default = iniciante: taxa 15% menos rebate 10% da taxa → líquido 13,5%.
 
 	eventID := createEvent(t, ts, owner, "Show Pix", "shows")
 	_ = createLot(t, ts, owner, eventID, "Lote 1", 5000, 100, 0)
@@ -94,14 +95,14 @@ func TestCheckoutPixStandingCycle(t *testing.T) {
 	}
 
 	// Split registrado: taxa 10% (1000) e repasse 9000, tanto no razão quanto no payment.
-	if taxa := scanInt(t, ctx, pool, pid, `SELECT amount_cents FROM ledger_entries WHERE kind='taxa'`); taxa != 1000 {
-		t.Fatalf("esperava taxa 1000, veio %d", taxa)
+	if taxa := scanInt(t, ctx, pool, pid, `SELECT amount_cents FROM ledger_entries WHERE kind='taxa'`); taxa != 1350 {
+		t.Fatalf("esperava taxa 1350 (13,5%% de 10000), veio %d", taxa)
 	}
-	if repasse := scanInt(t, ctx, pool, pid, `SELECT amount_cents FROM ledger_entries WHERE kind='repasse'`); repasse != 9000 {
-		t.Fatalf("esperava repasse 9000, veio %d", repasse)
+	if repasse := scanInt(t, ctx, pool, pid, `SELECT amount_cents FROM ledger_entries WHERE kind='repasse'`); repasse != 8650 {
+		t.Fatalf("esperava repasse 8650, veio %d", repasse)
 	}
-	if pc := scanInt(t, ctx, pool, pid, `SELECT (split->>'platform_cents')::int FROM payments LIMIT 1`); pc != 1000 {
-		t.Fatalf("esperava split platform_cents 1000, veio %d", pc)
+	if pc := scanInt(t, ctx, pool, pid, `SELECT (split->>'platform_cents')::int FROM payments LIMIT 1`); pc != 1350 {
+		t.Fatalf("esperava split platform_cents 1350, veio %d", pc)
 	}
 
 	// Idempotência: reenviar o webhook não duplica ingressos.

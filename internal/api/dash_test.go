@@ -34,7 +34,6 @@ func TestDashboardReflectsSale(t *testing.T) {
 	ts, pool, signer := setupSigned(t)
 	_, owner := createProducer(t, ts, "Casa Painel", "owner@painel.com", "senha1234")
 	pid := producerID(t, ts, owner)
-	setRetention(t, pool, pid, 10)
 	ctx := context.Background()
 
 	eventID := createEvent(t, ts, owner, "Show Painel", "shows")
@@ -64,7 +63,7 @@ func TestDashboardReflectsSale(t *testing.T) {
 		t.Fatalf("curva do lote: esperava sold 2 / revenue 10000, veio %v", lot0)
 	}
 	fin, _ := body["finance"].(map[string]any)
-	if fin["gross_cents"].(float64) != 10000 || fin["taxa_cents"].(float64) != 1000 || fin["repasse_cents"].(float64) != 9000 {
+	if fin["gross_cents"].(float64) != 10000 || fin["taxa_cents"].(float64) != 1350 || fin["repasse_cents"].(float64) != 8650 {
 		t.Fatalf("financeiro: %v", fin)
 	}
 	chk, _ := body["checkin"].(map[string]any)
@@ -109,7 +108,6 @@ func TestAdminSummaryAndModeration(t *testing.T) {
 	ts, pool := setup(t)
 	pidStr, owner := createProducer(t, ts, "Casa Admin", "owner@admin.com", "senha1234")
 	pid := producerID(t, ts, owner)
-	setRetention(t, pool, pid, 10)
 
 	eventID := createEvent(t, ts, owner, "Show Admin", "shows")
 	_ = createLot(t, ts, owner, eventID, "Lote 1", 5000, 100, 0)
