@@ -19,6 +19,7 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/inventory"
 	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
 	"github.com/jadersonmarc/sapienza-timbre/internal/program"
+	"github.com/jadersonmarc/sapienza-timbre/internal/promo"
 )
 
 // Janela de contestação embutida em transferable_after: imediato em Pix, 60 dias em
@@ -53,7 +54,8 @@ type Request struct {
 	SeatIDs      []uuid.UUID `json:"seat_ids"`       // se houver mapa; len == quantity
 	HalfPriceQty int         `json:"half_price_qty"` // quantos são meia-entrada
 	CouponCode   string      `json:"coupon_code"`
-	Method       string      `json:"method"` // pix | credit_card
+	CampaignID   *uuid.UUID  `json:"campaign_id"` // atribuição de origem (UTM)
+	Method       string      `json:"method"`      // pix | credit_card
 	Installments int         `json:"installments"`
 	BuyerName    string      `json:"buyer_name"`
 	BuyerEmail   string      `json:"buyer_email"`
@@ -139,9 +141,9 @@ func StartCheckout(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, pr
 	// Ordem.
 	var orderID uuid.UUID
 	if err := tx.QueryRow(ctx, `
-		INSERT INTO orders (event_id, buyer_email, buyer_cpf, coupon_id, total_cents, status)
-		VALUES ($1,$2,$3,$4,$5,'pending') RETURNING id`,
-		req.EventID, nilIfEmpty(req.BuyerEmail), nilIfEmpty(req.BuyerCPF), couponID, total,
+		INSERT INTO orders (event_id, buyer_email, buyer_cpf, coupon_id, campaign_id, total_cents, status)
+		VALUES ($1,$2,$3,$4,$5,$6,'pending') RETURNING id`,
+		req.EventID, nilIfEmpty(req.BuyerEmail), nilIfEmpty(req.BuyerCPF), couponID, req.CampaignID, total,
 	).Scan(&orderID); err != nil {
 		return Result{}, fmt.Errorf("criar ordem: %w", err)
 	}
@@ -249,8 +251,15 @@ func ConfirmPayment(ctx context.Context, tx pgx.Tx, em Emitter, producerID uuid.
 			return nil, err
 		}
 	case errors.Is(holdErr, pgx.ErrNoRows): // pista: debita estoque e emite N ingressos
-		if _, err := catalog.SellFromLot(ctx, tx, lotID, quantity); err != nil {
+		lot, err := catalog.SellFromLot(ctx, tx, lotID, quantity)
+		if err != nil {
 			return nil, err
+		}
+		// Virada de lote (esgotou): avisa a lista de espera do evento.
+		if lot.Status == "sold_out" {
+			if _, err := promo.NotifyWaitlist(ctx, tx, em.Notify, eventID, "Novo lote disponível"); err != nil {
+				return nil, err
+			}
 		}
 		for range quantity {
 			var tid uuid.UUID
