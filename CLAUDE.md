@@ -52,6 +52,7 @@ make compose-up     # sobe Postgres próprio + binário
 - `internal/market` — mercado secundário: anúncio, compra pública, procedência, receita (2.2).
 - `internal/season` — passe de temporada: emite um ingresso por data, destacável/repassável (2.3).
 - `internal/panorama` — panorama de passeios: mapa/linha do tempo + retrospectiva anual (2.5).
+- `internal/trust` — descoberta e confiança: reviews (só quem entrou), reputação, descoberta (2.6).
 - `internal/api` — API do produto: guard/withTenant + handlers de catálogo/inventário/checkout/portaria/painel/admin.
 - `internal/{chain,payment,wallet,notify}` — seams (interfaces + Noop/stub).
 
