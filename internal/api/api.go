@@ -144,6 +144,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/admin/producers/{id}/origination", s.requireAdmin(s.adminSetOrigination))
 	mux.HandleFunc("GET /api/v1/dash/program", s.requirePermission("relatorios", s.dashProgram))
 	mux.HandleFunc("GET /api/v1/dash/origination", s.requirePermission("relatorios", s.dashOrigination))
+	// Divulgação e engajamento (Etapa 2.8): campanhas/audiência (owner/relatorios) e
+	// links/lista de espera/pixels (público).
+	mux.HandleFunc("POST /api/v1/events/{id}/campaigns", s.requireOwner(s.createCampaign))
+	mux.HandleFunc("GET /api/v1/events/{id}/campaigns", s.requirePermission("relatorios", s.listCampaigns))
+	mux.HandleFunc("GET /api/v1/dash/events/{id}/audience", s.requirePermission("relatorios", s.audienceProfile))
+	mux.HandleFunc("POST /api/v1/public/campaigns/{id}/click", s.campaignClick)
+	mux.HandleFunc("POST /api/v1/public/events/{id}/waitlist", s.joinWaitlist)
+	mux.HandleFunc("GET /api/v1/public/events/{id}/pixels", s.eventPixels)
 	return accessLog(mux)
 }
 
