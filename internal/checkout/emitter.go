@@ -7,17 +7,20 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/jadersonmarc/sapienza-timbre/internal/chain"
+	"github.com/jadersonmarc/sapienza-timbre/internal/nft"
 	"github.com/jadersonmarc/sapienza-timbre/internal/notify"
 	"github.com/jadersonmarc/sapienza-timbre/internal/ticketing"
 )
 
-// Emitter assina os ingressos emitidos (Ed25519), entrega o QR ao comprador e enfileira
-// a emissão on-chain. É injetado no confirm/cortesia para não acoplar o checkout à
-// chave privada nem à rede.
+// Emitter assina os ingressos emitidos (Ed25519), gera os metadados públicos ERC-1155,
+// entrega o QR ao comprador e enfileira a emissão on-chain. É injetado no confirm/
+// cortesia para não acoplar o checkout à chave privada nem à rede. ProducerID é usado
+// nos metadados públicos (resolução por ticket_id).
 type Emitter struct {
-	Signer *ticketing.Signer
-	Notify notify.Notifier
-	Chain  chain.ChainDriver
+	Signer     *ticketing.Signer
+	Notify     notify.Notifier
+	Chain      chain.ChainDriver
+	ProducerID uuid.UUID
 }
 
 // EmitTickets assina + entrega + enfileira o mint de um conjunto de ingressos. Exposto
@@ -34,6 +37,10 @@ func (e Emitter) emit(ctx context.Context, tx pgx.Tx, ticketIDs []uuid.UUID, del
 	}
 	for _, tid := range ticketIDs {
 		if err := ticketing.SignTicket(ctx, tx, e.Signer, tid); err != nil {
+			return err
+		}
+		// Metadados públicos ERC-1155 (sem dado pessoal).
+		if err := nft.GenerateMetadata(ctx, tx, e.ProducerID, tid); err != nil {
 			return err
 		}
 		// Enfileira o mint on-chain (em segundo plano) só se há rede de verdade.

@@ -12,6 +12,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/jadersonmarc/sapienza-timbre/internal/nft"
 )
 
 var (
@@ -21,6 +23,8 @@ var (
 	ErrNotTransferable = errors.New("transfer: ingresso ainda não é transferível")
 	// ErrPriceCap: preço acima do teto de revenda do evento.
 	ErrPriceCap = errors.New("transfer: preço acima do teto de revenda")
+	// ErrDisputed: ingresso em disputa — transferência bloqueada (a entrada não).
+	ErrDisputed = errors.New("transfer: ingresso em disputa")
 )
 
 // Result é o resultado de uma transferência.
@@ -53,6 +57,12 @@ func Execute(ctx context.Context, tx pgx.Tx, ticketID, toWalletID uuid.UUID, pri
 	}
 	if time.Now().Before(transferableAfter) {
 		return Result{}, ErrNotTransferable
+	}
+	// Disputa aberta bloqueia a transferência (mas nunca a entrada na portaria).
+	if disputed, err := nft.HasOpenDispute(ctx, tx, ticketID); err != nil {
+		return Result{}, err
+	} else if disputed {
+		return Result{}, ErrDisputed
 	}
 
 	// Teto e royalty do evento (espelho das constantes do contrato).
