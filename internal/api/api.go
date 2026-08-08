@@ -132,6 +132,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/admin/producers/{id}/approve", s.requireAdmin(s.adminSetProducerStatus("active")))
 	mux.HandleFunc("POST /api/v1/admin/producers/{id}/suspend", s.requireAdmin(s.adminSetProducerStatus("suspended")))
 	mux.HandleFunc("POST /api/v1/admin/producers/{pid}/events/{eid}/suspend", s.requireAdmin(s.adminSuspendEvent))
+	// Programa de produtores (Etapa 2.7): nível e originação (admin); nível/extrato (produtor).
+	mux.HandleFunc("POST /api/v1/admin/producers/{id}/tier", s.requireAdmin(s.adminSetTier))
+	mux.HandleFunc("POST /api/v1/admin/producers/{id}/origination", s.requireAdmin(s.adminSetOrigination))
+	mux.HandleFunc("GET /api/v1/dash/program", s.requirePermission("relatorios", s.dashProgram))
+	mux.HandleFunc("GET /api/v1/dash/origination", s.requirePermission("relatorios", s.dashOrigination))
 	return accessLog(mux)
 }
 
