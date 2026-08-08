@@ -42,6 +42,7 @@ make compose-up     # sobe Postgres próprio + binário
 - `internal/payment` — PaymentGateway: FakeGateway (default) e AsaasGateway (HTTP, split).
 - `internal/checkout` — compra: StartCheckout + webhook idempotente + split + ledger + cortesias + estorno (1.4/1.5).
 - `internal/ticketing` — assinatura Ed25519 dos ingressos + verificador offline (só chave pública) (1.5).
+- `internal/nft` — gestão-NFT: metadados ERC-1155 (sem dado pessoal), estado, export, disputa, reemissão (1.9).
 - `internal/gate` — portaria: valida QR offline, check-in + presença, reconciliação do sync (1.6/2.4).
 - `internal/gateweb` — PWA da portaria (assets embutidos, servida em /gate) (1.6).
 - `internal/dash` — agregações dos painéis (produtor + plataforma) (1.7).
