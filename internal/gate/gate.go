@@ -148,11 +148,15 @@ func Checkin(ctx context.Context, tx pgx.Tx, v *ticketing.Verifier, producerID u
 				subject = &sid
 			}
 		}
+		// Snapshot do evento (título/geo) para o panorama montar mapa e linha do tempo.
+		var evTitle *string
+		var lat, lng *float64
+		_ = tx.QueryRow(ctx, `SELECT title, lat, lng FROM events WHERE id=$1`, payload.EventID).Scan(&evTitle, &lat, &lng)
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO public.attendance_records (subject_id, producer_id, event_id, ticket_id, checkin_id, gate, occurred_at)
-			VALUES ($1,$2,$3,$4,$5,$6, now())
+			INSERT INTO public.attendance_records (subject_id, producer_id, event_id, ticket_id, checkin_id, gate, occurred_at, event_title, venue_lat, venue_lng)
+			VALUES ($1,$2,$3,$4,$5,$6, now(), $7,$8,$9)
 			ON CONFLICT (ticket_id) WHERE ticket_id IS NOT NULL DO NOTHING`,
-			subject, producerID, payload.EventID, payload.TicketID, checkinID, nilStr(in.Gate)); err != nil {
+			subject, producerID, payload.EventID, payload.TicketID, checkinID, nilStr(in.Gate), evTitle, lat, lng); err != nil {
 			return Result{}, err
 		}
 	}
