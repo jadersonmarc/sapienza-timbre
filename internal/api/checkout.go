@@ -88,7 +88,7 @@ func (s *Server) asaasWebhook(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	em := s.emitter()
+	em := s.emitter(producerID)
 	chainOn := s.seams.Chain.Enabled()
 	if err := s.withTenant(r.Context(), producerID, func(tx pgx.Tx) error {
 		switch {
@@ -175,7 +175,7 @@ func (s *Server) createGuest(w http.ResponseWriter, r *http.Request, claims *aut
 		return
 	}
 	var ticketID uuid.UUID
-	em := s.emitter()
+	em := s.emitter(claims.ProducerID)
 	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
 		var e error
 		ticketID, e = checkout.IssueCourtesy(r.Context(), tx, em, eventID, lotID, seatID, body.Name, body.CPF)

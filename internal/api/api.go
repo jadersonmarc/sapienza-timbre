@@ -58,10 +58,10 @@ func NewServer(pool *pgxpool.Pool, authz *auth.Authenticator, prov *producer.Pro
 	return &Server{pool: pool, auth: authz, prov: prov, signer: signer, adminToken: adminToken, webhookToken: webhookToken, seams: seams}
 }
 
-// emitter monta o emissor (assinatura + entrega + fila on-chain) a partir das
-// dependências do server.
-func (s *Server) emitter() checkout.Emitter {
-	return checkout.Emitter{Signer: s.signer, Notify: s.seams.Notify, Chain: s.seams.Chain}
+// emitter monta o emissor (assinatura + metadados + entrega + fila on-chain) para um
+// produtor.
+func (s *Server) emitter(producerID uuid.UUID) checkout.Emitter {
+	return checkout.Emitter{Signer: s.signer, Notify: s.seams.Notify, Chain: s.seams.Chain, ProducerID: producerID}
 }
 
 // Handler devolve o mux da superfície /api/v1, embrulhado no log de acesso.
@@ -124,6 +124,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/public/subjects/{id}/panorama", s.subjectPanorama)
 	// Descoberta e confiança (Etapa 2.6): avaliação restrita a quem fez check-in,
 	// reputação verificável e descoberta por presença real. Tudo público.
+	// Gestão do ingresso como NFT (Etapa 1.9): metadados/estado públicos; export/disputa/
+	// reemissão pelo owner (autonomia do participante vem com a identidade).
+	mux.HandleFunc("GET /api/v1/public/tokens/{id}/metadata", s.tokenMetadata)
+	mux.HandleFunc("GET /api/v1/public/tokens/{id}", s.tokenView)
+	mux.HandleFunc("POST /api/v1/tickets/{id}/export", s.requireOwner(s.exportTicket))
+	mux.HandleFunc("POST /api/v1/tickets/{id}/dispute", s.requireOwner(s.disputeTicket))
+	mux.HandleFunc("POST /api/v1/tickets/{id}/reissue", s.requireOwner(s.reissueTicket))
 	mux.HandleFunc("POST /api/v1/public/checkins/{id}/review", s.submitReview)
 	mux.HandleFunc("GET /api/v1/public/producers/{id}/reputation", s.producerReputation)
 	mux.HandleFunc("GET /api/v1/public/subjects/{id}/discovery", s.subjectDiscovery)

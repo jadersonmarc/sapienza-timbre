@@ -46,7 +46,7 @@ func (s *Server) transferTicket(w http.ResponseWriter, r *http.Request, claims *
 		writeJSON(w, http.StatusCreated, res)
 	case errors.Is(err, transfer.ErrPriceCap):
 		writeErr(w, http.StatusBadRequest, "preço acima do teto de revenda")
-	case errors.Is(err, transfer.ErrNotActive), errors.Is(err, transfer.ErrNotTransferable):
+	case errors.Is(err, transfer.ErrNotActive), errors.Is(err, transfer.ErrNotTransferable), errors.Is(err, transfer.ErrDisputed):
 		writeErr(w, http.StatusConflict, err.Error())
 	default:
 		writeErr(w, http.StatusInternalServerError, err.Error())
