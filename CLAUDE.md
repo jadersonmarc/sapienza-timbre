@@ -51,6 +51,7 @@ make compose-up     # sobe Postgres próprio + binário
 - `internal/transfer` — transferência restrita: teto de revenda + royalty + reatribuição de dono (2.1).
 - `internal/market` — mercado secundário: anúncio, compra pública, procedência, receita (2.2).
 - `internal/season` — passe de temporada: emite um ingresso por data, destacável/repassável (2.3).
+- `internal/panorama` — panorama de passeios: mapa/linha do tempo + retrospectiva anual (2.5).
 - `internal/api` — API do produto: guard/withTenant + handlers de catálogo/inventário/checkout/portaria/painel/admin.
 - `internal/{chain,payment,wallet,notify}` — seams (interfaces + Noop/stub).
 
