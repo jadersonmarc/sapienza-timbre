@@ -110,6 +110,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/dash/payouts", s.requirePermission("relatorios", s.dashPayouts))
 	// Transferência restrita (Etapa 2.1) — por ora operada pelo owner.
 	mux.HandleFunc("POST /api/v1/tickets/{id}/transfer", s.requireOwner(s.transferTicket))
+	// Mercado secundário (Etapa 2.2): anúncio/cancelamento e procedência (owner);
+	// compra é PÚBLICA (comprador sem conta).
+	mux.HandleFunc("POST /api/v1/tickets/{id}/listings", s.requireOwner(s.createListing))
+	mux.HandleFunc("GET /api/v1/tickets/{id}/provenance", s.requirePermission("relatorios", s.provenance))
+	mux.HandleFunc("POST /api/v1/listings/{id}/cancel", s.requireOwner(s.cancelListing))
+	mux.HandleFunc("POST /api/v1/public/listings/{id}/buy", s.buyListing)
 	// Painel administrativo (plataforma) — X-Admin-Token.
 	mux.HandleFunc("GET /api/v1/admin/summary", s.requireAdmin(s.adminSummary))
 	mux.HandleFunc("POST /api/v1/admin/producers/{id}/approve", s.requireAdmin(s.adminSetProducerStatus("active")))

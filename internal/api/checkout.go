@@ -12,6 +12,7 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/auth"
 	"github.com/jadersonmarc/sapienza-timbre/internal/checkout"
 	"github.com/jadersonmarc/sapienza-timbre/internal/inventory"
+	"github.com/jadersonmarc/sapienza-timbre/internal/market"
 	"github.com/jadersonmarc/sapienza-timbre/internal/store"
 )
 
@@ -77,7 +78,7 @@ func (s *Server) asaasWebhook(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
-	producerID, err := s.producerOfPayment(r.Context(), evt.AsaasRef)
+	producerID, kind, err := s.producerOfPayment(r.Context(), evt.AsaasRef)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true}) // ref desconhecida: ack
 		return
@@ -87,12 +88,17 @@ func (s *Server) asaasWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	em := s.emitter()
+	chainOn := s.seams.Chain.Enabled()
 	if err := s.withTenant(r.Context(), producerID, func(tx pgx.Tx) error {
-		if evt.Refunded {
+		switch {
+		case evt.Refunded:
 			return checkout.RefundPayment(r.Context(), tx, evt.AsaasRef)
+		case kind == "resale":
+			return market.ConfirmResale(r.Context(), tx, producerID, evt.AsaasRef, chainOn)
+		default:
+			_, e := checkout.ConfirmPayment(r.Context(), tx, em, evt.AsaasRef)
+			return e
 		}
-		_, e := checkout.ConfirmPayment(r.Context(), tx, em, evt.AsaasRef)
-		return e
 	}); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -106,10 +112,11 @@ func (s *Server) producerOfEvent(ctx context.Context, eventID uuid.UUID) (uuid.U
 	return pid, err
 }
 
-func (s *Server) producerOfPayment(ctx context.Context, asaasRef string) (uuid.UUID, error) {
+func (s *Server) producerOfPayment(ctx context.Context, asaasRef string) (uuid.UUID, string, error) {
 	var pid uuid.UUID
-	err := s.pool.QueryRow(ctx, `SELECT producer_id FROM public.payment_index WHERE asaas_ref = $1`, asaasRef).Scan(&pid)
-	return pid, err
+	var kind string
+	err := s.pool.QueryRow(ctx, `SELECT producer_id, kind FROM public.payment_index WHERE asaas_ref = $1`, asaasRef).Scan(&pid, &kind)
+	return pid, kind, err
 }
 
 // writeCheckoutErr mapeia os erros de domínio do checkout para status HTTP.
