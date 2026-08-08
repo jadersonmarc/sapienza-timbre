@@ -49,6 +49,7 @@ make compose-up     # sobe Postgres próprio + binário
 - `internal/chain` — emissão/transferência on-chain assíncrona: interface + Noop/Base + fila chain_jobs/worker (1.8/2.1).
 - `internal/ledger` — fechamento de repasse em payouts (D+2, retenção, estorno) (1.8).
 - `internal/transfer` — transferência restrita: teto de revenda + royalty + reatribuição de dono (2.1).
+- `internal/market` — mercado secundário: anúncio, compra pública, procedência, receita (2.2).
 - `internal/api` — API do produto: guard/withTenant + handlers de catálogo/inventário/checkout/portaria/painel/admin.
 - `internal/{chain,payment,wallet,notify}` — seams (interfaces + Noop/stub).
 
