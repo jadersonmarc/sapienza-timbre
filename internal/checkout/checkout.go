@@ -18,6 +18,7 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/catalog"
 	"github.com/jadersonmarc/sapienza-timbre/internal/inventory"
 	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
+	"github.com/jadersonmarc/sapienza-timbre/internal/program"
 )
 
 // Janela de contestação embutida em transferable_after: imediato em Pix, 60 dias em
@@ -123,8 +124,16 @@ func StartCheckout(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, pr
 		return Result{}, ErrInsufficientStock
 	}
 
-	// Split (taxa de conveniência retida pela plataforma vs. repasse ao produtor).
-	split := computeSplit(total, prod)
+	// Apuração (taxa 15% + rebate do nível na data da venda) → split producer vs. plataforma.
+	ap, err := program.Apurar(ctx, tx, prod.ID, total, time.Now())
+	if err != nil {
+		return Result{}, err
+	}
+	wallet := ""
+	if prod.AsaasWalletID != nil {
+		wallet = *prod.AsaasWalletID
+	}
+	split := splitInfo{ProducerCents: total - ap.PlatformNetCents, PlatformCents: ap.PlatformNetCents, ProducerWallet: wallet}
 	splitJSON, _ := json.Marshal(split)
 
 	// Ordem.
@@ -193,15 +202,14 @@ func StartCheckout(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, pr
 // ConfirmPayment confirma um pagamento (idempotente): emite ingressos, marca ordem
 // paga e escreve o razão. Chamado pelo webhook após resolver o tenant. Devolve os
 // ingressos emitidos (vazio se já estava confirmado).
-func ConfirmPayment(ctx context.Context, tx pgx.Tx, em Emitter, asaasRef string) ([]uuid.UUID, error) {
+func ConfirmPayment(ctx context.Context, tx pgx.Tx, em Emitter, producerID uuid.UUID, asaasRef string) ([]uuid.UUID, error) {
 	var paymentID, orderID uuid.UUID
 	var method, status string
 	var amount int64
-	var splitRaw []byte
 	err := tx.QueryRow(ctx, `
-		SELECT id, order_id, method, status, amount_cents, split
+		SELECT id, order_id, method, status, amount_cents
 		  FROM payments WHERE asaas_ref = $1 FOR UPDATE`, asaasRef).
-		Scan(&paymentID, &orderID, &method, &status, &amount, &splitRaw)
+		Scan(&paymentID, &orderID, &method, &status, &amount)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil // pagamento desconhecido: ignora (webhook de outro sistema)
 	}
@@ -283,9 +291,9 @@ func ConfirmPayment(ctx context.Context, tx pgx.Tx, em Emitter, asaasRef string)
 		return nil, err
 	}
 
-	// Razão: taxa (plataforma), repasse (produtor, D+2 após o evento) e, no cartão,
-	// retenção de 5% por 60 dias como reserva de contestação.
-	if err := writeLedger(ctx, tx, eventID, orderID, paymentID, method, splitRaw); err != nil {
+	// Apuração e razão: taxa (15% − rebate do nível), repasse (D+2) e retenção 5%/60d no
+	// cartão, pelo nível vigente na data da venda; e a participação do originador.
+	if err := program.SettleLedger(ctx, tx, producerID, orderID, paymentID); err != nil {
 		return nil, err
 	}
 	return tickets, nil

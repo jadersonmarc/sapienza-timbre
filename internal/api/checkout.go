@@ -99,7 +99,7 @@ func (s *Server) asaasWebhook(w http.ResponseWriter, r *http.Request) {
 		case kind == "season":
 			return season.ConfirmPass(r.Context(), tx, em, producerID, evt.AsaasRef)
 		default:
-			_, e := checkout.ConfirmPayment(r.Context(), tx, em, evt.AsaasRef)
+			_, e := checkout.ConfirmPayment(r.Context(), tx, em, producerID, evt.AsaasRef)
 			return e
 		}
 	}); err != nil {

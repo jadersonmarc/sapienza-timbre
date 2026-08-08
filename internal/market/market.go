@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
+	"github.com/jadersonmarc/sapienza-timbre/internal/program"
 	"github.com/jadersonmarc/sapienza-timbre/internal/transfer"
 )
 
@@ -199,13 +200,18 @@ func ConfirmResale(ctx context.Context, tx pgx.Tx, producerID uuid.UUID, asaasRe
 		if _, err := tx.Exec(ctx, `UPDATE public.listing_index SET status='sold' WHERE listing_id=$1`, listingID); err != nil {
 			return err
 		}
-		// Taxa da plataforma sobre a revenda (o royalty já foi apurado na transferência).
-		var retention float64
-		_ = tx.QueryRow(ctx, `SELECT retention_pct FROM public.producers WHERE id=$1`, producerID).Scan(&retention)
-		taxa := int64(math.Round(float64(price) * retention / 100))
+		// Taxa da plataforma sobre a revenda (15% − rebate do nível); o royalty já foi
+		// apurado na transferência. O repasse ao vendedor não é modelado nesta etapa.
+		ap, err := program.Apurar(ctx, tx, producerID, price, time.Now())
+		if err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO ledger_entries (event_id, order_id, payment_id, kind, amount_cents, available_at)
-			VALUES ($1,$2,$3,'taxa',$4, now())`, eventID, orderID, paymentID, taxa); err != nil {
+			VALUES ($1,$2,$3,'taxa',$4, now())`, eventID, orderID, paymentID, ap.PlatformNetCents); err != nil {
+			return err
+		}
+		if err := program.RecordOrigination(ctx, tx, producerID, eventID, orderID, ap.PlatformNetCents); err != nil {
 			return err
 		}
 	}

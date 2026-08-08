@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/jadersonmarc/sapienza-timbre/internal/checkout"
 	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
+	"github.com/jadersonmarc/sapienza-timbre/internal/program"
 )
 
 // ErrNoDates: passe sem datas não pode ser comprado.
@@ -128,10 +128,9 @@ func ConfirmPass(ctx context.Context, tx pgx.Tx, em checkout.Emitter, producerID
 	if status == "confirmed" {
 		return nil
 	}
-	var passID, eventID uuid.UUID
+	var passID uuid.UUID
 	var buyerEmail *string
-	var total int64
-	if err := tx.QueryRow(ctx, `SELECT season_pass_id, event_id, buyer_email, total_cents FROM orders WHERE id=$1`, orderID).Scan(&passID, &eventID, &buyerEmail, &total); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT season_pass_id, buyer_email FROM orders WHERE id=$1`, orderID).Scan(&passID, &buyerEmail); err != nil {
 		return err
 	}
 
@@ -179,14 +178,9 @@ func ConfirmPass(ctx context.Context, tx pgx.Tx, em checkout.Emitter, producerID
 		return err
 	}
 
-	// Financeiro do passe atribuído ao evento de referência da ordem.
-	var retention float64
-	_ = tx.QueryRow(ctx, `SELECT retention_pct FROM public.producers WHERE id=$1`, producerID).Scan(&retention)
-	taxa := int64(math.Round(float64(total) * retention / 100))
-	if _, err := tx.Exec(ctx, `INSERT INTO ledger_entries (event_id, order_id, payment_id, kind, amount_cents, available_at) VALUES ($1,$2,$3,'taxa',$4, now())`, eventID, orderID, paymentID, taxa); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `INSERT INTO ledger_entries (event_id, order_id, payment_id, kind, amount_cents, available_at) VALUES ($1,$2,$3,'repasse',$4, now() + interval '2 days')`, eventID, orderID, paymentID, total-taxa); err != nil {
+	// Apuração e razão do passe (taxa 15% − rebate do nível na data da venda, repasse,
+	// originação) — centralizado em program.SettleLedger.
+	if err := program.SettleLedger(ctx, tx, producerID, orderID, paymentID); err != nil {
 		return err
 	}
 

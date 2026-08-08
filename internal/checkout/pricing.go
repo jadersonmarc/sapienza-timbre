@@ -2,7 +2,6 @@ package checkout
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"math"
 	"time"
@@ -112,16 +111,6 @@ func applyCoupon(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, code string,
 	return &id, discount, nil
 }
 
-// computeSplit reparte o total entre plataforma (taxa de conveniência) e produtor.
-func computeSplit(total int64, prod Producer) splitInfo {
-	platform := min(int64(math.Round(float64(total)*prod.RetentionPct/100)), total)
-	wallet := ""
-	if prod.AsaasWalletID != nil {
-		wallet = *prod.AsaasWalletID
-	}
-	return splitInfo{ProducerCents: total - platform, PlatformCents: platform, ProducerWallet: wallet}
-}
-
 // insertOrderItems grava os itens: um por assento (com mapa) ou um agregado (pista).
 func insertOrderItems(ctx context.Context, tx pgx.Tx, orderID uuid.UUID, lot catalog.Lot, req Request, prices []int64) error {
 	if len(req.SeatIDs) == 0 {
@@ -136,47 +125,6 @@ func insertOrderItems(ctx context.Context, tx pgx.Tx, orderID uuid.UUID, lot cat
 			INSERT INTO order_items (order_id, lot_id, seat_id, quantity, unit_price_cents, half_price)
 			VALUES ($1,$2,$3,1,$4,$5)`,
 			orderID, lot.ID, seat, prices[i], i < req.HalfPriceQty); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// writeLedger escreve taxa (plataforma), repasse (produtor, D+2 após o evento) e, no
-// cartão, a retenção de 5% por 60 dias (reserva de contestação).
-func writeLedger(ctx context.Context, tx pgx.Tx, eventID, orderID, paymentID uuid.UUID, method string, splitRaw []byte) error {
-	var s splitInfo
-	if err := json.Unmarshal(splitRaw, &s); err != nil {
-		return err
-	}
-	var endsAt *time.Time
-	_ = tx.QueryRow(ctx, `SELECT ends_at FROM events WHERE id=$1`, eventID).Scan(&endsAt)
-	repasseAt := time.Now().Add(2 * 24 * time.Hour)
-	if endsAt != nil {
-		repasseAt = endsAt.Add(2 * 24 * time.Hour)
-	}
-
-	entries := []struct {
-		kind    string
-		amount  int64
-		availAt time.Time
-	}{
-		{"taxa", s.PlatformCents, time.Now()},
-		{"repasse", s.ProducerCents, repasseAt},
-	}
-	if method == "credit_card" {
-		total := s.PlatformCents + s.ProducerCents
-		entries = append(entries, struct {
-			kind    string
-			amount  int64
-			availAt time.Time
-		}{"retencao", int64(math.Round(float64(total) * 0.05)), time.Now().Add(60 * 24 * time.Hour)})
-	}
-	for _, e := range entries {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO ledger_entries (event_id, order_id, payment_id, kind, amount_cents, available_at)
-			VALUES ($1,$2,$3,$4,$5,$6)`,
-			eventID, orderID, paymentID, e.kind, e.amount, e.availAt); err != nil {
 			return err
 		}
 	}
