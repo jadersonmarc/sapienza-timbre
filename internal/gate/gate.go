@@ -60,7 +60,7 @@ func ValidateToken(v *ticketing.Verifier, token string) (ticketing.Payload, erro
 
 // Checkin valida o token, registra a entrada e devolve o veredito. Idempotente por
 // client_uid. Deve rodar sob tenancy.WithTenant.
-func Checkin(ctx context.Context, tx pgx.Tx, v *ticketing.Verifier, in Input) (Result, error) {
+func Checkin(ctx context.Context, tx pgx.Tx, v *ticketing.Verifier, producerID uuid.UUID, in Input) (Result, error) {
 	payload, err := ValidateToken(v, in.Token)
 	if err != nil {
 		return Result{Verdict: Invalid}, nil
@@ -69,8 +69,8 @@ func Checkin(ctx context.Context, tx pgx.Tx, v *ticketing.Verifier, in Input) (R
 
 	// Ingresso precisa existir e estar ativo (não queimado/cancelado).
 	var status string
-	var seatID *uuid.UUID
-	err = tx.QueryRow(ctx, `SELECT status, seat_id FROM tickets WHERE id=$1`, payload.TicketID).Scan(&status, &seatID)
+	var seatID, ownerSubject, ownerWallet *uuid.UUID
+	err = tx.QueryRow(ctx, `SELECT status, seat_id, owner_subject_id, owner_wallet_id FROM tickets WHERE id=$1`, payload.TicketID).Scan(&status, &seatID, &ownerSubject, &ownerWallet)
 	if errors.Is(err, pgx.ErrNoRows) {
 		res.Verdict = Unknown
 		return res, nil
@@ -112,10 +112,11 @@ func Checkin(ctx context.Context, tx pgx.Tx, v *ticketing.Verifier, in Input) (R
 	if err != nil {
 		return Result{}, err
 	}
-	_, insErr := sp.Exec(ctx, `
+	var checkinID uuid.UUID
+	insErr := sp.QueryRow(ctx, `
 		INSERT INTO checkins (ticket_id, gate, operator, is_reentry, device_id, client_uid, entered_at, synced_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7, now())`,
-		payload.TicketID, nilStr(in.Gate), nilStr(in.Operator), in.Reentry, nilStr(in.DeviceID), nilStr(in.ClientUID), enteredAt)
+		VALUES ($1,$2,$3,$4,$5,$6,$7, now()) RETURNING id`,
+		payload.TicketID, nilStr(in.Gate), nilStr(in.Operator), in.Reentry, nilStr(in.DeviceID), nilStr(in.ClientUID), enteredAt).Scan(&checkinID)
 	if insErr != nil {
 		_ = sp.Rollback(ctx)
 		var pgErr *pgconn.PgError
@@ -136,15 +137,34 @@ func Checkin(ctx context.Context, tx pgx.Tx, v *ticketing.Verifier, in Input) (R
 	if err := sp.Commit(ctx); err != nil {
 		return Result{}, err
 	}
+
+	// Registro de presença (intransferível, gratuito) na admissão primária. O vínculo é
+	// ao sujeito do público (do ingresso, ou via carteira). Idempotente por ingresso.
+	if !in.Reentry {
+		subject := ownerSubject
+		if subject == nil && ownerWallet != nil {
+			var sid uuid.UUID
+			if e := tx.QueryRow(ctx, `SELECT subject_id FROM public.wallets WHERE id=$1`, *ownerWallet).Scan(&sid); e == nil {
+				subject = &sid
+			}
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO public.attendance_records (subject_id, producer_id, event_id, ticket_id, checkin_id, gate, occurred_at)
+			VALUES ($1,$2,$3,$4,$5,$6, now())
+			ON CONFLICT (ticket_id) WHERE ticket_id IS NOT NULL DO NOTHING`,
+			subject, producerID, payload.EventID, payload.TicketID, checkinID, nilStr(in.Gate)); err != nil {
+			return Result{}, err
+		}
+	}
 	res.Verdict = verdictFor(in.Reentry)
 	return res, nil
 }
 
 // Sync reconcilia um lote de scans feitos offline. Ordem preservada nos resultados.
-func Sync(ctx context.Context, tx pgx.Tx, v *ticketing.Verifier, items []Input) ([]Result, error) {
+func Sync(ctx context.Context, tx pgx.Tx, v *ticketing.Verifier, producerID uuid.UUID, items []Input) ([]Result, error) {
 	out := make([]Result, 0, len(items))
 	for _, in := range items {
-		r, err := Checkin(ctx, tx, v, in)
+		r, err := Checkin(ctx, tx, v, producerID, in)
 		if err != nil {
 			return nil, err
 		}

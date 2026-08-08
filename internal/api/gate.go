@@ -73,7 +73,7 @@ func (s *Server) gateValidate(w http.ResponseWriter, r *http.Request, claims *au
 	var res gate.Result
 	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
 		var e error
-		res, e = gate.Checkin(r.Context(), tx, s.signer.Verifier(), gate.Input{
+		res, e = gate.Checkin(r.Context(), tx, s.signer.Verifier(), claims.ProducerID, gate.Input{
 			Token: body.Token, Gate: body.Gate, Operator: claims.Subject, Reentry: body.Reentry,
 		})
 		return e
@@ -121,7 +121,7 @@ func (s *Server) gateSync(w http.ResponseWriter, r *http.Request, claims *auth.C
 	var results []gate.Result
 	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
 		var e error
-		results, e = gate.Sync(r.Context(), tx, s.signer.Verifier(), items)
+		results, e = gate.Sync(r.Context(), tx, s.signer.Verifier(), claims.ProducerID, items)
 		return e
 	}); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
