@@ -116,6 +116,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/tickets/{id}/provenance", s.requirePermission("relatorios", s.provenance))
 	mux.HandleFunc("POST /api/v1/listings/{id}/cancel", s.requireOwner(s.cancelListing))
 	mux.HandleFunc("POST /api/v1/public/listings/{id}/buy", s.buyListing)
+	// Passe de temporada (Etapa 2.3): gestão do owner; compra pública.
+	mux.HandleFunc("POST /api/v1/season-passes", s.requireOwner(s.createPass))
+	mux.HandleFunc("POST /api/v1/season-passes/{id}/dates", s.requireOwner(s.addPassDate))
+	mux.HandleFunc("POST /api/v1/public/season-passes/{id}/buy", s.buyPass)
 	// Painel administrativo (plataforma) — X-Admin-Token.
 	mux.HandleFunc("GET /api/v1/admin/summary", s.requireAdmin(s.adminSummary))
 	mux.HandleFunc("POST /api/v1/admin/producers/{id}/approve", s.requireAdmin(s.adminSetProducerStatus("active")))

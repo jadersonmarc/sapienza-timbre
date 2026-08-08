@@ -13,6 +13,7 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/checkout"
 	"github.com/jadersonmarc/sapienza-timbre/internal/inventory"
 	"github.com/jadersonmarc/sapienza-timbre/internal/market"
+	"github.com/jadersonmarc/sapienza-timbre/internal/season"
 	"github.com/jadersonmarc/sapienza-timbre/internal/store"
 )
 
@@ -95,6 +96,8 @@ func (s *Server) asaasWebhook(w http.ResponseWriter, r *http.Request) {
 			return checkout.RefundPayment(r.Context(), tx, evt.AsaasRef)
 		case kind == "resale":
 			return market.ConfirmResale(r.Context(), tx, producerID, evt.AsaasRef, chainOn)
+		case kind == "season":
+			return season.ConfirmPass(r.Context(), tx, em, producerID, evt.AsaasRef)
 		default:
 			_, e := checkout.ConfirmPayment(r.Context(), tx, em, evt.AsaasRef)
 			return e
