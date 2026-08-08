@@ -122,6 +122,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/public/season-passes/{id}/buy", s.buyPass)
 	// Panorama de passeios (Etapa 2.5) — peça pública compartilhável do público.
 	mux.HandleFunc("GET /api/v1/public/subjects/{id}/panorama", s.subjectPanorama)
+	// Descoberta e confiança (Etapa 2.6): avaliação restrita a quem fez check-in,
+	// reputação verificável e descoberta por presença real. Tudo público.
+	mux.HandleFunc("POST /api/v1/public/checkins/{id}/review", s.submitReview)
+	mux.HandleFunc("GET /api/v1/public/producers/{id}/reputation", s.producerReputation)
+	mux.HandleFunc("GET /api/v1/public/subjects/{id}/discovery", s.subjectDiscovery)
 	// Painel administrativo (plataforma) — X-Admin-Token.
 	mux.HandleFunc("GET /api/v1/admin/summary", s.requireAdmin(s.adminSummary))
 	mux.HandleFunc("POST /api/v1/admin/producers/{id}/approve", s.requireAdmin(s.adminSetProducerStatus("active")))
