@@ -48,6 +48,7 @@ make compose-up     # sobe Postgres próprio + binário
 - `internal/dashweb` — painel do produtor em tempo real (assets embutidos, /dash) (1.7).
 - `internal/chain` — emissão/transferência on-chain assíncrona: interface + Noop/Base + fila chain_jobs/worker (1.8/2.1).
 - `internal/ledger` — fechamento de repasse em payouts (D+2, retenção, estorno) (1.8).
+- `internal/program` — programa de produtores: taxa 15% + nível (10/15/20) por data da venda, originação (2.7).
 - `internal/transfer` — transferência restrita: teto de revenda + royalty + reatribuição de dono (2.1).
 - `internal/market` — mercado secundário: anúncio, compra pública, procedência, receita (2.2).
 - `internal/season` — passe de temporada: emite um ingresso por data, destacável/repassável (2.3).
