@@ -152,6 +152,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/public/campaigns/{id}/click", s.campaignClick)
 	mux.HandleFunc("POST /api/v1/public/events/{id}/waitlist", s.joinWaitlist)
 	mux.HandleFunc("GET /api/v1/public/events/{id}/pixels", s.eventPixels)
+	// Audiência (Fase 3): segmentos/patrocinadores (admin/plataforma); consentimento do
+	// público (público). Guardrail: patrocinador nunca vê identidade.
+	mux.HandleFunc("POST /api/v1/admin/segments", s.requireAdmin(s.createSegment))
+	mux.HandleFunc("POST /api/v1/admin/segments/{id}/recompute", s.requireAdmin(s.recomputeSegment))
+	mux.HandleFunc("POST /api/v1/admin/sponsor-campaigns", s.requireAdmin(s.createSponsorCampaign))
+	mux.HandleFunc("POST /api/v1/admin/sponsor-campaigns/{id}/deliver", s.requireAdmin(s.deliverCampaign))
+	mux.HandleFunc("GET /api/v1/admin/sponsor-campaigns/{id}/metrics", s.requireAdmin(s.campaignMetrics))
+	mux.HandleFunc("POST /api/v1/public/subjects/{id}/consents", s.setConsent)
+	mux.HandleFunc("GET /api/v1/public/subjects/{id}/consents", s.listConsents)
 	return accessLog(mux)
 }
 
