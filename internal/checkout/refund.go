@@ -6,6 +6,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/jadersonmarc/sapienza-timbre/internal/catalog"
 )
 
 // RefundPayment processa uma contestação/estorno (idempotente): QUEIMA os ingressos
@@ -28,6 +30,38 @@ func RefundPayment(ctx context.Context, tx pgx.Tx, asaasRef string) error {
 	}
 	if status == "refunded" {
 		return nil // idempotente
+	}
+
+	// Devolve capacidade ao(s) lote(s) ANTES de mexer nos assentos (ordem lote→assento).
+	// Conta os ingressos ativos por lote e decrementa sold_count com piso em 0 (Correção
+	// 4.2): estorno/queima duplicados nunca levam o contador a negativo.
+	byLot, err := tx.Query(ctx, `
+		SELECT lot_id, count(*) FROM tickets
+		 WHERE order_id = $1 AND status = 'active' GROUP BY lot_id`, orderID)
+	if err != nil {
+		return err
+	}
+	type lotQty struct {
+		lot uuid.UUID
+		qty int
+	}
+	var refunds []lotQty
+	for byLot.Next() {
+		var lq lotQty
+		if err := byLot.Scan(&lq.lot, &lq.qty); err != nil {
+			byLot.Close()
+			return err
+		}
+		refunds = append(refunds, lq)
+	}
+	byLot.Close()
+	if err := byLot.Err(); err != nil {
+		return err
+	}
+	for _, lq := range refunds {
+		if err := catalog.RefundFromLot(ctx, tx, lq.lot, lq.qty); err != nil {
+			return err
+		}
 	}
 
 	// Libera os assentos dos ingressos ativos da ordem e queima os ingressos.

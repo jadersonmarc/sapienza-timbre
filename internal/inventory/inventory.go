@@ -23,6 +23,12 @@ import (
 // DefaultTTL é o tempo de vida padrão de um hold.
 const DefaultTTL = 10 * time.Minute
 
+// AbandonedOrderTTL é o prazo após o qual uma ordem 'pending' (paga nunca confirmada) é
+// tratada como abandonada e a reserva de LOTE (held_count) é devolvida. Constante
+// isolada — valor PROVISÓRIO: sem definição de negócio, adotado maior que DefaultTTL do
+// hold para não competir com uma compra em andamento. Reportar para calibrar.
+const AbandonedOrderTTL = 30 * time.Minute
+
 var (
 	// ErrSeatUnavailable: algum assento já está ocupado (hold vivo ou ingresso).
 	ErrSeatUnavailable = errors.New("inventory: um ou mais assentos indisponíveis")
@@ -233,6 +239,37 @@ func ExpireDue(ctx context.Context, tx pgx.Tx) (int64, error) {
 	if _, err := tx.Exec(ctx, `
 		UPDATE holds SET status = 'expired' WHERE status = 'held' AND expires_at <= now()`); err != nil {
 		return 0, fmt.Errorf("expirar holds: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+// ReleaseAbandonedLotHolds devolve a reserva de LOTE (held_count) de ordens 'pending'
+// além de AbandonedOrderTTL — a fuga de held quando o pagamento nunca confirma. Marca a
+// ordem como 'cancelled' para não liberar duas vezes. O held de assento já é expirado
+// por ExpireDue (por expires_at do seat_occupancy). Decremento com piso em 0. Devolve
+// quantas ordens cancelou.
+func ReleaseAbandonedLotHolds(ctx context.Context, tx pgx.Tx, ttl time.Duration) (int64, error) {
+	interval := fmt.Sprintf("%d seconds", int(ttl.Seconds()))
+	tag, err := tx.Exec(ctx, `
+		WITH stale AS (
+			SELECT id FROM orders
+			 WHERE status = 'pending' AND created_at <= now() - $1::interval
+			 FOR UPDATE SKIP LOCKED
+		),
+		agg AS (
+			SELECT oi.lot_id, SUM(oi.quantity)::int AS qty
+			  FROM order_items oi JOIN stale ON stale.id = oi.order_id
+			 GROUP BY oi.lot_id
+		),
+		rel AS (
+			UPDATE lots l SET held_count = GREATEST(l.held_count - agg.qty, 0), updated_at = now()
+			  FROM agg WHERE l.id = agg.lot_id
+			RETURNING 1
+		)
+		UPDATE orders o SET status = 'cancelled', updated_at = now()
+		  FROM stale WHERE o.id = stale.id`, interval)
+	if err != nil {
+		return 0, fmt.Errorf("liberar held de ordens abandonadas: %w", err)
 	}
 	return tag.RowsAffected(), nil
 }

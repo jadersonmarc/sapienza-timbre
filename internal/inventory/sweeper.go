@@ -71,5 +71,8 @@ func (s *Sweeper) sweepTenant(ctx context.Context, tenantID uuid.UUID) error {
 	if _, err := ExpireDue(ctx, tx); err != nil {
 		return err
 	}
+	if _, err := ReleaseAbandonedLotHolds(ctx, tx, AbandonedOrderTTL); err != nil {
+		return err
+	}
 	return tx.Commit(ctx)
 }

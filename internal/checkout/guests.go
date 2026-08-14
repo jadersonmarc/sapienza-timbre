@@ -21,7 +21,7 @@ func IssueCourtesy(ctx context.Context, tx pgx.Tx, em Emitter, eventID uuid.UUID
 	if lotID != nil {
 		lot = *lotID
 	} else if err := tx.QueryRow(ctx,
-		`SELECT id FROM lots WHERE event_id=$1 ORDER BY position LIMIT 1`, eventID).Scan(&lot); err != nil {
+		`SELECT id FROM lots WHERE event_id=$1 ORDER BY sort_order LIMIT 1`, eventID).Scan(&lot); err != nil {
 		return uuid.Nil, fmt.Errorf("evento sem lote para cortesia: %w", err)
 	}
 

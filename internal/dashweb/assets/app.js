@@ -53,7 +53,7 @@ async function refresh() {
   const tb = $('lots'); tb.innerHTML = '';
   for (const l of (d.sales || [])) {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${l.name}</td><td>${l.sold}/${l.stock}</td><td>${brl(l.revenue_cents)}</td>`;
+    tr.innerHTML = `<td>${l.name}</td><td>${l.sold_count}/${l.quantity}</td><td>${brl(l.revenue_cents)}</td>`;
     tb.appendChild(tr);
   }
 }

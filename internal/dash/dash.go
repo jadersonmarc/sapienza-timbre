@@ -13,28 +13,29 @@ import (
 	"github.com/jadersonmarc/sapienza-kit/tenancy"
 )
 
-// LotSales é a linha da curva de venda por lote.
+// LotSales é a linha da curva de venda por lote (modelo de contadores derivado).
 type LotSales struct {
 	LotID        uuid.UUID `json:"lot_id"`
 	Name         string    `json:"name"`
 	PriceCents   int64     `json:"price_cents"`
-	Stock        int       `json:"stock"`
-	Sold         int       `json:"sold"`
+	Quantity     int       `json:"quantity"`
+	SoldCount    int       `json:"sold_count"`
+	HeldCount    int       `json:"held_count"`
 	RevenueCents int64     `json:"revenue_cents"`
-	Status       string    `json:"status"`
 }
 
-// SalesByLot devolve, por lote, o vendido e a receita (de ordens pagas).
+// SalesByLot devolve, por lote, o vendido e a receita (de ordens pagas). O lote não tem
+// mais 'status': a vigência é derivada (ver catalog.CurrentLot).
 func SalesByLot(ctx context.Context, tx pgx.Tx, eventID uuid.UUID) ([]LotSales, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT l.id, l.name, l.price_cents, l.stock, l.sold, l.status,
+		SELECT l.id, l.name, l.price_cents, l.quantity, l.sold_count, l.held_count,
 		       COALESCE((
 		         SELECT SUM(oi.unit_price_cents * oi.quantity)
 		           FROM order_items oi JOIN orders o ON o.id = oi.order_id
 		          WHERE oi.lot_id = l.id AND o.status = 'paid'), 0)
 		  FROM lots l
 		 WHERE l.event_id = $1
-		 ORDER BY l.position, l.created_at`, eventID)
+		 ORDER BY l.sort_order, l.created_at`, eventID)
 	if err != nil {
 		return nil, err
 	}
@@ -42,7 +43,7 @@ func SalesByLot(ctx context.Context, tx pgx.Tx, eventID uuid.UUID) ([]LotSales, 
 	var out []LotSales
 	for rows.Next() {
 		var s LotSales
-		if err := rows.Scan(&s.LotID, &s.Name, &s.PriceCents, &s.Stock, &s.Sold, &s.Status, &s.RevenueCents); err != nil {
+		if err := rows.Scan(&s.LotID, &s.Name, &s.PriceCents, &s.Quantity, &s.SoldCount, &s.HeldCount, &s.RevenueCents); err != nil {
 			return nil, err
 		}
 		out = append(out, s)

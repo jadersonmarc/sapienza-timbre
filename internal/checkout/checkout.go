@@ -26,6 +26,12 @@ import (
 // cartão (o ingresso nasce intransferível e só destrava ao fim dela).
 const cardContestationWindow = 60 * 24 * time.Hour
 
+// maxLotResolveAttempts limita o retry de resolução do lote corrente quando o lote vira
+// (por esgotamento) entre resolver e reservar. Constante isolada — valor PROVISÓRIO
+// sugerido (Correção 2). O laço converge por "mesmo lote duas vezes" (esgotamento
+// genuíno) ou por este limite.
+const maxLotResolveAttempts = 3
+
 var (
 	// ErrLotUnavailable: lote inexistente ou não está à venda.
 	ErrLotUnavailable = errors.New("checkout: lote indisponível")
@@ -92,12 +98,15 @@ func StartCheckout(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, pr
 		return Result{}, ErrBadRequest
 	}
 
-	lot, err := catalog.GetLot(ctx, tx, req.LotID)
+	// TRAVA DE ORDEM (não negociar): sempre LOTE primeiro (ReserveFromLot = UPDATE lots,
+	// trava a linha do lote), ASSENTO depois (inventory.Hold trava seat_occupancy). Ordem
+	// invertida entre caminhos = deadlock sob concorrência. Vale para pista E seated.
+	//
+	// Resolve o lote VIGENTE e reserva nele (held_count), com retry na virada (Correção 2):
+	// o lote pode esgotar entre resolver e reservar; re-resolvemos e tentamos o próximo.
+	lot, err := reserveCurrentLot(ctx, tx, req.EventID, req.Quantity)
 	if err != nil {
-		return Result{}, ErrLotUnavailable
-	}
-	if lot.Status != "active" || lot.EventID != req.EventID {
-		return Result{}, ErrLotUnavailable
+		return Result{}, err
 	}
 
 	// Preço unitário por ingresso (assento usa sector_price_rules; pista usa o lote).
@@ -114,7 +123,9 @@ func StartCheckout(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, pr
 	}
 	total := max(subtotal-discount, 0)
 
-	// Reserva.
+	// Assento (seated): DEPOIS do lote (ordem lote→assento). Se o pagamento não confirmar,
+	// a tx inteira rola atrás e a reserva do lote volta junto; a varredura de abandono
+	// (inventory.Sweeper) cobre ordens que ficaram 'pending'.
 	var holdID *uuid.UUID
 	if seated {
 		id, err := inventory.Hold(ctx, tx, req.EventID, req.SeatIDs, inventory.DefaultTTL)
@@ -122,8 +133,6 @@ func StartCheckout(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, pr
 			return Result{}, err
 		}
 		holdID = &id
-	} else if lot.Sold+req.Quantity > lot.Stock {
-		return Result{}, ErrInsufficientStock
 	}
 
 	// Apuração (taxa 15% + rebate do nível na data da venda) → split producer vs. plataforma.
@@ -201,6 +210,39 @@ func StartCheckout(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, pr
 	}, nil
 }
 
+// reserveCurrentLot resolve o lote vigente do evento e reserva `qty` nele, tolerando a
+// virada que aconteça entre resolver e reservar (Correção 2). Só reserva o LOTE (trava a
+// linha via UPDATE) — o assento, se houver, é travado depois pelo chamador (ordem
+// lote→assento). ReserveFromLot falha por zero linhas (não por CHECK), então a tx segue
+// utilizável e o retry roda DENTRO dela. Converge quando re-resolver devolve o MESMO
+// lote (esgotamento genuíno para a quantidade pedida) ou pelo limite de tentativas.
+func reserveCurrentLot(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, qty int) (catalog.Lot, error) {
+	var lastID uuid.UUID
+	for attempt := 0; attempt < maxLotResolveAttempts; attempt++ {
+		lot, err := catalog.CurrentLot(ctx, tx, eventID)
+		if errors.Is(err, catalog.ErrNoCurrentLot) {
+			return catalog.Lot{}, ErrLotUnavailable
+		}
+		if err != nil {
+			return catalog.Lot{}, err
+		}
+		rErr := catalog.ReserveFromLot(ctx, tx, lot.ID, qty)
+		if rErr == nil {
+			return lot, nil
+		}
+		if !errors.Is(rErr, catalog.ErrInsufficientStock) {
+			return catalog.Lot{}, rErr
+		}
+		// Esgotou entre resolver e reservar. Mesmo lote duas vezes = esgotamento
+		// genuíno (não cabe a quantidade neste lote); lote diferente = virou, tenta o próximo.
+		if lot.ID == lastID {
+			return catalog.Lot{}, ErrInsufficientStock
+		}
+		lastID = lot.ID
+	}
+	return catalog.Lot{}, ErrInsufficientStock
+}
+
 // ConfirmPayment confirma um pagamento (idempotente): emite ingressos, marca ordem
 // paga e escreve o razão. Chamado pelo webhook após resolver o tenant. Devolve os
 // ingressos emitidos (vazio se já estava confirmado).
@@ -226,8 +268,14 @@ func ConfirmPayment(ctx context.Context, tx pgx.Tx, em Emitter, producerID uuid.
 	var eventID uuid.UUID
 	var couponID *uuid.UUID
 	var buyerEmail *string
-	if err := tx.QueryRow(ctx, `SELECT event_id, coupon_id, buyer_email FROM orders WHERE id=$1`, orderID).Scan(&eventID, &couponID, &buyerEmail); err != nil {
+	var orderStatus string
+	if err := tx.QueryRow(ctx, `SELECT event_id, coupon_id, buyer_email, status FROM orders WHERE id=$1`, orderID).Scan(&eventID, &couponID, &buyerEmail, &orderStatus); err != nil {
 		return nil, err
+	}
+	// Ordem já cancelada/estornada (ex.: varredura de abandono liberou a reserva antes do
+	// webhook chegar): não emite nem re-debita capacidade.
+	if orderStatus == "cancelled" || orderStatus == "refunded" {
+		return nil, nil
 	}
 	var lotID uuid.UUID
 	var quantity int
@@ -240,27 +288,29 @@ func ConfirmPayment(ctx context.Context, tx pgx.Tx, em Emitter, producerID uuid.
 		transferableAfter = transferableAfter.Add(cardContestationWindow)
 	}
 
+	// Confirma no LOTE primeiro (held→sold; trava a linha do lote), ANTES do assento —
+	// mantém a ordem lote→assento também na confirmação. Vale para pista E seated.
+	soldOut, err := catalog.ConfirmFromLot(ctx, tx, lotID, quantity)
+	if err != nil {
+		return nil, err
+	}
+	if soldOut {
+		if _, err := promo.NotifyWaitlist(ctx, tx, em.Notify, eventID, "Novo lote disponível"); err != nil {
+			return nil, err
+		}
+	}
+
 	// Emite os ingressos.
 	var tickets []uuid.UUID
 	var holdID uuid.UUID
 	holdErr := tx.QueryRow(ctx, `SELECT id FROM holds WHERE order_id=$1 AND status='held'`, orderID).Scan(&holdID)
 	switch {
-	case holdErr == nil: // com mapa: converte o hold em ingressos
+	case holdErr == nil: // com mapa: converte o hold (assento) em ingressos
 		tickets, err = inventory.Confirm(ctx, tx, holdID, orderID, lotID, transferableAfter)
 		if err != nil {
 			return nil, err
 		}
-	case errors.Is(holdErr, pgx.ErrNoRows): // pista: debita estoque e emite N ingressos
-		lot, err := catalog.SellFromLot(ctx, tx, lotID, quantity)
-		if err != nil {
-			return nil, err
-		}
-		// Virada de lote (esgotou): avisa a lista de espera do evento.
-		if lot.Status == "sold_out" {
-			if _, err := promo.NotifyWaitlist(ctx, tx, em.Notify, eventID, "Novo lote disponível"); err != nil {
-				return nil, err
-			}
-		}
+	case errors.Is(holdErr, pgx.ErrNoRows): // pista: emite N ingressos (capacidade já confirmada no lote)
 		for range quantity {
 			var tid uuid.UUID
 			if err := tx.QueryRow(ctx, `

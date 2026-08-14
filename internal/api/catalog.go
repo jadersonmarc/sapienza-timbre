@@ -1,6 +1,8 @@
 package api
 
 import (
+	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/google/uuid"
@@ -35,8 +37,8 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request, claims *aut
 		writeErr(w, http.StatusBadRequest, "corpo inválido")
 		return
 	}
-	if body.Title == "" || !catalog.ValidCategory(body.Category) {
-		writeErr(w, http.StatusBadRequest, "title e category (válida) obrigatórios")
+	if body.Title == "" || body.Category == "" {
+		writeErr(w, http.StatusBadRequest, "title e category obrigatórios")
 		return
 	}
 	starts, err := parseTimePtr(body.StartsAt)
@@ -60,6 +62,10 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request, claims *aut
 		})
 		return e
 	}); err != nil {
+		if errors.Is(err, catalog.ErrCategoryInvalid) {
+			writeErr(w, http.StatusBadRequest, "categoria inválida")
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -117,15 +123,111 @@ func (s *Server) publishEvent(w http.ResponseWriter, r *http.Request, claims *au
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+type patchEventReq struct {
+	Title              *string `json:"title"`
+	Description        *string `json:"description"`
+	Category           *string `json:"category"`
+	CoverURL           *string `json:"cover_url"`
+	StartsAt           *string `json:"starts_at"`
+	EndsAt             *string `json:"ends_at"`
+	Address            *string `json:"address"`
+	Capacity           *int    `json:"capacity"`
+	AgeRating          *string `json:"age_rating"`
+	CancellationPolicy *string `json:"cancellation_policy"`
+	Terms              *string `json:"terms"`
+}
+
+func (s *Server) patchEvent(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "id inválido")
+		return
+	}
+	var body patchEventReq
+	if err := decode(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, "corpo inválido")
+		return
+	}
+	starts, err := parseTimePtr(body.StartsAt)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "starts_at inválido (use RFC3339)")
+		return
+	}
+	ends, err := parseTimePtr(body.EndsAt)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "ends_at inválido (use RFC3339)")
+		return
+	}
+	var out catalog.Event
+	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
+		var e error
+		out, e = catalog.PatchEvent(r.Context(), tx, id, catalog.EventPatch{
+			Title: body.Title, Description: body.Description, Category: body.Category,
+			CoverURL: body.CoverURL, StartsAt: starts, EndsAt: ends, Address: body.Address,
+			Capacity: body.Capacity, AgeRating: body.AgeRating,
+			CancellationPolicy: body.CancellationPolicy, Terms: body.Terms,
+		})
+		return e
+	}); err != nil {
+		switch {
+		case errors.Is(err, catalog.ErrCategoryInvalid):
+			writeErr(w, http.StatusBadRequest, "categoria inválida")
+		case errors.Is(err, catalog.ErrInvalidTransition):
+			writeErr(w, http.StatusConflict, err.Error())
+		default:
+			writeErr(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// transitionEvent devolve um handler que aplica uma transição fixa de ciclo de vida
+// (submit-review, suspend, cancel). Publish tem rota própria (com validações).
+func (s *Server) transitionEvent(to string) authedHandler {
+	return func(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
+		id, err := uuid.Parse(r.PathValue("id"))
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "id inválido")
+			return
+		}
+		if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
+			return catalog.TransitionEvent(r.Context(), tx, id, to)
+		}); err != nil {
+			if errors.Is(err, catalog.ErrInvalidTransition) {
+				writeErr(w, http.StatusConflict, err.Error())
+				return
+			}
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": to})
+	}
+}
+
+// listCategories lista as categorias ativas do catálogo.
+func (s *Server) listCategories(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
+	var out []catalog.Category
+	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
+		var e error
+		out, e = catalog.ListCategories(r.Context(), tx)
+		return e
+	}); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"categories": out})
+}
+
 // ── lotes ────────────────────────────────────────────────────────────────────
 
 type createLotReq struct {
 	Name       string  `json:"name"`
 	PriceCents int64   `json:"price_cents"`
-	Stock      int     `json:"stock"`
+	Quantity   int     `json:"quantity"`
 	StartsAt   *string `json:"starts_at"`
 	EndsAt     *string `json:"ends_at"`
-	Position   int     `json:"position"`
+	SortOrder  int     `json:"sort_order"`
 }
 
 func (s *Server) createLot(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
@@ -139,8 +241,8 @@ func (s *Server) createLot(w http.ResponseWriter, r *http.Request, claims *auth.
 		writeErr(w, http.StatusBadRequest, "corpo inválido")
 		return
 	}
-	if body.Name == "" || body.PriceCents < 0 || body.Stock < 0 {
-		writeErr(w, http.StatusBadRequest, "name, price_cents e stock obrigatórios (>= 0)")
+	if body.Name == "" || body.PriceCents < 0 || body.Quantity < 0 {
+		writeErr(w, http.StatusBadRequest, "name, price_cents e quantity obrigatórios (>= 0)")
 		return
 	}
 	starts, err := parseTimePtr(body.StartsAt)
@@ -157,8 +259,8 @@ func (s *Server) createLot(w http.ResponseWriter, r *http.Request, claims *auth.
 	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
 		var e error
 		out, e = catalog.CreateLot(r.Context(), tx, catalog.Lot{
-			EventID: eventID, Name: body.Name, PriceCents: body.PriceCents, Stock: body.Stock,
-			StartsAt: starts, EndsAt: ends, Position: body.Position,
+			EventID: eventID, Name: body.Name, PriceCents: body.PriceCents, Quantity: body.Quantity,
+			StartsAt: starts, EndsAt: ends, SortOrder: body.SortOrder,
 		})
 		return e
 	}); err != nil {
@@ -184,6 +286,67 @@ func (s *Server) listLots(w http.ResponseWriter, r *http.Request, claims *auth.C
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"lots": out})
+}
+
+// currentLot resolve o lote vigente do evento (virada derivada por data/capacidade).
+func (s *Server) currentLot(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
+	eventID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "id inválido")
+		return
+	}
+	var lot catalog.Lot
+	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
+		var e error
+		lot, e = catalog.CurrentLot(r.Context(), tx, eventID)
+		return e
+	}); err != nil {
+		if errors.Is(err, catalog.ErrNoCurrentLot) {
+			writeErr(w, http.StatusNotFound, "nenhum lote vigente")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, lot)
+}
+
+// ── modelos de mapa (venue templates) ────────────────────────────────────────
+
+type venueTemplateReq struct {
+	Name   string          `json:"name"`
+	Layout json.RawMessage `json:"layout"`
+}
+
+func (s *Server) createVenueTemplate(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
+	var body venueTemplateReq
+	if err := decode(w, r, &body); err != nil || body.Name == "" {
+		writeErr(w, http.StatusBadRequest, "name obrigatório")
+		return
+	}
+	var out catalog.VenueTemplate
+	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
+		var e error
+		out, e = catalog.CreateVenueTemplate(r.Context(), tx, body.Name, body.Layout)
+		return e
+	}); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, out)
+}
+
+func (s *Server) listVenueTemplates(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
+	var out []catalog.VenueTemplate
+	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
+		var e error
+		out, e = catalog.ListVenueTemplates(r.Context(), tx)
+		return e
+	}); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"venue_templates": out})
 }
 
 // ── cupons ───────────────────────────────────────────────────────────────────

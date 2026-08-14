@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -10,6 +11,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
+
+// ErrStandingHasNoSeats: não se gera assento em setor 'standing' (pista).
+var ErrStandingHasNoSeats = errors.New("catalog: setor standing não tem assentos")
 
 // Sector é um setor do evento (editor por grade, não canvas livre).
 type Sector struct {
@@ -97,6 +101,17 @@ func GenerateSeats(ctx context.Context, tx pgx.Tx, sectorID uuid.UUID, rows, sea
 	if rows <= 0 || seatsPerRow <= 0 {
 		return 0, fmt.Errorf("catalog: rows e seats_per_row devem ser > 0")
 	}
+	// Setor de pista (standing) não tem assentos numerados.
+	var kind string
+	if err := tx.QueryRow(ctx, `SELECT kind FROM sectors WHERE id=$1`, sectorID).Scan(&kind); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, fmt.Errorf("setor não encontrado")
+		}
+		return 0, err
+	}
+	if kind == "standing" {
+		return 0, ErrStandingHasNoSeats
+	}
 	created := 0
 	for r := range rows {
 		label := rowLabel(r, rowStyle)
@@ -177,6 +192,49 @@ func SetSectorPrice(ctx context.Context, tx pgx.Tx, p SectorPrice) (SectorPrice,
 		return SectorPrice{}, fmt.Errorf("definir preço de setor: %w", err)
 	}
 	return out, nil
+}
+
+// VenueTemplate é um modelo de mapa reaproveitável (ativo do PRODUTOR, não do evento):
+// teatro italiano, auditório, casa com mesas.
+type VenueTemplate struct {
+	ID        uuid.UUID       `json:"id"`
+	Name      string          `json:"name"`
+	Layout    json.RawMessage `json:"layout,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
+}
+
+// CreateVenueTemplate insere um modelo de mapa do produtor.
+func CreateVenueTemplate(ctx context.Context, tx pgx.Tx, name string, layout json.RawMessage) (VenueTemplate, error) {
+	if len(layout) == 0 {
+		layout = json.RawMessage("{}")
+	}
+	var out VenueTemplate
+	err := tx.QueryRow(ctx, `
+		INSERT INTO venue_templates (name, layout) VALUES ($1,$2)
+		RETURNING id, name, layout, created_at`, name, layout).
+		Scan(&out.ID, &out.Name, &out.Layout, &out.CreatedAt)
+	if err != nil {
+		return VenueTemplate{}, fmt.Errorf("criar modelo de mapa: %w", err)
+	}
+	return out, nil
+}
+
+// ListVenueTemplates lista os modelos de mapa do produtor.
+func ListVenueTemplates(ctx context.Context, tx pgx.Tx) ([]VenueTemplate, error) {
+	rows, err := tx.Query(ctx, `SELECT id, name, layout, created_at FROM venue_templates ORDER BY created_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []VenueTemplate
+	for rows.Next() {
+		var v VenueTemplate
+		if err := rows.Scan(&v.ID, &v.Name, &v.Layout, &v.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
 }
 
 // ListSectorPrices lista os preços por setor de um lote.
