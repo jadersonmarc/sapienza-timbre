@@ -51,11 +51,23 @@ type Server struct {
 	adminToken   string            // gate do bootstrap de produtor (vazio = criação desligada)
 	webhookToken string            // valida o header do webhook do Asaas (vazio = sem checagem)
 	seams        Seams             // drivers de rede/pagamento/carteira/notificação
+	limiter      *rateLimiter      // contenção de abuso na superfície pública (§4.1)
 }
+
+// publicRateLimit é o teto por IP+rota na superfície pública. PROVISÓRIO — janela e limite
+// calibráveis; o OTP tem travas próprias adicionais no banco (cooldown/tentativas).
+const (
+	publicRateLimit  = 60
+	publicRateWindow = time.Minute
+)
 
 // NewServer constrói o servidor da API.
 func NewServer(pool *pgxpool.Pool, authz *auth.Authenticator, prov *producer.Provisioner, signer *ticketing.Signer, adminToken, webhookToken string, seams Seams) *Server {
-	return &Server{pool: pool, auth: authz, prov: prov, signer: signer, adminToken: adminToken, webhookToken: webhookToken, seams: seams}
+	return &Server{
+		pool: pool, auth: authz, prov: prov, signer: signer,
+		adminToken: adminToken, webhookToken: webhookToken, seams: seams,
+		limiter: newRateLimiter(publicRateLimit, publicRateWindow),
+	}
 }
 
 // emitter monta o emissor (assinatura + metadados + entrega + fila on-chain) para um
@@ -100,8 +112,22 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/seats/{id}/block", s.requireOwner(s.blockSeat))
 	mux.HandleFunc("POST /api/v1/lots/{id}/prices", s.requireOwner(s.setSectorPrice))
 	mux.HandleFunc("GET /api/v1/lots/{id}/prices", s.authed(s.listSectorPrices))
+	// Camada pública (Onda 1): identidade do comprador por OTP (escopo próprio). Rotas
+	// sensíveis com limite por IP+rota (§4.1); o OTP ainda tem cooldown/tentativas no banco.
+	mux.HandleFunc("POST /api/v1/public/auth/request-code", s.rateLimited("otp-request", s.requestCode))
+	mux.HandleFunc("POST /api/v1/public/auth/verify", s.rateLimited("otp-verify", s.verifyCode))
+	// Camada pública (Onda 1): leitura do catálogo para o site do comprador.
+	mux.HandleFunc("GET /api/v1/public/events", s.rateLimited("public-events", s.listPublicEvents))
+	mux.HandleFunc("GET /api/v1/public/events/{id}", s.getPublicEvent)
+	mux.HandleFunc("GET /api/v1/public/categories", s.listPublicCategories)
+	mux.HandleFunc("GET /api/v1/public/config", s.publicConfig)
+	mux.HandleFunc("GET /api/v1/public/checkout/{orderId}/status", s.checkoutStatus)
+	mux.HandleFunc("GET /api/v1/public/me/tickets", s.buyerAuthed(s.myTickets))
+	mux.HandleFunc("DELETE /api/v1/public/me", s.buyerAuthed(s.deleteMe))
+	// Camada pública (Onda 1): cadastro público de produtor (landing B2B) — nasce pending.
+	mux.HandleFunc("POST /api/v1/public/producer-signup", s.rateLimited("producer-signup", s.producerSignup))
 	// Checkout (Etapa 1.4): compra é PÚBLICA (comprador sem conta); webhook é global.
-	mux.HandleFunc("POST /api/v1/public/checkout", s.publicCheckout)
+	mux.HandleFunc("POST /api/v1/public/checkout", s.rateLimited("checkout", s.publicCheckout))
 	mux.HandleFunc("POST /api/v1/webhooks/asaas", s.asaasWebhook)
 	// Lista de convidados / cortesias — do owner.
 	mux.HandleFunc("POST /api/v1/events/{id}/guests", s.requireOwner(s.createGuest))
@@ -169,7 +195,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/admin/sponsor-campaigns/{id}/metrics", s.requireAdmin(s.campaignMetrics))
 	mux.HandleFunc("POST /api/v1/public/subjects/{id}/consents", s.setConsent)
 	mux.HandleFunc("GET /api/v1/public/subjects/{id}/consents", s.listConsents)
-	return accessLog(mux)
+	return secureHeaders(accessLog(mux))
 }
 
 // ── middleware ───────────────────────────────────────────────────────────────

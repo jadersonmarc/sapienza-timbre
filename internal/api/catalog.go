@@ -22,6 +22,7 @@ type createEventReq struct {
 	StartsAt           *string  `json:"starts_at"` // RFC3339
 	EndsAt             *string  `json:"ends_at"`
 	Address            *string  `json:"address"`
+	City               *string  `json:"city"`
 	Lat                *float64 `json:"lat"`
 	Lng                *float64 `json:"lng"`
 	Capacity           *int     `json:"capacity"`
@@ -57,7 +58,7 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request, claims *aut
 		out, e = catalog.CreateEvent(r.Context(), tx, catalog.Event{
 			Title: body.Title, Description: body.Description, Category: body.Category,
 			CoverURL: body.CoverURL, StartsAt: starts, EndsAt: ends, Address: body.Address,
-			Lat: body.Lat, Lng: body.Lng, Capacity: body.Capacity, AgeRating: body.AgeRating,
+			City: body.City, Lat: body.Lat, Lng: body.Lng, Capacity: body.Capacity, AgeRating: body.AgeRating,
 			CancellationPolicy: body.CancellationPolicy, Terms: body.Terms, HasSeatMap: body.HasSeatMap,
 		})
 		return e
@@ -131,6 +132,7 @@ type patchEventReq struct {
 	StartsAt           *string `json:"starts_at"`
 	EndsAt             *string `json:"ends_at"`
 	Address            *string `json:"address"`
+	City               *string `json:"city"`
 	Capacity           *int    `json:"capacity"`
 	AgeRating          *string `json:"age_rating"`
 	CancellationPolicy *string `json:"cancellation_policy"`
@@ -164,7 +166,7 @@ func (s *Server) patchEvent(w http.ResponseWriter, r *http.Request, claims *auth
 		out, e = catalog.PatchEvent(r.Context(), tx, id, catalog.EventPatch{
 			Title: body.Title, Description: body.Description, Category: body.Category,
 			CoverURL: body.CoverURL, StartsAt: starts, EndsAt: ends, Address: body.Address,
-			Capacity: body.Capacity, AgeRating: body.AgeRating,
+			City: body.City, Capacity: body.Capacity, AgeRating: body.AgeRating,
 			CancellationPolicy: body.CancellationPolicy, Terms: body.Terms,
 		})
 		return e
