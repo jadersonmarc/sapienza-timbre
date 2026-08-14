@@ -43,6 +43,7 @@ type Event struct {
 	StartsAt           *time.Time `json:"starts_at,omitempty"`
 	EndsAt             *time.Time `json:"ends_at,omitempty"`
 	Address            *string    `json:"address,omitempty"`
+	City               *string    `json:"city,omitempty"`
 	Lat                *float64   `json:"lat,omitempty"`
 	Lng                *float64   `json:"lng,omitempty"`
 	Capacity           *int       `json:"capacity,omitempty"`
@@ -56,13 +57,13 @@ type Event struct {
 }
 
 const eventCols = `id, title, description, category, cover_url, starts_at, ends_at,
-	address, lat, lng, capacity, age_rating, cancellation_policy, terms, has_seat_map,
+	address, city, lat, lng, capacity, age_rating, cancellation_policy, terms, has_seat_map,
 	status, created_at, updated_at`
 
 func scanEvent(row pgx.Row) (Event, error) {
 	var e Event
 	err := row.Scan(&e.ID, &e.Title, &e.Description, &e.Category, &e.CoverURL, &e.StartsAt,
-		&e.EndsAt, &e.Address, &e.Lat, &e.Lng, &e.Capacity, &e.AgeRating,
+		&e.EndsAt, &e.Address, &e.City, &e.Lat, &e.Lng, &e.Capacity, &e.AgeRating,
 		&e.CancellationPolicy, &e.Terms, &e.HasSeatMap, &e.Status, &e.CreatedAt, &e.UpdatedAt)
 	return e, err
 }
@@ -78,11 +79,11 @@ func CreateEvent(ctx context.Context, tx pgx.Tx, e Event) (Event, error) {
 	}
 	row := tx.QueryRow(ctx, `
 		INSERT INTO events (title, description, category, category_id, cover_url, starts_at, ends_at,
-			address, lat, lng, capacity, age_rating, cancellation_policy, terms, has_seat_map)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+			address, city, lat, lng, capacity, age_rating, cancellation_policy, terms, has_seat_map)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 		RETURNING `+eventCols,
 		e.Title, e.Description, slug, catID, e.CoverURL, e.StartsAt, e.EndsAt, e.Address,
-		e.Lat, e.Lng, e.Capacity, e.AgeRating, e.CancellationPolicy, e.Terms, e.HasSeatMap)
+		e.City, e.Lat, e.Lng, e.Capacity, e.AgeRating, e.CancellationPolicy, e.Terms, e.HasSeatMap)
 	out, err := scanEvent(row)
 	if err != nil {
 		return Event{}, fmt.Errorf("criar evento: %w", err)
@@ -185,14 +186,15 @@ func PatchEvent(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, p EventPatch)
 			starts_at = COALESCE($5, starts_at),
 			ends_at = COALESCE($6, ends_at),
 			address = COALESCE($7, address),
-			capacity = COALESCE($8, capacity),
-			age_rating = COALESCE($9, age_rating),
-			cancellation_policy = COALESCE($10, cancellation_policy),
-			terms = COALESCE($11, terms),
+			city = COALESCE($8, city),
+			capacity = COALESCE($9, capacity),
+			age_rating = COALESCE($10, age_rating),
+			cancellation_policy = COALESCE($11, cancellation_policy),
+			terms = COALESCE($12, terms),
 			updated_at = now()
 		WHERE id = $1`,
 		eventID, p.Title, p.Description, p.CoverURL, p.StartsAt, p.EndsAt, p.Address,
-		p.Capacity, p.AgeRating, p.CancellationPolicy, p.Terms); err != nil {
+		p.City, p.Capacity, p.AgeRating, p.CancellationPolicy, p.Terms); err != nil {
 		return Event{}, fmt.Errorf("atualizar evento: %w", err)
 	}
 	return GetEvent(ctx, tx, eventID)
@@ -207,6 +209,7 @@ type EventPatch struct {
 	StartsAt           *time.Time
 	EndsAt             *time.Time
 	Address            *string
+	City               *string
 	Capacity           *int
 	AgeRating          *string
 	CancellationPolicy *string
@@ -427,6 +430,13 @@ func TransitionEvent(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, to strin
 	if _, err := tx.Exec(ctx, `UPDATE events SET status=$2, updated_at=now() WHERE id=$1`, eventID, to); err != nil {
 		return fmt.Errorf("transicionar evento: %w", err)
 	}
+	// Evento que sai do ar (suspenso/cancelado/finalizado) não pode ficar listado no
+	// diretório público. Removê-lo daqui é o pareado do registro no publish.
+	if to == "suspended" || to == "cancelled" || to == "finished" {
+		if _, err := tx.Exec(ctx, `DELETE FROM public.event_directory WHERE event_id=$1`, eventID); err != nil {
+			return fmt.Errorf("remover do diretório público: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -436,8 +446,11 @@ func TransitionEvent(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, to strin
 func PublishEvent(ctx context.Context, tx pgx.Tx, producerID, eventID uuid.UUID) error {
 	var status, title, category string
 	var startsAt *time.Time
-	err := tx.QueryRow(ctx, `SELECT status, title, category, starts_at FROM events WHERE id=$1 FOR UPDATE`, eventID).
-		Scan(&status, &title, &category, &startsAt)
+	var coverURL, city *string
+	var lat, lng *float64
+	err := tx.QueryRow(ctx, `SELECT status, title, category, starts_at, cover_url, city, lat, lng
+		FROM events WHERE id=$1 FOR UPDATE`, eventID).
+		Scan(&status, &title, &category, &startsAt, &coverURL, &city, &lat, &lng)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("evento não encontrado")
 	}
@@ -456,15 +469,58 @@ func PublishEvent(ctx context.Context, tx pgx.Tx, producerID, eventID uuid.UUID)
 			return fmt.Errorf("publicar evento: %w", err)
 		}
 	}
-	// Diretório público (public está no search_path do WithTenant).
+	minPrice, err := eventMinPrice(ctx, tx, eventID)
+	if err != nil {
+		return err
+	}
+	// Diretório público enriquecido (card do diretório + SEO). public está no search_path.
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO public.event_directory (event_id, producer_id, title, category, starts_at)
-		VALUES ($1,$2,$3,$4,$5)
+		INSERT INTO public.event_directory
+		    (event_id, producer_id, title, category, starts_at, cover_url, city, lat, lng, min_price_cents, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now())
 		ON CONFLICT (event_id) DO UPDATE
 		   SET producer_id = EXCLUDED.producer_id, title = EXCLUDED.title,
-		       category = EXCLUDED.category, starts_at = EXCLUDED.starts_at`,
-		eventID, producerID, title, category, startsAt); err != nil {
+		       category = EXCLUDED.category, starts_at = EXCLUDED.starts_at,
+		       cover_url = EXCLUDED.cover_url, city = EXCLUDED.city,
+		       lat = EXCLUDED.lat, lng = EXCLUDED.lng,
+		       min_price_cents = EXCLUDED.min_price_cents, updated_at = now()`,
+		eventID, producerID, title, category, startsAt, coverURL, city, lat, lng, minPrice); err != nil {
 		return fmt.Errorf("registrar no diretório público: %w", err)
+	}
+	return nil
+}
+
+// eventMinPrice devolve o menor preço vendável do evento — o menor entre os preços de
+// lote (pista) e as regras de preço por setor (assento). Considera só lotes com capacidade
+// restante (o menor preço REAL muda quando o lote esgota). nil se não houver preço.
+func eventMinPrice(ctx context.Context, tx pgx.Tx, eventID uuid.UUID) (*int64, error) {
+	var min *int64
+	err := tx.QueryRow(ctx, `
+		SELECT LEAST(
+		  (SELECT min(price_cents) FROM lots
+		     WHERE event_id = $1 AND sold_count + held_count < quantity),
+		  (SELECT min(spr.price_cents) FROM sector_price_rules spr
+		     JOIN lots l ON l.id = spr.lot_id
+		    WHERE l.event_id = $1 AND l.sold_count + l.held_count < l.quantity)
+		)`, eventID).Scan(&min)
+	if err != nil {
+		return nil, fmt.Errorf("calcular preço mínimo: %w", err)
+	}
+	return min, nil
+}
+
+// ResyncMinPrice recalcula o min_price do evento no diretório público. Chamado na virada
+// de lote (o menor preço real muda quando um lote esgota — §3.10). No-op se o evento não
+// estiver no diretório (não publicado).
+func ResyncMinPrice(ctx context.Context, tx pgx.Tx, eventID uuid.UUID) error {
+	min, err := eventMinPrice(ctx, tx, eventID)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE public.event_directory SET min_price_cents = $2, updated_at = now()
+		 WHERE event_id = $1`, eventID, min); err != nil {
+		return fmt.Errorf("resincronizar preço mínimo: %w", err)
 	}
 	return nil
 }

@@ -34,10 +34,20 @@ type Result struct {
 	Owner    store.Collaborator `json:"owner"`
 }
 
-// Create cria o produtor + o colaborador owner e provisiona o schema tenant_<id>.
+// Create cria o produtor ATIVO + o colaborador owner e provisiona o schema tenant_<id>.
 // O owner tem todas as permissões implicitamente (is_owner), então não gravamos
 // linhas em collaborator_permissions para ele.
 func (p *Provisioner) Create(ctx context.Context, name, ownerEmail, ownerPassword string) (Result, error) {
+	return p.create(ctx, name, ownerEmail, ownerPassword, "active")
+}
+
+// CreatePending cria o produtor PENDENTE de aprovação (cadastro público da landing B2B).
+// O owner já existe e pode logar, mas o produtor entra na fila de aprovação do admin.
+func (p *Provisioner) CreatePending(ctx context.Context, name, ownerEmail, ownerPassword string) (Result, error) {
+	return p.create(ctx, name, ownerEmail, ownerPassword, "pending")
+}
+
+func (p *Provisioner) create(ctx context.Context, name, ownerEmail, ownerPassword, status string) (Result, error) {
 	hash, err := auth.HashPassword(ownerPassword)
 	if err != nil {
 		return Result{}, fmt.Errorf("hash de senha: %w", err)
@@ -50,7 +60,7 @@ func (p *Provisioner) Create(ctx context.Context, name, ownerEmail, ownerPasswor
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	prod, err := store.CreateProducer(ctx, tx, name)
+	prod, err := store.CreateProducerWithStatus(ctx, tx, name, status)
 	if err != nil {
 		return Result{}, fmt.Errorf("criar produtor: %w", err)
 	}

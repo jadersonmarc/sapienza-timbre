@@ -299,6 +299,10 @@ func ConfirmPayment(ctx context.Context, tx pgx.Tx, em Emitter, producerID uuid.
 			return nil, err
 		}
 	}
+	// O menor preço real muda quando um lote esgota — re-sincroniza o diretório (§3.10).
+	if err := catalog.ResyncMinPrice(ctx, tx, eventID); err != nil {
+		return nil, err
+	}
 
 	// Emite os ingressos.
 	var tickets []uuid.UUID
@@ -347,6 +351,11 @@ func ConfirmPayment(ctx context.Context, tx pgx.Tx, em Emitter, producerID uuid.
 		deliverTo = *buyerEmail
 	}
 	if err := em.emit(ctx, tx, tickets, deliverTo); err != nil {
+		return nil, err
+	}
+
+	// Índice público de ingressos do comprador ("meus ingressos", sem varrer schemas).
+	if err := writeTicketDirectory(ctx, tx, em.ProducerID, eventID, deliverTo, tickets); err != nil {
 		return nil, err
 	}
 

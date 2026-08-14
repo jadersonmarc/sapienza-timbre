@@ -54,12 +54,18 @@ type CollaboratorAuth struct {
 
 // CreateProducer insere um produtor e devolve a linha criada.
 func CreateProducer(ctx context.Context, tx DBTX, name string) (Producer, error) {
+	return CreateProducerWithStatus(ctx, tx, name, "active")
+}
+
+// CreateProducerWithStatus insere um produtor com status explícito. O cadastro público
+// (landing B2B) usa 'pending' — entra na fila de aprovação do admin.
+func CreateProducerWithStatus(ctx context.Context, tx DBTX, name, status string) (Producer, error) {
 	var p Producer
 	err := tx.QueryRow(ctx, `
-		INSERT INTO producers (name)
-		VALUES ($1)
+		INSERT INTO producers (name, status)
+		VALUES ($1, $2)
 		RETURNING id, name, tier, retention_pct, status, created_at`,
-		name,
+		name, status,
 	).Scan(&p.ID, &p.Name, &p.Tier, &p.RetentionPct, &p.Status, &p.CreatedAt)
 	return p, err
 }
