@@ -72,13 +72,26 @@ func main() {
 		chainDriver = chain.NewBase(rpc, os.Getenv("CHAIN_CONTRACT"))
 		chainKind = "base"
 	}
+	// Notificação: SMTP real se configurado (provider-agnóstico), senão o log (default).
+	// Vale para a entrega do QR e para o código de acesso (OTP) do comprador.
+	var notifier notify.Notifier = notify.NewLogNotifier()
+	notifyKind := "log"
+	smtpCfg := notify.SMTPConfig{
+		Host: os.Getenv("SMTP_HOST"), Port: os.Getenv("SMTP_PORT"),
+		Username: os.Getenv("SMTP_USERNAME"), Password: os.Getenv("SMTP_PASSWORD"),
+		From: os.Getenv("SMTP_FROM"),
+	}
+	if smtpCfg.Configured() {
+		notifier = notify.NewSMTPNotifier(smtpCfg)
+		notifyKind = "smtp"
+	}
 	seams := api.Seams{
 		Chain:   chainDriver,
 		Payment: pay,
 		Wallet:  wallet.NoopWalletProvider{},
-		Notify:  notify.NewLogNotifier(),
+		Notify:  notifier,
 	}
-	slog.Info("seams", "chain", chainKind, "chain_enabled", chainDriver.Enabled(), "payment", payKind, "wallet", "noop", "notify", "log")
+	slog.Info("seams", "chain", chainKind, "chain_enabled", chainDriver.Enabled(), "payment", payKind, "wallet", "noop", "notify", notifyKind)
 
 	// Varredura de expiração de holds (motor de reserva) por produtor, em segundo plano.
 	go inventory.NewSweeper(pool).Run(ctx)
