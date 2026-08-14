@@ -90,8 +90,8 @@ func TestCheckoutPixStandingCycle(t *testing.T) {
 	if n := scanInt(t, ctx, pool, pid, `SELECT count(*) FROM tickets WHERE status='active'`); n != 2 {
 		t.Fatalf("esperava 2 ingressos ativos, veio %d", n)
 	}
-	if sold := scanInt(t, ctx, pool, pid, `SELECT sold FROM lots WHERE id=$1`, uuid.MustParse(lotID)); sold != 2 {
-		t.Fatalf("esperava sold=2, veio %d", sold)
+	if sold := scanInt(t, ctx, pool, pid, `SELECT sold_count FROM lots WHERE id=$1`, uuid.MustParse(lotID)); sold != 2 {
+		t.Fatalf("esperava sold_count=2, veio %d", sold)
 	}
 
 	// Split registrado: taxa 10% (1000) e repasse 9000, tanto no razão quanto no payment.

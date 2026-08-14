@@ -209,10 +209,11 @@ func TestTicketSeatInvariant(t *testing.T) {
 
 	var eventID, sectorID, seatID, lotID string
 	inTenant(t, ctx, pool, pid, func(tx pgx.Tx) {
-		must(t, tx.QueryRow(ctx, `INSERT INTO events (title, category) VALUES ('E','shows') RETURNING id`).Scan(&eventID))
+		must(t, tx.QueryRow(ctx, `INSERT INTO events (title, category, category_id)
+			VALUES ('E','shows',(SELECT id FROM event_categories WHERE slug='shows')) RETURNING id`).Scan(&eventID))
 		must(t, tx.QueryRow(ctx, `INSERT INTO sectors (event_id, name, kind) VALUES ($1,'Plateia','seated') RETURNING id`, eventID).Scan(&sectorID))
 		must(t, tx.QueryRow(ctx, `INSERT INTO seats (sector_id, row_label, number) VALUES ($1,'A','1') RETURNING id`, sectorID).Scan(&seatID))
-		must(t, tx.QueryRow(ctx, `INSERT INTO lots (event_id, name, price_cents, stock) VALUES ($1,'Lote 1',1000,100) RETURNING id`, eventID).Scan(&lotID))
+		must(t, tx.QueryRow(ctx, `INSERT INTO lots (event_id, name, price_cents, quantity) VALUES ($1,'Lote 1',1000,100) RETURNING id`, eventID).Scan(&lotID))
 		must(t, tx.QueryRow(ctx, `INSERT INTO tickets (event_id, lot_id, seat_id, transferable_after) VALUES ($1,$2,$3, now()) RETURNING id`, eventID, lotID, seatID).Scan(new(string)))
 	})
 

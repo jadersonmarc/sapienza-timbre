@@ -59,8 +59,8 @@ func TestDashboardReflectsSale(t *testing.T) {
 		t.Fatalf("esperava 1 lote, veio %v", body["sales"])
 	}
 	lot0, _ := sales[0].(map[string]any)
-	if lot0["sold"].(float64) != 2 || lot0["revenue_cents"].(float64) != 10000 {
-		t.Fatalf("curva do lote: esperava sold 2 / revenue 10000, veio %v", lot0)
+	if lot0["sold_count"].(float64) != 2 || lot0["revenue_cents"].(float64) != 10000 {
+		t.Fatalf("curva do lote: esperava sold_count 2 / revenue 10000, veio %v", lot0)
 	}
 	fin, _ := body["finance"].(map[string]any)
 	if fin["gross_cents"].(float64) != 10000 || fin["taxa_cents"].(float64) != 1350 || fin["repasse_cents"].(float64) != 8650 {

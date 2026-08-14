@@ -39,7 +39,7 @@ func seatedEvent(t *testing.T, ts *httptest.Server, pool *pgxpool.Pool, owner st
 		for _, s := range list {
 			seats = append(seats, s.ID)
 		}
-		lot, err := catalog.CreateLot(ctx, tx, catalog.Lot{EventID: eventID, Name: "Lote 1", PriceCents: 5000, Stock: 100})
+		lot, err := catalog.CreateLot(ctx, tx, catalog.Lot{EventID: eventID, Name: "Lote 1", PriceCents: 5000, Quantity: 100})
 		if err != nil {
 			t.Fatalf("criar lote: %v", err)
 		}

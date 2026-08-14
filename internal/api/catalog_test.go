@@ -2,9 +2,11 @@ package api_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -13,11 +15,12 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/catalog"
 )
 
-// createLot cria um lote via API e devolve o id.
-func createLot(t *testing.T, ts *httptest.Server, token, eventID, name string, price int64, stock, position int) string {
+// createLot cria um lote via API e devolve o id. Os dois inteiros são quantity e
+// sort_order (no modelo de contadores).
+func createLot(t *testing.T, ts *httptest.Server, token, eventID, name string, price int64, quantity, sortOrder int) string {
 	t.Helper()
 	code, body := do(t, ts, "POST", "/api/v1/events/"+eventID+"/lots", bearer(token),
-		map[string]any{"name": name, "price_cents": price, "stock": stock, "position": position})
+		map[string]any{"name": name, "price_cents": price, "quantity": quantity, "sort_order": sortOrder})
 	if code != http.StatusCreated {
 		t.Fatalf("criar lote %s: status %d, body %v", name, code, body)
 	}
@@ -28,11 +31,13 @@ func createLot(t *testing.T, ts *httptest.Server, token, eventID, name string, p
 	return id
 }
 
-// createEvent cria um evento via API e devolve o id.
+// createEvent cria um evento via API e devolve o id. Já nasce com data de início futura
+// (publicação exige data futura no modelo reconciliado da 1.2).
 func createEvent(t *testing.T, ts *httptest.Server, token, title, category string) string {
 	t.Helper()
+	startsAt := time.Now().Add(30 * 24 * time.Hour).Format(time.RFC3339)
 	code, body := do(t, ts, "POST", "/api/v1/events", bearer(token),
-		map[string]any{"title": title, "category": category})
+		map[string]any{"title": title, "category": category, "starts_at": startsAt})
 	if code != http.StatusCreated {
 		t.Fatalf("criar evento: status %d, body %v", code, body)
 	}
@@ -43,9 +48,9 @@ func createEvent(t *testing.T, ts *httptest.Server, token, title, category strin
 	return id
 }
 
-// TestCatalogEventThreeLotsRollover é o "pronto quando" da Etapa 1.2: um produtor
-// cadastra um evento com três lotes e a virada automática ao esgotar o estoque é
-// coberta por teste.
+// TestCatalogEventThreeLotsRollover é o "pronto quando" da Etapa 1.2 no modelo
+// derivado: três lotes; a virada por ESGOTAMENTO é apenas resolver o lote corrente
+// (CurrentLot) — nenhum estado de status é escrito.
 func TestCatalogEventThreeLotsRollover(t *testing.T) {
 	ts, pool := setup(t)
 	_, owner := createProducer(t, ts, "Casa Cat", "owner@cat.com", "senha1234")
@@ -53,45 +58,39 @@ func TestCatalogEventThreeLotsRollover(t *testing.T) {
 	pid := producerID(t, ts, owner)
 
 	eventID := createEvent(t, ts, owner, "Show X", "shows")
+	eid := uuid.MustParse(eventID)
 
-	// Três lotes, estoque 2 cada, em ordem de posição.
+	// Três lotes, capacidade 2 cada, em ordem de sort_order.
 	l0 := uuid.MustParse(createLot(t, ts, owner, eventID, "Lote 1", 5000, 2, 0))
 	l1 := uuid.MustParse(createLot(t, ts, owner, eventID, "Lote 2", 7000, 2, 1))
 	l2 := uuid.MustParse(createLot(t, ts, owner, eventID, "Lote 3", 9000, 2, 2))
 
-	// Publicar ativa o lote inicial.
 	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
 		t.Fatalf("publicar: status %d", code)
 	}
-	assertLotStatus(t, ctx, pool, pid, l0, "active")
-	assertLotStatus(t, ctx, pool, pid, l1, "scheduled")
-	assertLotStatus(t, ctx, pool, pid, l2, "scheduled")
 
-	// Esgota o lote 1 → sold_out e o lote 2 vira active automaticamente.
-	lot := sell(t, ctx, pool, pid, l0, 2)
-	if lot.Status != "sold_out" {
-		t.Fatalf("lote 1 após esgotar: esperava sold_out, veio %s", lot.Status)
-	}
-	assertLotStatus(t, ctx, pool, pid, l0, "sold_out")
-	assertLotStatus(t, ctx, pool, pid, l1, "active")
-	assertLotStatus(t, ctx, pool, pid, l2, "scheduled")
+	// O corrente é o lote 1.
+	assertCurrentLot(t, ctx, pool, pid, eid, l0)
 
-	// Esgota o lote 2 → lote 3 vira active.
-	sell(t, ctx, pool, pid, l1, 2)
-	assertLotStatus(t, ctx, pool, pid, l1, "sold_out")
-	assertLotStatus(t, ctx, pool, pid, l2, "active")
+	// Confirma 2 no lote 1 (Reserve+Confirm) → esgota → corrente vira o lote 2.
+	confirmSale(t, ctx, pool, pid, eid, l0, 2)
+	assertCurrentLot(t, ctx, pool, pid, eid, l1)
 
-	// Esgota o lote 3 → sem próximo (fim da fila).
-	sell(t, ctx, pool, pid, l2, 2)
-	assertLotStatus(t, ctx, pool, pid, l2, "sold_out")
+	// Esgota o lote 2 → corrente vira o lote 3.
+	confirmSale(t, ctx, pool, pid, eid, l1, 2)
+	assertCurrentLot(t, ctx, pool, pid, eid, l2)
 
-	// Vender de um lote não ativo → ErrLotNotSellable.
-	if _, err := sellErr(t, ctx, pool, pid, l0, 1); err != catalog.ErrLotNotSellable {
-		t.Fatalf("venda em lote esgotado: esperava ErrLotNotSellable, veio %v", err)
-	}
+	// Esgota o lote 3 → sem corrente (fim da fila).
+	confirmSale(t, ctx, pool, pid, eid, l2, 2)
+	inTenant(t, ctx, pool, pid, func(tx pgx.Tx) {
+		if _, err := catalog.CurrentLot(ctx, tx, eid); err != catalog.ErrNoCurrentLot {
+			t.Fatalf("após esgotar tudo: esperava ErrNoCurrentLot, veio %v", err)
+		}
+	})
 }
 
-// TestCatalogOverselling: a atomicidade do UPDATE impede vender além do estoque.
+// TestCatalogOverselling: o UPDATE condicional de ReserveFromLot impede segurar além da
+// capacidade; o CHECK lots_capacity_chk nunca é violado.
 func TestCatalogOverselling(t *testing.T) {
 	ts, pool := setup(t)
 	_, owner := createProducer(t, ts, "Casa Over", "owner@over.com", "senha1234")
@@ -104,16 +103,46 @@ func TestCatalogOverselling(t *testing.T) {
 		t.Fatalf("publicar: %d", code)
 	}
 
-	// Estoque 3: vender 2 ok, depois 2 falha (só resta 1).
-	sell(t, ctx, pool, pid, l0, 2)
-	if _, err := sellErr(t, ctx, pool, pid, l0, 2); err != catalog.ErrInsufficientStock {
-		t.Fatalf("oversell: esperava ErrInsufficientStock, veio %v", err)
-	}
-	// Vender exatamente o que resta esgota (lote único, sem virada).
-	lot := sell(t, ctx, pool, pid, l0, 1)
-	if lot.Status != "sold_out" {
-		t.Fatalf("último item: esperava sold_out, veio %s", lot.Status)
-	}
+	// Capacidade 3: reservar 2 ok; reservar mais 2 falha (só resta 1).
+	inTenant(t, ctx, pool, pid, func(tx pgx.Tx) {
+		if err := catalog.ReserveFromLot(ctx, tx, l0, 2); err != nil {
+			t.Fatalf("reservar 2: %v", err)
+		}
+		if err := catalog.ReserveFromLot(ctx, tx, l0, 2); err != catalog.ErrInsufficientStock {
+			t.Fatalf("oversell: esperava ErrInsufficientStock, veio %v", err)
+		}
+		// A última unidade cabe.
+		if err := catalog.ReserveFromLot(ctx, tx, l0, 1); err != nil {
+			t.Fatalf("reservar última: %v", err)
+		}
+		var sold, held, qty int
+		if err := tx.QueryRow(ctx, `SELECT sold_count, held_count, quantity FROM lots WHERE id=$1`, l0).Scan(&sold, &held, &qty); err != nil {
+			t.Fatalf("ler contadores: %v", err)
+		}
+		if sold+held != qty {
+			t.Fatalf("capacidade: sold+held=%d, quantity=%d", sold+held, qty)
+		}
+	})
+}
+
+// TestCatalogInvalidTransition: transição de ciclo de vida inválida é recusada.
+func TestCatalogInvalidTransition(t *testing.T) {
+	ts, pool := setup(t)
+	_, owner := createProducer(t, ts, "Casa Ciclo", "owner@ciclo2.com", "senha1234")
+	ctx := context.Background()
+	pid := producerID(t, ts, owner)
+	eventID := uuid.MustParse(createEvent(t, ts, owner, "Show Ciclo", "shows"))
+
+	inTenant(t, ctx, pool, pid, func(tx pgx.Tx) {
+		// draft→finished não é permitida.
+		if err := catalog.TransitionEvent(ctx, tx, eventID, "finished"); !errors.Is(err, catalog.ErrInvalidTransition) {
+			t.Fatalf("draft→finished: esperava ErrInvalidTransition, veio %v", err)
+		}
+		// draft→pending_review é permitida.
+		if err := catalog.TransitionEvent(ctx, tx, eventID, "pending_review"); err != nil {
+			t.Fatalf("draft→pending_review: %v", err)
+		}
+	})
 }
 
 // TestCatalogWriteRequiresOwner: escrita no catálogo é do owner; leitura, de qualquer
@@ -149,35 +178,31 @@ func producerID(t *testing.T, ts *httptest.Server, token string) uuid.UUID {
 	return uuid.MustParse(pid)
 }
 
-func sell(t *testing.T, ctx context.Context, pool *pgxpool.Pool, pid, lotID uuid.UUID, qty int) catalog.Lot {
+// confirmSale simula uma venda completa de pista no lote: reserva e confirma `qty`
+// (held→sold), numa transação. Espelha o caminho do checkout no modelo de contadores.
+func confirmSale(t *testing.T, ctx context.Context, pool *pgxpool.Pool, pid, _, lotID uuid.UUID, qty int) {
 	t.Helper()
-	lot, err := sellErr(t, ctx, pool, pid, lotID, qty)
-	if err != nil {
-		t.Fatalf("sell lote %s: %v", lotID, err)
-	}
-	return lot
-}
-
-func sellErr(t *testing.T, ctx context.Context, pool *pgxpool.Pool, pid, lotID uuid.UUID, qty int) (catalog.Lot, error) {
-	t.Helper()
-	var lot catalog.Lot
-	var sErr error
 	inTenant(t, ctx, pool, pid, func(tx pgx.Tx) {
-		lot, sErr = catalog.SellFromLot(ctx, tx, lotID, qty)
-	})
-	return lot, sErr
-}
-
-func assertLotStatus(t *testing.T, ctx context.Context, pool *pgxpool.Pool, pid, lotID uuid.UUID, want string) {
-	t.Helper()
-	var l catalog.Lot
-	inTenant(t, ctx, pool, pid, func(tx pgx.Tx) {
-		var e error
-		if l, e = catalog.GetLot(ctx, tx, lotID); e != nil {
-			t.Fatalf("get lote %s: %v", lotID, e)
+		if err := catalog.ReserveFromLot(ctx, tx, lotID, qty); err != nil {
+			t.Fatalf("reservar %d no lote %s: %v", qty, lotID, err)
+		}
+		if _, err := catalog.ConfirmFromLot(ctx, tx, lotID, qty); err != nil {
+			t.Fatalf("confirmar %d no lote %s: %v", qty, lotID, err)
 		}
 	})
-	if l.Status != want {
-		t.Fatalf("lote %s: esperava status %s, veio %s", lotID, want, l.Status)
+}
+
+// assertCurrentLot verifica que o lote vigente do evento é o esperado.
+func assertCurrentLot(t *testing.T, ctx context.Context, pool *pgxpool.Pool, pid, eventID, want uuid.UUID) {
+	t.Helper()
+	var got catalog.Lot
+	inTenant(t, ctx, pool, pid, func(tx pgx.Tx) {
+		var e error
+		if got, e = catalog.CurrentLot(ctx, tx, eventID); e != nil {
+			t.Fatalf("lote vigente do evento %s: %v", eventID, e)
+		}
+	})
+	if got.ID != want {
+		t.Fatalf("lote vigente: esperava %s, veio %s", want, got.ID)
 	}
 }
