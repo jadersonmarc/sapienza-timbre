@@ -238,6 +238,49 @@ func toPublicEvent(e catalog.Event) publicEvent {
 	}
 }
 
+// eventOccupancy devolve os assentos OCUPADOS (hold vivo ou ingresso) de um evento — o
+// estado volátil que o mapa de assentos consome no cliente (§3.7/§4.2). Não expõe quem
+// ocupa, só o id do assento.
+func (s *Server) eventOccupancy(w http.ResponseWriter, r *http.Request) {
+	eventID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "id inválido")
+		return
+	}
+	producerID, err := s.producerOfEvent(r.Context(), eventID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeErr(w, http.StatusNotFound, "evento não encontrado")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	occupied := []string{}
+	err = s.withTenant(r.Context(), producerID, func(tx pgx.Tx) error {
+		rows, e := tx.Query(r.Context(), `
+			SELECT seat_id FROM seat_occupancy
+			 WHERE event_id=$1 AND NOT released AND seat_id IS NOT NULL`, eventID)
+		if e != nil {
+			return e
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id uuid.UUID
+			if e := rows.Scan(&id); e != nil {
+				return e
+			}
+			occupied = append(occupied, id.String())
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"occupied": occupied})
+}
+
 // publicConfig informa as capacidades LIGADAS ao web (§3.11: a interface só mostra o que
 // existe). payment_methods segue o gateway configurado; hold_ttl vem do motor de reserva.
 func (s *Server) publicConfig(w http.ResponseWriter, r *http.Request) {

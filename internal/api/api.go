@@ -119,6 +119,7 @@ func (s *Server) Handler() http.Handler {
 	// Camada pública (Onda 1): leitura do catálogo para o site do comprador.
 	mux.HandleFunc("GET /api/v1/public/events", s.rateLimited("public-events", s.listPublicEvents))
 	mux.HandleFunc("GET /api/v1/public/events/{id}", s.getPublicEvent)
+	mux.HandleFunc("GET /api/v1/public/events/{id}/occupancy", s.eventOccupancy)
 	mux.HandleFunc("GET /api/v1/public/categories", s.listPublicCategories)
 	mux.HandleFunc("GET /api/v1/public/config", s.publicConfig)
 	mux.HandleFunc("GET /api/v1/public/checkout/{orderId}/status", s.checkoutStatus)
