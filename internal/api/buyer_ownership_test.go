@@ -1,0 +1,81 @@
+package api_test
+
+import (
+	"net/http"
+	"testing"
+)
+
+// TestBuyerTransferMovesOwnership (Onda 2): o comprador transfere o ingresso para outro
+// e-mail; a posse migra no ticket_directory — o remetente deixa de ver, o destinatário
+// passa a ver após entrar com o e-mail de destino.
+func TestBuyerTransferMovesOwnership(t *testing.T) {
+	ts, pool := setup(t)
+	_, owner := createProducer(t, ts, "CasaTransf", "owner@transf.com", "senha1234")
+	eventID := createEvent(t, ts, owner, "Show Transf", "shows")
+	_ = createLot(t, ts, owner, eventID, "Lote 1", 5000, 100, 0)
+	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
+		t.Fatalf("publish: %d", code)
+	}
+	// Compra convidado + confirmação.
+	code, res := do(t, ts, "POST", "/api/v1/public/checkout", nil, map[string]any{
+		"event_id": eventID, "quantity": 1, "method": "pix", "buyer_email": "ana@x.com",
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("checkout: %d %v", code, res)
+	}
+	confirmWebhook(t, ts, res["asaas_ref"].(string))
+
+	// Ana entra e vê o ingresso.
+	ana := verifyOTP(t, ts, pool, "ana@x.com", "111111")
+	_, mine := do(t, ts, "GET", "/api/v1/public/me/tickets", bearer(ana), nil)
+	tickets := asSlice(mine["tickets"])
+	if len(tickets) != 1 {
+		t.Fatalf("Ana deveria ter 1 ingresso, veio %v", tickets)
+	}
+	ticketID := tickets[0].(map[string]any)["ticket_id"].(string)
+
+	// Ana transfere para o e-mail do Bruno.
+	if code, tb := do(t, ts, "POST", "/api/v1/public/me/tickets/"+ticketID+"/transfer", bearer(ana),
+		map[string]any{"to_email": "bruno@x.com"}); code != http.StatusOK {
+		t.Fatalf("transferência: %d %v", code, tb)
+	}
+
+	// Ana não vê mais; Bruno vê após entrar.
+	_, anaAfter := do(t, ts, "GET", "/api/v1/public/me/tickets", bearer(ana), nil)
+	if len(asSlice(anaAfter["tickets"])) != 0 {
+		t.Fatalf("após transferir, Ana não deveria ver o ingresso: %v", anaAfter["tickets"])
+	}
+	bruno := verifyOTP(t, ts, pool, "bruno@x.com", "222222")
+	_, brunoMine := do(t, ts, "GET", "/api/v1/public/me/tickets", bearer(bruno), nil)
+	if len(asSlice(brunoMine["tickets"])) != 1 {
+		t.Fatalf("Bruno deveria ver o ingresso transferido, veio %v", brunoMine["tickets"])
+	}
+}
+
+// TestBuyerTransferRejectsNonOwner: não-dono não transfere ingresso alheio (403).
+func TestBuyerTransferRejectsNonOwner(t *testing.T) {
+	ts, pool := setup(t)
+	_, owner := createProducer(t, ts, "CasaTransf2", "owner@transf2.com", "senha1234")
+	eventID := createEvent(t, ts, owner, "Show Transf2", "shows")
+	_ = createLot(t, ts, owner, eventID, "Lote 1", 5000, 100, 0)
+	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
+		t.Fatalf("publish: %d", code)
+	}
+	code, res := do(t, ts, "POST", "/api/v1/public/checkout", nil, map[string]any{
+		"event_id": eventID, "quantity": 1, "method": "pix", "buyer_email": "dona@x.com",
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("checkout: %d", code)
+	}
+	confirmWebhook(t, ts, res["asaas_ref"].(string))
+	dona := verifyOTP(t, ts, pool, "dona@x.com", "333333")
+	_, mine := do(t, ts, "GET", "/api/v1/public/me/tickets", bearer(dona), nil)
+	ticketID := asSlice(mine["tickets"])[0].(map[string]any)["ticket_id"].(string)
+
+	// Estranho (outro subject) tenta transferir o ingresso da Dona.
+	estranho := verifyOTP(t, ts, pool, "estranho@x.com", "444444")
+	if code, _ := do(t, ts, "POST", "/api/v1/public/me/tickets/"+ticketID+"/transfer", bearer(estranho),
+		map[string]any{"to_email": "ladrao@x.com"}); code != http.StatusForbidden {
+		t.Fatalf("não-dono transferindo: esperava 403, veio %d", code)
+	}
+}

@@ -125,6 +125,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/public/checkout/{orderId}/status", s.checkoutStatus)
 	mux.HandleFunc("GET /api/v1/public/me/tickets", s.buyerAuthed(s.myTickets))
 	mux.HandleFunc("DELETE /api/v1/public/me", s.buyerAuthed(s.deleteMe))
+	// Onda 2: posse do comprador (custódia de plataforma) — transferência e revenda.
+	mux.HandleFunc("POST /api/v1/public/me/tickets/{id}/transfer", s.buyerAuthed(s.buyerTransfer))
+	mux.HandleFunc("POST /api/v1/public/me/tickets/{id}/listings", s.buyerAuthed(s.buyerCreateListing))
 	// Camada pública (Onda 1): cadastro público de produtor (landing B2B) — nasce pending.
 	mux.HandleFunc("POST /api/v1/public/producer-signup", s.rateLimited("producer-signup", s.producerSignup))
 	// Checkout (Etapa 1.4): compra é PÚBLICA (comprador sem conta); webhook é global.

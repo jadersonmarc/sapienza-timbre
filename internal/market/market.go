@@ -200,6 +200,16 @@ func ConfirmResale(ctx context.Context, tx pgx.Tx, producerID uuid.UUID, asaasRe
 		if _, err := tx.Exec(ctx, `UPDATE public.listing_index SET status='sold' WHERE listing_id=$1`, listingID); err != nil {
 			return err
 		}
+		// Ponto de escrita do índice público (§3.10): a revenda reatribui a posse. O novo
+		// dono é o comprador do anúncio (subject por e-mail da ordem, se já tiver conta).
+		if _, err := tx.Exec(ctx, `
+			UPDATE public.ticket_directory td
+			   SET buyer_email = o.buyer_email,
+			       subject_id = (SELECT id FROM public.subjects WHERE lower(email)=lower(o.buyer_email) ORDER BY created_at LIMIT 1)
+			  FROM orders o
+			 WHERE o.id = $1 AND td.ticket_id = $2`, orderID, ticketID); err != nil {
+			return err
+		}
 		// Taxa da plataforma sobre a revenda (15% − rebate do nível); o royalty já foi
 		// apurado na transferência. O repasse ao vendedor não é modelado nesta etapa.
 		ap, err := program.Apurar(ctx, tx, producerID, price, time.Now())
