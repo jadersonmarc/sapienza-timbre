@@ -52,6 +52,43 @@ func TestBuyerTransferMovesOwnership(t *testing.T) {
 	}
 }
 
+// TestBuyerReissue (§3.2): o comprador reemite o próprio ingresso; sai um ticket_id novo e
+// o anterior é queimado.
+func TestBuyerReissue(t *testing.T) {
+	ts, pool := setup(t)
+	_, owner := createProducer(t, ts, "CasaReissue", "owner@reissue.com", "senha1234")
+	eventID := createEvent(t, ts, owner, "Show Reissue", "shows")
+	_ = createLot(t, ts, owner, eventID, "Lote 1", 5000, 100, 0)
+	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
+		t.Fatalf("publish: %d", code)
+	}
+	code, res := do(t, ts, "POST", "/api/v1/public/checkout", nil, map[string]any{
+		"event_id": eventID, "quantity": 1, "method": "pix", "buyer_email": "clara@x.com",
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("checkout: %d", code)
+	}
+	confirmWebhook(t, ts, res["asaas_ref"].(string))
+	clara := verifyOTP(t, ts, pool, "clara@x.com", "555555")
+	_, mine := do(t, ts, "GET", "/api/v1/public/me/tickets", bearer(clara), nil)
+	oldID := asSlice(mine["tickets"])[0].(map[string]any)["ticket_id"].(string)
+
+	code, rr := do(t, ts, "POST", "/api/v1/public/me/tickets/"+oldID+"/reissue", bearer(clara), nil)
+	if code != http.StatusOK {
+		t.Fatalf("reissue: %d %v", code, rr)
+	}
+	newID := rr["ticket_id"].(string)
+	if newID == oldID || newID == "" {
+		t.Fatalf("reemissão deveria gerar novo ticket_id, veio %q", newID)
+	}
+	// "Meus ingressos" passa a mostrar o novo; o antigo consta queimado no tenant.
+	_, after := do(t, ts, "GET", "/api/v1/public/me/tickets", bearer(clara), nil)
+	got := asSlice(after["tickets"])
+	if len(got) != 1 || got[0].(map[string]any)["ticket_id"] != newID {
+		t.Fatalf("me/tickets deveria mostrar o novo ingresso, veio %v", got)
+	}
+}
+
 // TestBuyerTransferRejectsNonOwner: não-dono não transfere ingresso alheio (403).
 func TestBuyerTransferRejectsNonOwner(t *testing.T) {
 	ts, pool := setup(t)

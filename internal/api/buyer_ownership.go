@@ -9,6 +9,8 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/jadersonmarc/sapienza-timbre/internal/market"
+	"github.com/jadersonmarc/sapienza-timbre/internal/nft"
+	"github.com/jadersonmarc/sapienza-timbre/internal/ticketing"
 	"github.com/jadersonmarc/sapienza-timbre/internal/transfer"
 )
 
@@ -150,6 +152,51 @@ func (s *Server) buyerCreateListing(w http.ResponseWriter, r *http.Request, subj
 		return
 	}
 	writeJSON(w, http.StatusCreated, listing)
+}
+
+// buyerReissue reemite o ingresso do comprador (§3.2): queima o anterior e gera um QR
+// novo. Uso operacional urgente — trocou de celular / perdeu o e-mail antigo e recuperou a
+// conta. Atualiza o ticket_directory para o novo ingresso/token.
+func (s *Server) buyerReissue(w http.ResponseWriter, r *http.Request, subjectID uuid.UUID) {
+	ticketID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "id inválido")
+		return
+	}
+	producerID, err := s.ownsTicket(r.Context(), subjectID, ticketID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeErr(w, http.StatusForbidden, "este ingresso não é seu")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var newID uuid.UUID
+	err = s.withTenant(r.Context(), producerID, func(tx pgx.Tx) error {
+		var e error
+		newID, e = nft.Reissue(r.Context(), tx, s.signer, producerID, ticketID)
+		if e != nil {
+			return e
+		}
+		token, e := ticketing.TicketToken(r.Context(), tx, newID)
+		if e != nil {
+			return e
+		}
+		_, e = tx.Exec(r.Context(), `
+			UPDATE ticket_directory SET ticket_id=$2, token=$3
+			 WHERE producer_id=$1 AND ticket_id=$4`, producerID, newID, token, ticketID)
+		return e
+	})
+	if err != nil {
+		if errors.Is(err, nft.ErrNotReissuable) {
+			writeErr(w, http.StatusConflict, "ingresso não pode ser reemitido")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "ticket_id": newID})
 }
 
 // writeTransferErr mapeia os erros de transferência/mercado para códigos claros.
