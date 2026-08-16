@@ -63,7 +63,7 @@ func TestDashboardReflectsSale(t *testing.T) {
 		t.Fatalf("curva do lote: esperava sold_count 2 / revenue 10000, veio %v", lot0)
 	}
 	fin, _ := body["finance"].(map[string]any)
-	if fin["gross_cents"].(float64) != 10000 || fin["taxa_cents"].(float64) != 1350 || fin["repasse_cents"].(float64) != 8650 {
+	if fin["gross_cents"].(float64) != 10000 || fin["taxa_cents"].(float64) != 900 || fin["repasse_cents"].(float64) != 10000 {
 		t.Fatalf("financeiro: %v", fin)
 	}
 	chk, _ := body["checkin"].(map[string]any)
@@ -129,7 +129,8 @@ func TestAdminSummaryAndModeration(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("admin summary: %d", code)
 	}
-	if body["producers_total"].(float64) < 1 || body["revenue_today_cents"].(float64) < 500 {
+	// Faturamento do dia = taxa de plataforma (modelo Sympla §4): 450 para uma venda de face 5000.
+	if body["producers_total"].(float64) < 1 || body["revenue_today_cents"].(float64) < 400 {
 		t.Fatalf("admin summary inesperado: %v", body)
 	}
 

@@ -72,6 +72,26 @@ func Apurar(ctx context.Context, db Queryer, producerID uuid.UUID, valueCents in
 	}, nil
 }
 
+// TierRebatePct devolve o percentual do NÍVEL vigente do produtor na data `at` (o rebate
+// do programa). Usado pelo modelo de cobrança para descontar da taxa de plataforma.
+func TierRebatePct(ctx context.Context, db Queryer, producerID uuid.UUID, at time.Time) (float64, error) {
+	var ini, pro, sen float64
+	if err := db.QueryRow(ctx, `
+		SELECT tier_iniciante_pct, tier_pro_pct, tier_senior_pct
+		  FROM public.platform_fee_rules
+		 WHERE effective_from <= $1 ORDER BY effective_from DESC LIMIT 1`, at).Scan(&ini, &pro, &sen); err != nil {
+		return 0, err
+	}
+	switch TierAt(ctx, db, producerID, at) {
+	case "pro":
+		return pro, nil
+	case "senior":
+		return sen, nil
+	default:
+		return ini, nil
+	}
+}
+
 // TierAt devolve o nível vigente do produtor na data `at` (histórico ou atual).
 func TierAt(ctx context.Context, db Queryer, producerID uuid.UUID, at time.Time) string {
 	var tier string
@@ -126,20 +146,25 @@ func SetOrigination(ctx context.Context, pool *pgxpool.Pool, producerID, origina
 // e a participação do originador (inerte enquanto a participação for 0). Sob WithTenant.
 func SettleLedger(ctx context.Context, tx pgx.Tx, producerID, orderID, paymentID uuid.UUID) error {
 	var eventID uuid.UUID
-	var total int64
+	var total, face, platformFee, processing int64
 	var createdAt time.Time
-	if err := tx.QueryRow(ctx, `SELECT event_id, total_cents, created_at FROM orders WHERE id=$1`, orderID).Scan(&eventID, &total, &createdAt); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT event_id, total_cents, face_cents, platform_fee_cents, processing_fee_cents, created_at FROM orders WHERE id=$1`, orderID).
+		Scan(&eventID, &total, &face, &platformFee, &processing, &createdAt); err != nil {
 		return err
+	}
+	// Fallback legado (§4 não migrou season/mercado): ordem sem decomposição usa o modelo
+	// antigo (taxa embutida via Apurar sobre o total), preservando esses fluxos.
+	if face == 0 && total > 0 {
+		ap, err := Apurar(ctx, tx, producerID, total, createdAt)
+		if err != nil {
+			return err
+		}
+		platformFee = ap.PlatformNetCents
+		face = total - platformFee
+		processing = 0
 	}
 	var method string
 	_ = tx.QueryRow(ctx, `SELECT method FROM payments WHERE id=$1`, paymentID).Scan(&method)
-
-	ap, err := Apurar(ctx, tx, producerID, total, createdAt)
-	if err != nil {
-		return err
-	}
-	taxa := ap.PlatformNetCents
-	repasse := total - taxa
 
 	var endsAt *time.Time
 	_ = tx.QueryRow(ctx, `SELECT ends_at FROM events WHERE id=$1`, eventID).Scan(&endsAt)
@@ -148,19 +173,29 @@ func SettleLedger(ctx context.Context, tx pgx.Tx, producerID, orderID, paymentID
 		repasseAt = endsAt.Add(2 * 24 * time.Hour)
 	}
 
-	if _, err := tx.Exec(ctx, `INSERT INTO ledger_entries (event_id, order_id, payment_id, kind, amount_cents, available_at) VALUES ($1,$2,$3,'taxa',$4, now())`, eventID, orderID, paymentID, taxa); err != nil {
+	// Modelo Sympla (§4.3): três linhas por venda —
+	//   repasse       = valor de FACE ao produtor (D+2)
+	//   taxa          = taxa de plataforma (receita da Sapienza)
+	//   processamento = custo de adquirência repassado (0 enquanto provisório)
+	if _, err := tx.Exec(ctx, `INSERT INTO ledger_entries (event_id, order_id, payment_id, kind, amount_cents, available_at) VALUES ($1,$2,$3,'repasse',$4,$5)`, eventID, orderID, paymentID, face, repasseAt); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO ledger_entries (event_id, order_id, payment_id, kind, amount_cents, available_at) VALUES ($1,$2,$3,'repasse',$4,$5)`, eventID, orderID, paymentID, repasse, repasseAt); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO ledger_entries (event_id, order_id, payment_id, kind, amount_cents, available_at) VALUES ($1,$2,$3,'taxa',$4, now())`, eventID, orderID, paymentID, platformFee); err != nil {
 		return err
 	}
+	if processing > 0 {
+		if _, err := tx.Exec(ctx, `INSERT INTO ledger_entries (event_id, order_id, payment_id, kind, amount_cents, available_at) VALUES ($1,$2,$3,'processamento',$4, now())`, eventID, orderID, paymentID, processing); err != nil {
+			return err
+		}
+	}
+	// Retenção antifraude no cartão — PROVISÓRIO (5% do FACE, 60d): trava parte do repasse.
 	if method == "credit_card" {
-		ret := int64(math.Round(float64(total) * 0.05))
+		ret := int64(math.Round(float64(face) * 0.05))
 		if _, err := tx.Exec(ctx, `INSERT INTO ledger_entries (event_id, order_id, payment_id, kind, amount_cents, available_at) VALUES ($1,$2,$3,'retencao',$4, now() + interval '60 days')`, eventID, orderID, paymentID, ret); err != nil {
 			return err
 		}
 	}
-	return RecordOrigination(ctx, tx, producerID, eventID, orderID, taxa)
+	return RecordOrigination(ctx, tx, producerID, eventID, orderID, platformFee)
 }
 
 // RecordOrigination lança a participação do originador sobre a fatia da plataforma, se

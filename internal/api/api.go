@@ -131,6 +131,7 @@ func (s *Server) Handler() http.Handler {
 	// Camada pública (Onda 1): cadastro público de produtor (landing B2B) — nasce pending.
 	mux.HandleFunc("POST /api/v1/public/producer-signup", s.rateLimited("producer-signup", s.producerSignup))
 	// Checkout (Etapa 1.4): compra é PÚBLICA (comprador sem conta); webhook é global.
+	mux.HandleFunc("POST /api/v1/public/checkout/quote", s.rateLimited("quote", s.publicQuote))
 	mux.HandleFunc("POST /api/v1/public/checkout", s.rateLimited("checkout", s.publicCheckout))
 	mux.HandleFunc("POST /api/v1/webhooks/asaas", s.asaasWebhook)
 	// Lista de convidados / cortesias — do owner.

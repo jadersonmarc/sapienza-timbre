@@ -13,6 +13,7 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/checkout"
 	"github.com/jadersonmarc/sapienza-timbre/internal/inventory"
 	"github.com/jadersonmarc/sapienza-timbre/internal/market"
+	"github.com/jadersonmarc/sapienza-timbre/internal/pricing"
 	"github.com/jadersonmarc/sapienza-timbre/internal/season"
 	"github.com/jadersonmarc/sapienza-timbre/internal/store"
 )
@@ -55,6 +56,37 @@ func (s *Server) publicCheckout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, res)
+}
+
+// publicQuote devolve a decomposição de preço (valor de face + taxa de conveniência +
+// total) sem criar ordem — a tela de checkout mostra o total antes de confirmar e recalcula
+// quando o comprador troca o método (§4.3). Resolve o produtor pelo diretório.
+func (s *Server) publicQuote(w http.ResponseWriter, r *http.Request) {
+	var req checkout.Request
+	if err := decode(w, r, &req); err != nil || req.EventID == uuid.Nil {
+		writeErr(w, http.StatusBadRequest, "event_id e método obrigatórios")
+		return
+	}
+	producerID, err := s.producerOfEvent(r.Context(), req.EventID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeErr(w, http.StatusNotFound, "evento não encontrado")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var bd pricing.Breakdown
+	err = s.withTenant(r.Context(), producerID, func(tx pgx.Tx) error {
+		var e error
+		bd, e = checkout.Quote(r.Context(), tx, producerID, req)
+		return e
+	})
+	if err != nil {
+		writeCheckoutErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, bd)
 }
 
 // asaasWebhook recebe a confirmação de pagamento (endpoint global). Idempotente:

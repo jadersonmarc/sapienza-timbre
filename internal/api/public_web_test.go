@@ -194,6 +194,27 @@ func TestProducerSignupPending(t *testing.T) {
 	}
 }
 
+// TestPublicQuoteDecomposition (§4): a cotação devolve a decomposição face + conveniência
+// + total, sem criar ordem.
+func TestPublicQuoteDecomposition(t *testing.T) {
+	ts, _ := setup(t)
+	_, owner := createProducer(t, ts, "CasaQuote", "owner@quote.com", "senha1234")
+	eventID := createEvent(t, ts, owner, "Show Quote", "shows")
+	_ = createLot(t, ts, owner, eventID, "Lote 1", 5000, 100, 0)
+	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
+		t.Fatalf("publish: %d", code)
+	}
+	code, bd := do(t, ts, "POST", "/api/v1/public/checkout/quote", nil, map[string]any{
+		"event_id": eventID, "quantity": 2, "method": "pix",
+	})
+	if code != http.StatusOK {
+		t.Fatalf("quote: %d %v", code, bd)
+	}
+	if bd["face_cents"].(float64) != 10000 || bd["convenience_fee_cents"].(float64) != 900 || bd["total_cents"].(float64) != 10900 {
+		t.Fatalf("decomposição inesperada: %v", bd)
+	}
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 // insertOTP grava um código de acesso conhecido (hash bcrypt) para o e-mail.

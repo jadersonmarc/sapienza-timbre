@@ -102,8 +102,10 @@ type Finance struct {
 // EventFinance soma ordens pagas (bruto) e o razão por tipo.
 func EventFinance(ctx context.Context, tx pgx.Tx, eventID uuid.UUID) (Finance, error) {
 	var f Finance
+	// Bruto do produtor = valor de FACE (modelo Sympla §4: a taxa é do comprador, não sai
+	// do produtor). O repasse é o mesmo face, limpo.
 	if err := tx.QueryRow(ctx, `
-		SELECT COALESCE(SUM(total_cents),0) FROM orders WHERE event_id=$1 AND status='paid'`, eventID).Scan(&f.GrossCents); err != nil {
+		SELECT COALESCE(SUM(face_cents),0) FROM orders WHERE event_id=$1 AND status='paid'`, eventID).Scan(&f.GrossCents); err != nil {
 		return f, err
 	}
 	rows, err := tx.Query(ctx, `

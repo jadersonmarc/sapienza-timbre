@@ -18,6 +18,7 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/catalog"
 	"github.com/jadersonmarc/sapienza-timbre/internal/inventory"
 	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
+	"github.com/jadersonmarc/sapienza-timbre/internal/pricing"
 	"github.com/jadersonmarc/sapienza-timbre/internal/program"
 	"github.com/jadersonmarc/sapienza-timbre/internal/promo"
 )
@@ -68,14 +69,17 @@ type Request struct {
 	BuyerCPF     string      `json:"buyer_cpf"`
 }
 
-// Result é o retorno do StartCheckout.
+// Result é o retorno do StartCheckout. AmountCents é o TOTAL cobrado (face + conveniência);
+// FaceCents e ConvenienceFeeCents dão a decomposição para a tela de confirmação.
 type Result struct {
-	OrderID     uuid.UUID `json:"order_id"`
-	PaymentID   uuid.UUID `json:"payment_id"`
-	AmountCents int64     `json:"amount_cents"`
-	Method      string    `json:"method"`
-	AsaasRef    string    `json:"asaas_ref"`
-	PixCode     string    `json:"pix_code,omitempty"`
+	OrderID             uuid.UUID `json:"order_id"`
+	PaymentID           uuid.UUID `json:"payment_id"`
+	AmountCents         int64     `json:"amount_cents"`
+	FaceCents           int64     `json:"face_cents"`
+	ConvenienceFeeCents int64     `json:"convenience_fee_cents"`
+	Method              string    `json:"method"`
+	AsaasRef            string    `json:"asaas_ref"`
+	PixCode             string    `json:"pix_code,omitempty"`
 }
 
 type splitInfo struct {
@@ -121,7 +125,13 @@ func StartCheckout(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, pr
 	if err != nil {
 		return Result{}, err
 	}
-	total := max(subtotal-discount, 0)
+	// Modelo Sympla (§4): o produtor recebe o FACE limpo; o comprador paga face + conveniência.
+	face := max(subtotal-discount, 0)
+	rebatePct, err := program.TierRebatePct(ctx, tx, prod.ID, time.Now())
+	if err != nil {
+		return Result{}, err
+	}
+	bd := pricing.Compute(face, req.Method, rebatePct)
 
 	// Assento (seated): DEPOIS do lote (ordem lote→assento). Se o pagamento não confirmar,
 	// a tx inteira rola atrás e a reserva do lote volta junto; a varredura de abandono
@@ -135,24 +145,23 @@ func StartCheckout(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, pr
 		holdID = &id
 	}
 
-	// Apuração (taxa 15% + rebate do nível na data da venda) → split producer vs. plataforma.
-	ap, err := program.Apurar(ctx, tx, prod.ID, total, time.Now())
-	if err != nil {
-		return Result{}, err
-	}
+	// Split: o produtor recebe o FACE; a plataforma fica com a taxa de conveniência (a
+	// adquirência deduz o processamento do total no ato).
 	wallet := ""
 	if prod.AsaasWalletID != nil {
 		wallet = *prod.AsaasWalletID
 	}
-	split := splitInfo{ProducerCents: total - ap.PlatformNetCents, PlatformCents: ap.PlatformNetCents, ProducerWallet: wallet}
+	split := splitInfo{ProducerCents: bd.FaceCents, PlatformCents: bd.ConvenienceFeeCents, ProducerWallet: wallet}
 	splitJSON, _ := json.Marshal(split)
 
-	// Ordem.
+	// Ordem: total_cents = o que o comprador paga; guardamos a decomposição para o razão/estorno.
 	var orderID uuid.UUID
 	if err := tx.QueryRow(ctx, `
-		INSERT INTO orders (event_id, buyer_email, buyer_cpf, coupon_id, campaign_id, total_cents, status)
-		VALUES ($1,$2,$3,$4,$5,$6,'pending') RETURNING id`,
-		req.EventID, nilIfEmpty(req.BuyerEmail), nilIfEmpty(req.BuyerCPF), couponID, req.CampaignID, total,
+		INSERT INTO orders (event_id, buyer_email, buyer_cpf, coupon_id, campaign_id, total_cents,
+			face_cents, platform_fee_cents, processing_fee_cents, status)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending') RETURNING id`,
+		req.EventID, nilIfEmpty(req.BuyerEmail), nilIfEmpty(req.BuyerCPF), couponID, req.CampaignID,
+		bd.TotalCents, bd.FaceCents, bd.PlatformFeeCents, bd.ProcessingCents,
 	).Scan(&orderID); err != nil {
 		return Result{}, fmt.Errorf("criar ordem: %w", err)
 	}
@@ -175,18 +184,18 @@ func StartCheckout(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, pr
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO payments (order_id, method, installments, amount_cents, status, split)
 		VALUES ($1,$2,$3,$4,'pending',$5::jsonb) RETURNING id`,
-		orderID, req.Method, installments, total, string(splitJSON),
+		orderID, req.Method, installments, bd.TotalCents, string(splitJSON),
 	).Scan(&paymentID); err != nil {
 		return Result{}, fmt.Errorf("criar pagamento: %w", err)
 	}
 
-	// Cobrança no gateway.
+	// Cobrança no gateway pelo TOTAL; o split entrega o FACE ao produtor.
 	var splitItems []payment.SplitItem
 	if prod.AsaasWalletID != nil && *prod.AsaasWalletID != "" && split.ProducerCents > 0 {
 		splitItems = []payment.SplitItem{{WalletID: *prod.AsaasWalletID, FixedCents: split.ProducerCents}}
 	}
 	charge, err := gw.CreateCharge(ctx, payment.ChargeRequest{
-		OrderID: orderID.String(), Method: req.Method, AmountCents: total, Installments: installments,
+		OrderID: orderID.String(), Method: req.Method, AmountCents: bd.TotalCents, Installments: installments,
 		BuyerName: req.BuyerName, BuyerEmail: req.BuyerEmail, BuyerCPF: req.BuyerCPF, Split: splitItems,
 	})
 	if err != nil {
@@ -205,9 +214,44 @@ func StartCheckout(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, pr
 	}
 
 	return Result{
-		OrderID: orderID, PaymentID: paymentID, AmountCents: total,
+		OrderID: orderID, PaymentID: paymentID, AmountCents: bd.TotalCents,
+		FaceCents: bd.FaceCents, ConvenienceFeeCents: bd.ConvenienceFeeCents,
 		Method: req.Method, AsaasRef: charge.AsaasRef, PixCode: charge.PixCode,
 	}, nil
+}
+
+// Quote calcula a decomposição de preço (face + conveniência) SEM reservar nem criar
+// ordem — para a tela de checkout mostrar o total e recalcular quando o comprador troca o
+// método (§4.3). Resolve o lote vigente só para precificar.
+func Quote(ctx context.Context, tx pgx.Tx, producerID uuid.UUID, req Request) (pricing.Breakdown, error) {
+	if req.Quantity <= 0 {
+		return pricing.Breakdown{}, ErrBadRequest
+	}
+	if req.HalfPriceQty < 0 || req.HalfPriceQty > req.Quantity {
+		return pricing.Breakdown{}, ErrBadRequest
+	}
+	lot, err := catalog.CurrentLot(ctx, tx, req.EventID)
+	if errors.Is(err, catalog.ErrNoCurrentLot) {
+		return pricing.Breakdown{}, ErrLotUnavailable
+	}
+	if err != nil {
+		return pricing.Breakdown{}, err
+	}
+	unit, err := unitPrices(ctx, tx, lot, req)
+	if err != nil {
+		return pricing.Breakdown{}, err
+	}
+	subtotal := applyHalfPrice(unit, req.HalfPriceQty)
+	_, discount, err := applyCoupon(ctx, tx, req.EventID, req.CouponCode, subtotal)
+	if err != nil {
+		return pricing.Breakdown{}, err
+	}
+	face := max(subtotal-discount, 0)
+	rebatePct, err := program.TierRebatePct(ctx, tx, producerID, time.Now())
+	if err != nil {
+		return pricing.Breakdown{}, err
+	}
+	return pricing.Compute(face, req.Method, rebatePct), nil
 }
 
 // reserveCurrentLot resolve o lote vigente do evento e reserva `qty` nele, tolerando a

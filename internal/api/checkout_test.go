@@ -70,8 +70,9 @@ func TestCheckoutPixStandingCycle(t *testing.T) {
 	if body["pix_code"] == nil || body["pix_code"] == "" {
 		t.Fatalf("esperava pix_code no checkout, veio %v", body)
 	}
-	if amt := body["amount_cents"].(float64); amt != 10000 {
-		t.Fatalf("esperava amount 10000, veio %v", amt)
+	// Modelo Sympla (§4): comprador paga face 10000 + conveniência (10% − rebate 10% = 900) = 10900.
+	if amt := body["amount_cents"].(float64); amt != 10900 {
+		t.Fatalf("esperava amount 10900 (face 10000 + conveniência 900), veio %v", amt)
 	}
 	asaasRef, _ := body["asaas_ref"].(string)
 
@@ -94,15 +95,15 @@ func TestCheckoutPixStandingCycle(t *testing.T) {
 		t.Fatalf("esperava sold_count=2, veio %d", sold)
 	}
 
-	// Split registrado: taxa 10% (1000) e repasse 9000, tanto no razão quanto no payment.
-	if taxa := scanInt(t, ctx, pool, pid, `SELECT amount_cents FROM ledger_entries WHERE kind='taxa'`); taxa != 1350 {
-		t.Fatalf("esperava taxa 1350 (13,5%% de 10000), veio %d", taxa)
+	// Razão (§4.3): repasse = FACE (10000, limpo ao produtor); taxa = plataforma (900).
+	if taxa := scanInt(t, ctx, pool, pid, `SELECT amount_cents FROM ledger_entries WHERE kind='taxa'`); taxa != 900 {
+		t.Fatalf("esperava taxa 900 (10%% de 10000 − rebate 10%%), veio %d", taxa)
 	}
-	if repasse := scanInt(t, ctx, pool, pid, `SELECT amount_cents FROM ledger_entries WHERE kind='repasse'`); repasse != 8650 {
-		t.Fatalf("esperava repasse 8650, veio %d", repasse)
+	if repasse := scanInt(t, ctx, pool, pid, `SELECT amount_cents FROM ledger_entries WHERE kind='repasse'`); repasse != 10000 {
+		t.Fatalf("esperava repasse 10000 (face limpo), veio %d", repasse)
 	}
-	if pc := scanInt(t, ctx, pool, pid, `SELECT (split->>'platform_cents')::int FROM payments LIMIT 1`); pc != 1350 {
-		t.Fatalf("esperava split platform_cents 1350, veio %d", pc)
+	if pc := scanInt(t, ctx, pool, pid, `SELECT (split->>'platform_cents')::int FROM payments LIMIT 1`); pc != 900 {
+		t.Fatalf("esperava split platform_cents 900, veio %d", pc)
 	}
 
 	// Idempotência: reenviar o webhook não duplica ingressos.

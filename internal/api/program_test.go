@@ -44,10 +44,10 @@ func TestProducerProgram(t *testing.T) {
 		t.Fatalf("após transição: %v", body)
 	}
 
-	// Venda de 10000 como sênior: taxa = 1500 − rebate 300 (20% da taxa) = 1200.
+	// Venda de face 10000 como sênior (modelo Sympla §4): taxa = 10% (1000) − rebate 20% (200) = 800.
 	sellAt(t, ts, owner, 10000)
-	if taxa := scanInt(t, ctx, pool, pid, `SELECT amount_cents FROM ledger_entries WHERE kind='taxa'`); taxa != 1200 {
-		t.Fatalf("taxa sênior: esperava 1200, veio %d", taxa)
+	if taxa := scanInt(t, ctx, pool, pid, `SELECT amount_cents FROM ledger_entries WHERE kind='taxa'`); taxa != 800 {
+		t.Fatalf("taxa sênior: esperava 800, veio %d", taxa)
 	}
 
 	// Originação inerte: participação default 0 → nenhuma apuração de originador.
