@@ -7,6 +7,20 @@ NFT, assinatura Ed25519 verificável offline, carteira invisível por MPC). Repo
 **não** entra no `sapienza-core`. Reusa `../sapienza-kit` (tenancy). Ver `SPEC.md`
 (arquitetura/regras) e `AGENTS.md` (convenções). Estado: **Etapa 1.1 (Fundação)**.
 
+
+## Arquitetura (alinhamento pós-frontend)
+
+Este repo é o **data plane / API JSON** do Timbre. **Toda a UI voltada a cliente vive no
+frontend Next `../sapienza-timbre-web`** (comprador + **painel do produtor em `/painel`**),
+que consome esta API por proxy server-side (cookie httpOnly + Bearer — o Go não precisa de
+CORS de navegador).
+
+- **Servido pelo Go:** `/api/v1/` (API), `/health`, e **`/gate`** (portaria PWA offline
+  embutida — exceção intencional, crítica na porta).
+- **`/dash` embutido (`internal/dashweb`): DEPRECADO.** Substituído pelo `/painel` do Next;
+  mantido dormente (sem link) até validar o painel novo em produção, depois removido.
+- Domínios: API em `timbre-api.<dominio>`; site (comprador + painel) em `timbre.<dominio>`.
+
 ## Stack
 
 - Go 1.26. Importa `github.com/jadersonmarc/sapienza-kit` (replace local `../sapienza-kit`),
