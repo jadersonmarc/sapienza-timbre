@@ -17,9 +17,10 @@ CORS de navegador).
 
 - **Servido pelo Go:** `/api/v1/` (API), `/health`, e **`/gate`** (portaria PWA offline
   embutida — exceção intencional, crítica na porta).
-- **`/dash` embutido (`internal/dashweb`): DEPRECADO.** Substituído pelo `/painel` do Next;
-  mantido dormente (sem link) até validar o painel novo em produção, depois removido.
-- Domínios: API em `timbre-api.<dominio>`; site (comprador + painel) em `timbre.<dominio>`.
+- **`/dash` embutido (`internal/dashweb`): REMOVIDO.** O painel do produtor vive no `/painel`
+  do Next; o painel administrativo da plataforma vive num `/admin` (também Next), com auth
+  JWT própria (escopo "admin", papéis `admin`/`super_admin`).
+- Domínios: API em `timbre-api.<dominio>`; site (comprador + painéis) em `timbre.<dominio>`.
 
 ## Stack
 
@@ -48,7 +49,8 @@ make compose-up     # sobe Postgres próprio + binário
 - `db/migrations/tenant/` — operação por produtor (via `kit/tenancy.MigrationRunner`).
 - `internal/config` — env → struct, valida obrigatórios.
 - `internal/db` — pool + `MigratePublic` (runner do schema `public`).
-- `internal/auth` — JWT nativo do Timbre (HS256) + bcrypt + permissões granulares.
+- `internal/auth` — JWT nativo do Timbre (HS256) + bcrypt + permissões granulares; escopos
+  separados: colaborador, comprador (audience "buyer") e admin de plataforma (audience "admin").
 - `internal/producer` — cria produtor e provisiona o schema tenant_<id>.
 - `internal/store` — pgx à mão (control plane em `public`).
 - `internal/catalog` — eventos/lotes/cupons (1.2) + setores/assentos/preços (1.3).
@@ -60,7 +62,7 @@ make compose-up     # sobe Postgres próprio + binário
 - `internal/gate` — portaria: valida QR offline, check-in + presença, reconciliação do sync (1.6/2.4).
 - `internal/gateweb` — PWA da portaria (assets embutidos, servida em /gate) (1.6).
 - `internal/dash` — agregações dos painéis (produtor + plataforma) (1.7).
-- `internal/dashweb` — painel do produtor em tempo real (assets embutidos, /dash) (1.7).
+- `internal/api` — API do produto: guard/withTenant + handlers de catálogo/inventário/checkout/portaria/painel/admin.
 - `internal/chain` — emissão/transferência on-chain assíncrona: interface + Noop/Base + fila chain_jobs/worker (1.8/2.1).
 - `internal/ledger` — fechamento de repasse em payouts (D+2, retenção, estorno) (1.8).
 - `internal/program` — programa de produtores: taxa 15% + nível (10/15/20) por data da venda, originação (2.7).
@@ -71,7 +73,6 @@ make compose-up     # sobe Postgres próprio + binário
 - `internal/trust` — descoberta e confiança: reviews (só quem entrou), reputação, descoberta (2.6).
 - `internal/promo` — divulgação: campanhas UTM/pixels, lista de espera + aviso na virada, perfil do público (2.8).
 - `internal/audience` — Fase 3: segmentação por presença, consentimento granular, recompensa, alcance sem identidade.
-- `internal/api` — API do produto: guard/withTenant + handlers de catálogo/inventário/checkout/portaria/painel/admin.
 - `internal/{chain,payment,wallet,notify}` — seams (interfaces + Noop/stub).
 
 ## Convenções (regras de ouro)

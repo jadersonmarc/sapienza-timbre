@@ -133,6 +133,38 @@ func GetProducer(ctx context.Context, db DBTX, id uuid.UUID) (Producer, error) {
 	return p, err
 }
 
+// ListProducers lista os produtores (painel admin). status vazio = todos.
+func ListProducers(ctx context.Context, db DBTX, status string) ([]Producer, error) {
+	q := `SELECT id, name, tier, retention_pct, status, asaas_wallet_id, created_at
+	        FROM producers`
+	if status != "" {
+		q += ` WHERE status = $1`
+	}
+	q += ` ORDER BY created_at DESC`
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	if status != "" {
+		rows, err = db.Query(ctx, q, status)
+	} else {
+		rows, err = db.Query(ctx, q)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Producer
+	for rows.Next() {
+		var p Producer
+		if err := rows.Scan(&p.ID, &p.Name, &p.Tier, &p.RetentionPct, &p.Status, &p.AsaasWalletID, &p.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // ListPermissions devolve as permissões granulares de um colaborador.
 func ListPermissions(ctx context.Context, db DBTX, collaboratorID uuid.UUID) ([]string, error) {
 	rows, err := db.Query(ctx, `

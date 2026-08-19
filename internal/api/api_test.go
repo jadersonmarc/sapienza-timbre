@@ -88,6 +88,27 @@ func bearer(token string) map[string]string {
 	return map[string]string{"Authorization": "Bearer " + token}
 }
 
+// seedAdmin cria um operador da plataforma (papel role) e devolve o header Bearer com o
+// JWT de admin (escopo "admin"). Substituiu o X-Admin-Token nos testes de /admin.
+func seedAdmin(t *testing.T, ts *httptest.Server, pool *pgxpool.Pool, email, role string) map[string]string {
+	t.Helper()
+	hash, err := auth.HashPassword("senha1234")
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO admins (email, password_hash, role) VALUES ($1,$2,$3)
+		ON CONFLICT (email) DO UPDATE SET role=EXCLUDED.role`, email, hash, role); err != nil {
+		t.Fatalf("seed admin: %v", err)
+	}
+	code, body := do(t, ts, "POST", "/api/v1/admin/login", nil,
+		map[string]any{"email": email, "password": "senha1234"})
+	if code != http.StatusOK {
+		t.Fatalf("admin login: %d %v", code, body)
+	}
+	return bearer(body["token"].(string))
+}
+
 // createProducer cria um produtor e devolve (producerID, ownerToken).
 func createProducer(t *testing.T, ts *httptest.Server, name, email, pass string) (string, string) {
 	t.Helper()

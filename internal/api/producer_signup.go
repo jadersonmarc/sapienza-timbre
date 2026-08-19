@@ -3,6 +3,8 @@ package api
 import (
 	"net/http"
 	"strings"
+
+	"github.com/jadersonmarc/sapienza-timbre/internal/auth"
 )
 
 type producerSignupReq struct {
@@ -12,8 +14,8 @@ type producerSignupReq struct {
 }
 
 // producerSignup é o destino da landing B2B (§3.12): cadastro PÚBLICO (sem X-Admin-Token)
-// que cria o produtor PENDENTE de aprovação. O owner já pode logar; o produtor entra na
-// fila de aprovação do admin (POST /admin/producers/{id}/approve).
+// que cria o produtor ATIVO na hora (self-service) e já devolve o token do owner. A
+// moderação é REATIVA: produtor só é suspenso se houver denúncia/comportamento indevido.
 func (s *Server) producerSignup(w http.ResponseWriter, r *http.Request) {
 	var body producerSignupReq
 	if err := decode(w, r, &body); err != nil {
@@ -26,7 +28,7 @@ func (s *Server) producerSignup(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "name, owner_email e owner_password (mín. 8) obrigatórios")
 		return
 	}
-	res, err := s.prov.CreatePending(r.Context(), name, email, body.OwnerPassword)
+	res, err := s.prov.Create(r.Context(), name, email, body.OwnerPassword)
 	if err != nil {
 		if isUniqueViolation(err) {
 			writeErr(w, http.StatusConflict, "e-mail já cadastrado")
@@ -35,8 +37,19 @@ func (s *Server) producerSignup(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	tok, err := s.auth.Issue(auth.Identity{
+		CollaboratorID: res.Owner.ID,
+		ProducerID:     res.Producer.ID,
+		Owner:          true,
+		SessionVersion: res.Owner.SessionVersion,
+		Permissions:    []string{},
+	})
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"producer": res.Producer, "owner": res.Owner,
-		"message": "Cadastro recebido. Seu produtor está em análise e será liberado após aprovação.",
+		"producer": res.Producer, "owner": res.Owner, "token": tok,
+		"message": "Produtor criado. Sua conta já está ativa — acesse o painel para publicar eventos.",
 	})
 }

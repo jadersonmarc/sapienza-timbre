@@ -12,10 +12,11 @@ import (
 )
 
 // setTier registra o nível do produtor via endpoint de admin (para os testes de apuração).
-func setTier(t *testing.T, ts *httptest.Server, pidStr, tier string) {
+func setTier(t *testing.T, ts *httptest.Server, pool *pgxpool.Pool, pidStr, tier string) {
 	t.Helper()
+	admin := seedAdmin(t, ts, pool, "admin@tier.com", "super_admin")
 	if code, _ := do(t, ts, "POST", "/api/v1/admin/producers/"+pidStr+"/tier",
-		map[string]string{"X-Admin-Token": adminToken}, map[string]any{"tier": tier}); code != http.StatusOK {
+		admin, map[string]any{"tier": tier}); code != http.StatusOK {
 		t.Fatalf("set tier %s: %d", tier, code)
 	}
 }

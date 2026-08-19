@@ -6,12 +6,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"log/slog"
 	"net/http"
 	"os"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jadersonmarc/sapienza-kit/tenancy"
 
 	"github.com/jadersonmarc/sapienza-timbre/db/migrations"
@@ -19,7 +22,6 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/auth"
 	"github.com/jadersonmarc/sapienza-timbre/internal/chain"
 	"github.com/jadersonmarc/sapienza-timbre/internal/config"
-	"github.com/jadersonmarc/sapienza-timbre/internal/dashweb"
 	"github.com/jadersonmarc/sapienza-timbre/internal/db"
 	"github.com/jadersonmarc/sapienza-timbre/internal/gateweb"
 	"github.com/jadersonmarc/sapienza-timbre/internal/inventory"
@@ -27,6 +29,7 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/notify"
 	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
 	"github.com/jadersonmarc/sapienza-timbre/internal/producer"
+	"github.com/jadersonmarc/sapienza-timbre/internal/store"
 	"github.com/jadersonmarc/sapienza-timbre/internal/ticketing"
 	"github.com/jadersonmarc/sapienza-timbre/internal/wallet"
 )
@@ -55,6 +58,17 @@ func main() {
 	runner := tenancy.NewMigrationRunner(pool, migrations.Tenant)
 	if err := runner.ApplyToAllTenants(ctx); err != nil {
 		log.Fatalf("migrate tenants (catch-up): %v", err)
+	}
+
+	// Seed do primeiro super_admin do painel /admin (idempotente). Sem ele, nenhum
+	// operador consegue logar. O X-Admin-Token continua só para o bootstrap de produtor.
+	if email := os.Getenv("TIMBRE_ADMIN_EMAIL"); email != "" {
+		if pass := os.Getenv("TIMBRE_ADMIN_PASSWORD"); pass == "" {
+			log.Fatalf("TIMBRE_ADMIN_EMAIL definido sem TIMBRE_ADMIN_PASSWORD")
+		}
+		if err := seedSuperAdmin(ctx, pool, email, os.Getenv("TIMBRE_ADMIN_PASSWORD")); err != nil {
+			log.Fatalf("seed super admin: %v", err)
+		}
 	}
 
 	// Gateway de pagamento: Asaas real se houver credencial, senão o Fake (default).
@@ -125,11 +139,6 @@ func main() {
 	mux.HandleFunc("/gate", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/gate/", http.StatusFound)
 	})
-	// Painel do produtor (tempo real, celular) — assets estáticos embutidos.
-	mux.Handle("/dash/", http.StripPrefix("/dash/", http.FileServer(http.FS(dashweb.FS()))))
-	mux.HandleFunc("/dash", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/dash/", http.StatusFound)
-	})
 
 	addr := ":" + cfg.Port
 	httpSrv := &http.Server{
@@ -168,4 +177,20 @@ func logLevel(s string) slog.Level {
 	default:
 		return slog.LevelInfo
 	}
+}
+
+// seedSuperAdmin cria o primeiro super_admin do painel /admin (idempotente). É o ponto
+// de entrada do operador da plataforma; sem ele, ninguém loga no /admin.
+func seedSuperAdmin(ctx context.Context, pool *pgxpool.Pool, email, password string) error {
+	if _, err := store.FindAdminByEmail(ctx, pool, email); err == nil {
+		return nil // já existe
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		return err
+	}
+	_, err = store.CreateAdmin(ctx, pool, email, hash, auth.RoleSuperAdmin)
+	return err
 }

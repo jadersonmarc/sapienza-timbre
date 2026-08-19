@@ -101,9 +101,10 @@ func (a *Authenticator) Verify(tokenString string) (*Claims, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Escopo (§4.1): um token de COMPRADOR (audience "buyer") nunca vale em rota de produtor.
-	if slices.Contains(claims.Audience, BuyerAudience) {
-		return nil, fmt.Errorf("token de comprador não é válido nesta superfície")
+	// Escopo (§4.1): um token de COMPRADOR (audience "buyer") ou de ADMIN (audience
+	// "admin") nunca vale em rota de produtor.
+	if slices.Contains(claims.Audience, BuyerAudience) || slices.Contains(claims.Audience, AdminAudience) {
+		return nil, fmt.Errorf("token de outro escopo não é válido nesta superfície")
 	}
 	return claims, nil
 }

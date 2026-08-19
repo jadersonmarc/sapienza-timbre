@@ -129,8 +129,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/public/me/tickets/{id}/transfer", s.buyerAuthed(s.buyerTransfer))
 	mux.HandleFunc("POST /api/v1/public/me/tickets/{id}/listings", s.buyerAuthed(s.buyerCreateListing))
 	mux.HandleFunc("POST /api/v1/public/me/tickets/{id}/reissue", s.buyerAuthed(s.buyerReissue))
-	// Camada pública (Onda 1): cadastro público de produtor (landing B2B) — nasce pending.
+	// Camada pública (Onda 1): cadastro público de produtor (landing B2B) — self-service,
+	// nasce ativo. E cadastro de artista (catálogo global), também ativo na hora.
 	mux.HandleFunc("POST /api/v1/public/producer-signup", s.rateLimited("producer-signup", s.producerSignup))
+	mux.HandleFunc("POST /api/v1/public/artist-signup", s.rateLimited("artist-signup", s.artistSignup))
 	// Checkout (Etapa 1.4): compra é PÚBLICA (comprador sem conta); webhook é global.
 	mux.HandleFunc("POST /api/v1/public/checkout/quote", s.rateLimited("quote", s.publicQuote))
 	mux.HandleFunc("POST /api/v1/public/checkout", s.rateLimited("checkout", s.publicCheckout))
@@ -174,11 +176,33 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/public/checkins/{id}/review", s.submitReview)
 	mux.HandleFunc("GET /api/v1/public/producers/{id}/reputation", s.producerReputation)
 	mux.HandleFunc("GET /api/v1/public/subjects/{id}/discovery", s.subjectDiscovery)
-	// Painel administrativo (plataforma) — X-Admin-Token.
+	// Painel administrativo (plataforma) — JWT de admin (escopo "admin"). O X-Admin-Token
+	// ficou restrito ao bootstrap (POST /producers). Aprovação manual virou exceção
+	// (self-service); o approve fica para reativar produtor suspenso.
+	mux.HandleFunc("POST /api/v1/admin/login", s.adminLogin)
+	mux.HandleFunc("GET /api/v1/admin/me", s.requireAdmin(s.adminMe))
 	mux.HandleFunc("GET /api/v1/admin/summary", s.requireAdmin(s.adminSummary))
+	mux.HandleFunc("GET /api/v1/admin/producers", s.requireAdmin(s.listAdminProducers))
 	mux.HandleFunc("POST /api/v1/admin/producers/{id}/approve", s.requireAdmin(s.adminSetProducerStatus("active")))
 	mux.HandleFunc("POST /api/v1/admin/producers/{id}/suspend", s.requireAdmin(s.adminSetProducerStatus("suspended")))
 	mux.HandleFunc("POST /api/v1/admin/producers/{pid}/events/{eid}/suspend", s.requireAdmin(s.adminSuspendEvent))
+	// Catálogo global de artistas (admin) e visão consolidada de eventos.
+	mux.HandleFunc("GET /api/v1/admin/artists", s.requireAdmin(s.listArtists))
+	mux.HandleFunc("POST /api/v1/admin/artists", s.requireAdmin(s.createArtist))
+	mux.HandleFunc("PATCH /api/v1/admin/artists/{id}", s.requireAdmin(s.patchArtist))
+	mux.HandleFunc("POST /api/v1/admin/artists/{id}/status", s.requireAdmin(s.setArtistStatus))
+	mux.HandleFunc("GET /api/v1/admin/events", s.requireAdmin(s.listAdminEvents))
+	// Moderação (reativa), auditoria e relatórios consolidados.
+	mux.HandleFunc("GET /api/v1/admin/moderation/queue", s.requireAdmin(s.moderationQueue))
+	mux.HandleFunc("PATCH /api/v1/admin/moderation/{id}", s.requireAdmin(s.resolveModeration))
+	mux.HandleFunc("GET /api/v1/admin/audit-log", s.requireAdmin(s.auditLog))
+	mux.HandleFunc("GET /api/v1/admin/reports/sales", s.requireAdmin(s.reportsSales))
+	// Gestão de operadores — só super_admin.
+	mux.HandleFunc("GET /api/v1/admin/admins", s.requireSuperAdmin(s.listAdmins))
+	mux.HandleFunc("POST /api/v1/admin/admins", s.requireSuperAdmin(s.createAdmin))
+	mux.HandleFunc("PATCH /api/v1/admin/admins/{id}", s.requireSuperAdmin(s.setAdminRole))
+	// Denúncia pública (moderação reativa) — com limite por IP+rota.
+	mux.HandleFunc("POST /api/v1/public/moderation/flags", s.rateLimited("flag", s.createModerationFlag))
 	// Programa de produtores (Etapa 2.7): nível e originação (admin); nível/extrato (produtor).
 	mux.HandleFunc("POST /api/v1/admin/producers/{id}/tier", s.requireAdmin(s.adminSetTier))
 	mux.HandleFunc("POST /api/v1/admin/producers/{id}/origination", s.requireAdmin(s.adminSetOrigination))

@@ -17,7 +17,7 @@ func TestAudienceConsentReachNoIdentity(t *testing.T) {
 	pidStr, _ := createProducer(t, ts, "Casa Audiencia", "owner@audiencia.com", "senha1234")
 	pid := uuid.MustParse(pidStr)
 	ctx := context.Background()
-	admin := map[string]string{"X-Admin-Token": adminToken}
+	admin := seedAdmin(t, ts, pool, "admin@audiencia.com", "super_admin")
 
 	// Dois sujeitos: A com 2 presenças, B com 1.
 	var sA, sB uuid.UUID

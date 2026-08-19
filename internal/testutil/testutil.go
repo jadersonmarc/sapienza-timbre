@@ -67,4 +67,8 @@ func clean(ctx context.Context, t *testing.T, pool *pgxpool.Pool) {
 	if _, err := pool.Exec(ctx, `TRUNCATE subjects CASCADE`); err != nil {
 		t.Fatalf("truncate subjects: %v", err)
 	}
+	// Camada do painel /admin: operadores, catálogo global, moderação e auditoria.
+	if _, err := pool.Exec(ctx, `TRUNCATE admins, artists, moderation_flags, audit_log CASCADE`); err != nil {
+		t.Fatalf("truncate admin: %v", err)
+	}
 }

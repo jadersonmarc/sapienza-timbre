@@ -56,6 +56,8 @@ curl -sX POST localhost:8082/api/v1/collaborators -H "Authorization: Bearer $TOK
 | `DATABASE_URL` | sim | Postgres **próprio** do Timbre |
 | `TIMBRE_JWT_SECRET` | sim | assina/valida a sessão nativa (HS256) |
 | `TIMBRE_ADMIN_TOKEN` | não | bootstrap de produtor; vazio desliga `POST /producers` |
+| `TIMBRE_ADMIN_EMAIL` | não | e-mail do primeiro `super_admin` do `/admin` (seed no boot) |
+| `TIMBRE_ADMIN_PASSWORD` | não | senha do primeiro `super_admin` (obrigatória se `TIMBRE_ADMIN_EMAIL` for definida) |
 | `PORT` | não | default `8082` |
 | `LOG_LEVEL` | não | `debug\|info\|warn\|error` (default `info`) |
 | `TIMBRE_ENC_KEY` | não | reservado (AES por-tenant), não usado na 1.1 |

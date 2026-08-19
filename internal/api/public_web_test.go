@@ -171,8 +171,9 @@ func TestBuyerTokenRejectedOnProducerRoute(t *testing.T) {
 	}
 }
 
-// TestProducerSignupPending: cadastro público cria produtor pendente de aprovação.
-func TestProducerSignupPending(t *testing.T) {
+// TestProducerSignupActive: cadastro público cria produtor ATIVO na hora (self-service)
+// e já devolve o token do owner.
+func TestProducerSignupActive(t *testing.T) {
 	ts, pool := setup(t)
 	code, body := do(t, ts, "POST", "/api/v1/public/producer-signup", nil, map[string]any{
 		"name": "Nova Casa", "owner_email": "novo@casa.com", "owner_password": "senha1234",
@@ -181,15 +182,18 @@ func TestProducerSignupPending(t *testing.T) {
 		t.Fatalf("signup: %d %v", code, body)
 	}
 	prod := body["producer"].(map[string]any)
-	if prod["status"] != "pending" {
-		t.Fatalf("produtor deveria nascer pending, veio %v", prod["status"])
+	if prod["status"] != "active" {
+		t.Fatalf("produtor deveria nascer active, veio %v", prod["status"])
 	}
-	// E consta pendente no control plane.
+	if _, ok := body["token"].(string); !ok {
+		t.Fatalf("signup deveria devolver token do owner: %v", body)
+	}
+	// E consta ativo no control plane.
 	var status string
 	if err := pool.QueryRow(context.Background(), `SELECT status FROM producers WHERE id=$1`, prod["id"]).Scan(&status); err != nil {
 		t.Fatalf("ler status: %v", err)
 	}
-	if status != "pending" {
+	if status != "active" {
 		t.Fatalf("status no banco: %s", status)
 	}
 }

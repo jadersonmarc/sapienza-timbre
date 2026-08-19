@@ -17,7 +17,7 @@ type setTierReq struct {
 
 // adminSetTier registra a transição de nível do produtor (admin). A apuração passada
 // não muda — sempre usa o nível vigente na data da venda.
-func (s *Server) adminSetTier(w http.ResponseWriter, r *http.Request) {
+func (s *Server) adminSetTier(w http.ResponseWriter, r *http.Request, claims *auth.AdminClaims) {
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "id inválido")
@@ -41,6 +41,7 @@ func (s *Server) adminSetTier(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	s.audit(r, claims, "producer.set_tier", "producer", &id, map[string]any{"tier": body.Tier})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tier": body.Tier})
 }
 
@@ -52,7 +53,7 @@ type setOriginationReq struct {
 
 // adminSetOrigination registra que um produtor foi indicado por um originador (admin).
 // participation_pct é PROVISÓRIO (default 0 → inerte) até definição comercial.
-func (s *Server) adminSetOrigination(w http.ResponseWriter, r *http.Request) {
+func (s *Server) adminSetOrigination(w http.ResponseWriter, r *http.Request, claims *auth.AdminClaims) {
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "id inválido")
@@ -85,6 +86,7 @@ func (s *Server) adminSetOrigination(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.audit(r, claims, "producer.set_origination", "producer", &id, map[string]any{"originator_id": originatorID})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

@@ -118,7 +118,7 @@ func TestAdminSummaryAndModeration(t *testing.T) {
 	})
 	confirmWebhook(t, ts, cbody["asaas_ref"].(string))
 
-	adminHdr := map[string]string{"X-Admin-Token": adminToken}
+	adminHdr := seedAdmin(t, ts, pool, "admin@dash.com", "super_admin")
 
 	// Sem token → 401.
 	if code, _ := do(t, ts, "GET", "/api/v1/admin/summary", nil, nil); code != http.StatusUnauthorized {

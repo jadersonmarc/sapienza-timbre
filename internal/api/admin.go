@@ -6,27 +6,15 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/jadersonmarc/sapienza-timbre/internal/auth"
 	"github.com/jadersonmarc/sapienza-timbre/internal/dash"
 )
 
-// requireAdmin protege as rotas de plataforma com o X-Admin-Token (o operador da
-// Sapienza). Uma auth/UI de admin dedicada vem depois; por ora é o token de bootstrap.
-func (s *Server) requireAdmin(fn http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if s.adminToken == "" {
-			writeErr(w, http.StatusServiceUnavailable, "admin desligado (defina TIMBRE_ADMIN_TOKEN)")
-			return
-		}
-		if !subtleCompare(r.Header.Get("X-Admin-Token"), s.adminToken) {
-			writeErr(w, http.StatusUnauthorized, "token de admin inválido")
-			return
-		}
-		fn(w, r)
-	}
-}
-
-func (s *Server) adminSetProducerStatus(status string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+// adminSetProducerStatus suspende/reativa um produtor (plataforma). Aprovação manual
+// virou exceção: o cadastro público nasce ativo (self-service); esta rota fica para
+// reativar um produtor suspenso.
+func (s *Server) adminSetProducerStatus(status string) adminHandler {
+	return func(w http.ResponseWriter, r *http.Request, claims *auth.AdminClaims) {
 		id, err := uuid.Parse(r.PathValue("id"))
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, "id inválido")
@@ -41,12 +29,13 @@ func (s *Server) adminSetProducerStatus(status string) http.HandlerFunc {
 			writeErr(w, http.StatusNotFound, "produtor não encontrado")
 			return
 		}
+		s.audit(r, claims, "producer.set_status", "producer", &id, map[string]any{"status": status})
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": status})
 	}
 }
 
-// adminSuspendEvent suspende um evento no schema do produtor.
-func (s *Server) adminSuspendEvent(w http.ResponseWriter, r *http.Request) {
+// adminSuspendEvent suspende um evento no schema do produtor (moderação).
+func (s *Server) adminSuspendEvent(w http.ResponseWriter, r *http.Request, claims *auth.AdminClaims) {
 	producerID, err := uuid.Parse(r.PathValue("pid"))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "pid inválido")
@@ -73,11 +62,12 @@ func (s *Server) adminSuspendEvent(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "evento não encontrado")
 		return
 	}
+	s.audit(r, claims, "event.suspend", "event", &eventID, map[string]any{"producer_id": producerID})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // adminSummary consolida a plataforma (produtores, eventos ativos, faturamento do dia).
-func (s *Server) adminSummary(w http.ResponseWriter, r *http.Request) {
+func (s *Server) adminSummary(w http.ResponseWriter, r *http.Request, claims *auth.AdminClaims) {
 	sum, err := dash.Platform(r.Context(), s.pool)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())

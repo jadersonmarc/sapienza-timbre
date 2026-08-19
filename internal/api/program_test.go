@@ -38,7 +38,7 @@ func TestProducerProgram(t *testing.T) {
 	}
 
 	// Transição para sênior.
-	setTier(t, ts, pidStr, "senior")
+	setTier(t, ts, pool, pidStr, "senior")
 	_, body = do(t, ts, "GET", "/api/v1/dash/program", bearer(owner), nil)
 	if body["tier"] != "senior" || body["tier_pct"].(float64) != 20 {
 		t.Fatalf("após transição: %v", body)
@@ -52,8 +52,9 @@ func TestProducerProgram(t *testing.T) {
 
 	// Originação inerte: participação default 0 → nenhuma apuração de originador.
 	origStr, _ := createProducer(t, ts, "Originador", "owner@orig.com", "senha1234")
+	admin := seedAdmin(t, ts, pool, "admin@programa.com", "super_admin")
 	if code, _ := do(t, ts, "POST", "/api/v1/admin/producers/"+pidStr+"/origination",
-		map[string]string{"X-Admin-Token": adminToken}, map[string]any{"originator_id": origStr}); code != http.StatusOK {
+		admin, map[string]any{"originator_id": origStr}); code != http.StatusOK {
 		t.Fatalf("set origination: %d", code)
 	}
 	sellAt(t, ts, owner, 5000)

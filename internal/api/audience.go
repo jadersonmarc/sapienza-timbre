@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/jadersonmarc/sapienza-timbre/internal/audience"
+	"github.com/jadersonmarc/sapienza-timbre/internal/auth"
 )
 
 type createSegmentReq struct {
@@ -14,7 +15,7 @@ type createSegmentReq struct {
 	Definition json.RawMessage `json:"definition"`
 }
 
-func (s *Server) createSegment(w http.ResponseWriter, r *http.Request) {
+func (s *Server) createSegment(w http.ResponseWriter, r *http.Request, claims *auth.AdminClaims) {
 	var body createSegmentReq
 	if err := decode(w, r, &body); err != nil || body.Name == "" {
 		writeErr(w, http.StatusBadRequest, "name obrigatório")
@@ -25,10 +26,11 @@ func (s *Server) createSegment(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.audit(r, claims, "segment.create", "segment", &seg.ID, map[string]any{"name": body.Name})
 	writeJSON(w, http.StatusCreated, seg)
 }
 
-func (s *Server) recomputeSegment(w http.ResponseWriter, r *http.Request) {
+func (s *Server) recomputeSegment(w http.ResponseWriter, r *http.Request, claims *auth.AdminClaims) {
 	segmentID, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "id inválido")
@@ -48,7 +50,7 @@ type sponsorCampaignReq struct {
 	Budget    float64 `json:"budget"`
 }
 
-func (s *Server) createSponsorCampaign(w http.ResponseWriter, r *http.Request) {
+func (s *Server) createSponsorCampaign(w http.ResponseWriter, r *http.Request, claims *auth.AdminClaims) {
 	var body sponsorCampaignReq
 	if err := decode(w, r, &body); err != nil || body.Sponsor == "" {
 		writeErr(w, http.StatusBadRequest, "sponsor obrigatório")
@@ -64,10 +66,11 @@ func (s *Server) createSponsorCampaign(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.audit(r, claims, "sponsor_campaign.create", "sponsor_campaign", &c.ID, map[string]any{"sponsor": body.Sponsor})
 	writeJSON(w, http.StatusCreated, c)
 }
 
-func (s *Server) deliverCampaign(w http.ResponseWriter, r *http.Request) {
+func (s *Server) deliverCampaign(w http.ResponseWriter, r *http.Request, claims *auth.AdminClaims) {
 	campaignID, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "id inválido")
@@ -81,7 +84,7 @@ func (s *Server) deliverCampaign(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"delivered": n})
 }
 
-func (s *Server) campaignMetrics(w http.ResponseWriter, r *http.Request) {
+func (s *Server) campaignMetrics(w http.ResponseWriter, r *http.Request, claims *auth.AdminClaims) {
 	campaignID, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "id inválido")
