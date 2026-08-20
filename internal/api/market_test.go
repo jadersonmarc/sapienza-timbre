@@ -16,7 +16,7 @@ func TestSecondaryMarketResale(t *testing.T) {
 	_, owner := createProducer(t, ts, "Casa Revenda", "owner@revenda.com", "senha1234")
 	pid := producerID(t, ts, owner)
 	ctx := context.Background()
-	soldStandingTicket(t, ts, owner) // Pix: transferível já; face 5000
+	soldStandingTicket(t, ts, pool, owner) // Pix: transferível já; face 5000
 	tid := firstTicket(t, ctx, pool, pid)
 
 	// Teto no anúncio: 6000 > 5000 → recusa.
@@ -33,9 +33,9 @@ func TestSecondaryMarketResale(t *testing.T) {
 	}
 	listingID, _ := lbody["id"].(string)
 
-	// Compra PÚBLICA (sem conta).
-	code, bbody := do(t, ts, "POST", "/api/v1/public/listings/"+listingID+"/buy", nil,
-		map[string]any{"buyer_email": "comprador2@x.com"})
+	// Compra do anúncio pelo comprador autenticado.
+	code, bbody := do(t, ts, "POST", "/api/v1/public/listings/"+listingID+"/buy", buyer(t, ts, pool, "comprador2@x.com"),
+		map[string]any{})
 	if code != http.StatusCreated {
 		t.Fatalf("compra: %d %v", code, bbody)
 	}

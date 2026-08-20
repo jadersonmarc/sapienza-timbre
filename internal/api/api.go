@@ -124,6 +124,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/public/config", s.publicConfig)
 	mux.HandleFunc("GET /api/v1/public/checkout/{orderId}/status", s.checkoutStatus)
 	mux.HandleFunc("GET /api/v1/public/me/tickets", s.buyerAuthed(s.myTickets))
+	mux.HandleFunc("GET /api/v1/public/me", s.buyerAuthed(s.buyerMe))
 	mux.HandleFunc("DELETE /api/v1/public/me", s.buyerAuthed(s.deleteMe))
 	// Onda 2: posse do comprador (custódia de plataforma) — transferência e revenda.
 	mux.HandleFunc("POST /api/v1/public/me/tickets/{id}/transfer", s.buyerAuthed(s.buyerTransfer))
@@ -133,9 +134,10 @@ func (s *Server) Handler() http.Handler {
 	// nasce ativo. E cadastro de artista (catálogo global), também ativo na hora.
 	mux.HandleFunc("POST /api/v1/public/producer-signup", s.rateLimited("producer-signup", s.producerSignup))
 	mux.HandleFunc("POST /api/v1/public/artist-signup", s.rateLimited("artist-signup", s.artistSignup))
-	// Checkout (Etapa 1.4): compra é PÚBLICA (comprador sem conta); webhook é global.
+	// Checkout (Etapa 1.4): compra é do comprador AUTENTICADO (cadastro obrigatório);
+	// webhook é global.
 	mux.HandleFunc("POST /api/v1/public/checkout/quote", s.rateLimited("quote", s.publicQuote))
-	mux.HandleFunc("POST /api/v1/public/checkout", s.rateLimited("checkout", s.publicCheckout))
+	mux.HandleFunc("POST /api/v1/public/checkout", s.rateLimited("checkout", s.buyerAuthed(s.publicCheckout)))
 	mux.HandleFunc("POST /api/v1/webhooks/asaas", s.asaasWebhook)
 	// Lista de convidados / cortesias — do owner.
 	mux.HandleFunc("POST /api/v1/events/{id}/guests", s.requireOwner(s.createGuest))
@@ -153,15 +155,15 @@ func (s *Server) Handler() http.Handler {
 	// Transferência restrita (Etapa 2.1) — por ora operada pelo owner.
 	mux.HandleFunc("POST /api/v1/tickets/{id}/transfer", s.requireOwner(s.transferTicket))
 	// Mercado secundário (Etapa 2.2): anúncio/cancelamento e procedência (owner);
-	// compra é PÚBLICA (comprador sem conta).
+	// compra é do comprador autenticado.
 	mux.HandleFunc("POST /api/v1/tickets/{id}/listings", s.requireOwner(s.createListing))
 	mux.HandleFunc("GET /api/v1/tickets/{id}/provenance", s.requirePermission("relatorios", s.provenance))
 	mux.HandleFunc("POST /api/v1/listings/{id}/cancel", s.requireOwner(s.cancelListing))
-	mux.HandleFunc("POST /api/v1/public/listings/{id}/buy", s.buyListing)
-	// Passe de temporada (Etapa 2.3): gestão do owner; compra pública.
+	mux.HandleFunc("POST /api/v1/public/listings/{id}/buy", s.buyerAuthed(s.buyListing))
+	// Passe de temporada (Etapa 2.3): gestão do owner; compra do comprador autenticado.
 	mux.HandleFunc("POST /api/v1/season-passes", s.requireOwner(s.createPass))
 	mux.HandleFunc("POST /api/v1/season-passes/{id}/dates", s.requireOwner(s.addPassDate))
-	mux.HandleFunc("POST /api/v1/public/season-passes/{id}/buy", s.buyPass)
+	mux.HandleFunc("POST /api/v1/public/season-passes/{id}/buy", s.buyerAuthed(s.buyPass))
 	// Panorama de passeios (Etapa 2.5) — peça pública compartilhável do público.
 	mux.HandleFunc("GET /api/v1/public/subjects/{id}/panorama", s.subjectPanorama)
 	// Descoberta e confiança (Etapa 2.6): avaliação restrita a quem fez check-in,

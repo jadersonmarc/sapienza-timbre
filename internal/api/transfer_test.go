@@ -44,7 +44,7 @@ func TestRestrictedTransfer(t *testing.T) {
 	_, owner := createProducer(t, ts, "Casa Transf", "owner@transf.com", "senha1234")
 	pid := producerID(t, ts, owner)
 	ctx := context.Background()
-	soldStandingTicket(t, ts, owner) // Pix: transferível imediatamente; face 5000
+	soldStandingTicket(t, ts, pool, owner) // Pix: transferível imediatamente; face 5000
 	tid := firstTicket(t, ctx, pool, pid)
 	wallet := mkWallet(t, pool, "0xnovo-dono-1")
 
@@ -97,7 +97,7 @@ func TestTransferBlockedInWindow(t *testing.T) {
 	do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil)
 	_, lots := getEventLots(t, ts, owner, eventID)
 	// Cartão → transferable_after = now + 60d.
-	_, body := do(t, ts, "POST", "/api/v1/public/checkout", nil, map[string]any{
+	_, body := do(t, ts, "POST", "/api/v1/public/checkout", buyer(t, ts, pool, "buy@transfer.com"), map[string]any{
 		"event_id": eventID, "lot_id": lots[0], "quantity": 1, "method": "credit_card",
 	})
 	confirmWebhook(t, ts, body["asaas_ref"].(string))

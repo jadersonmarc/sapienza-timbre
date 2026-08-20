@@ -12,9 +12,9 @@ import (
 
 // writeTicketDirectory alimenta o índice público de ingressos do comprador (public.
 // ticket_directory) — o que "meus ingressos" lê sem varrer schemas de produtor. Guarda um
-// snapshot do evento (para listar sem tocar o tenant) e o token do QR. subject_id fica nulo
-// na compra como convidado e é preenchido no OTP (vínculo por e-mail verificado); se o
-// comprador JÁ tem conta com esse e-mail, liga na hora. Idempotente (webhook re-executa).
+// snapshot do evento (para listar sem tocar o tenant) e o token do QR. O subject_id vem da
+// compra autenticada; o vínculo por e-mail verificado cobre eventuais ingressos legados
+// (compra antiga como convidado). Idempotente (webhook re-executa).
 //
 // É um dos PONTOS DE ESCRITA do ticket_directory (§3.10). Os outros: estorno/queima (marca
 // status em refund.go) e, na Onda 2, transferência/revenda (reatribui subject_id).

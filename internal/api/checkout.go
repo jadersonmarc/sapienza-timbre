@@ -18,9 +18,10 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/store"
 )
 
-// publicCheckout é a compra PÚBLICA (o comprador sequer tem conta). Resolve o produtor
-// pelo diretório público (event_directory) e roda o checkout no schema dele.
-func (s *Server) publicCheckout(w http.ResponseWriter, r *http.Request) {
+// publicCheckout é a compra do COMPRADOR AUTENTICADO (cadastro obrigatório — o ingresso
+// só é vendido a quem tem conta/sessão). Resolve o produtor pelo diretório público e roda
+// o checkout no schema dele. O e-mail vem da conta (não do corpo).
+func (s *Server) publicCheckout(w http.ResponseWriter, r *http.Request, subjectID uuid.UUID) {
 	var req checkout.Request
 	if err := decode(w, r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, "corpo inválido")
@@ -30,6 +31,13 @@ func (s *Server) publicCheckout(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "event_id obrigatório")
 		return
 	}
+	email, err := s.buyerEmail(r.Context(), subjectID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	req.SubjectID = subjectID
+	req.BuyerEmail = email
 	producerID, err := s.producerOfEvent(r.Context(), req.EventID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeErr(w, http.StatusNotFound, "evento não encontrado ou não publicado")

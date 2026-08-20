@@ -42,7 +42,7 @@ func TestCampaignAttributionAndAudience(t *testing.T) {
 	}
 
 	// Compra atribuída à campanha.
-	_, body := do(t, ts, "POST", "/api/v1/public/checkout", nil, map[string]any{
+	_, body := do(t, ts, "POST", "/api/v1/public/checkout", buyer(t, ts, pool, "buy@promo.com"), map[string]any{
 		"event_id": eventID, "lot_id": lots[0], "quantity": 1, "method": "pix", "campaign_id": campaignID,
 	})
 	confirmWebhook(t, ts, body["asaas_ref"].(string))
@@ -95,7 +95,7 @@ func TestWaitlistNotifiedOnRollover(t *testing.T) {
 	}
 
 	// Uma compra esgota o lote → virada → aviso.
-	_, body := do(t, ts, "POST", "/api/v1/public/checkout", nil, map[string]any{
+	_, body := do(t, ts, "POST", "/api/v1/public/checkout", buyer(t, ts, pool, "buy@waitlist.com"), map[string]any{
 		"event_id": eventID, "lot_id": lots[0], "quantity": 1, "method": "pix",
 	})
 	confirmWebhook(t, ts, body["asaas_ref"].(string))

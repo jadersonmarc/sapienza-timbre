@@ -48,6 +48,30 @@ func (s *Server) buyerAuthed(fn buyerHandler) http.HandlerFunc {
 	}
 }
 
+// buyerEmail devolve o e-mail canônico do comprador (da conta). A compra é escopada à
+// SESSÃO, não ao que o corpo diz: o e-mail informado pelo cliente é ignorado.
+func (s *Server) buyerEmail(ctx context.Context, subjectID uuid.UUID) (string, error) {
+	var email *string
+	if err := s.pool.QueryRow(ctx, `SELECT email FROM subjects WHERE id=$1`, subjectID).Scan(&email); err != nil {
+		return "", err
+	}
+	if email == nil {
+		return "", nil
+	}
+	return *email, nil
+}
+
+// buyerMe devolve a sessão do comprador (subject + e-mail). O web usa para decidir entre
+// "entre para comprar" e o formulário de compra — compra exige cadastro.
+func (s *Server) buyerMe(w http.ResponseWriter, r *http.Request, subjectID uuid.UUID) {
+	email, err := s.buyerEmail(r.Context(), subjectID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"subject_id": subjectID, "email": email})
+}
+
 type requestCodeReq struct {
 	Email string `json:"email"`
 }
@@ -119,7 +143,8 @@ type verifyCodeReq struct {
 }
 
 // verifyCode confere o código, resolve/cria o subject e — SÓ APÓS verificar — vincula
-// as compras feitas como convidado com o mesmo e-mail (§3.4). Devolve o token do comprador.
+// (defensivamente) eventuais ingressos legados sem subject com o mesmo e-mail (§3.4).
+// Devolve o token do comprador.
 func (s *Server) verifyCode(w http.ResponseWriter, r *http.Request) {
 	var body verifyCodeReq
 	if err := decode(w, r, &body); err != nil {
@@ -154,7 +179,7 @@ func (s *Server) verifyCode(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "código inválido ou expirado")
 		return
 	}
-	// Sucesso: consome o código, resolve o subject e vincula as compras de convidado.
+	// Sucesso: consome o código, resolve o subject e vincula ingressos legados.
 	if _, err := s.pool.Exec(ctx, `UPDATE buyer_otps SET consumed_at = now() WHERE id = $1`, otpID); err != nil {
 		writeErr(w, http.StatusInternalServerError, "erro ao verificar")
 		return

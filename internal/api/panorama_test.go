@@ -43,8 +43,8 @@ func TestPanorama(t *testing.T) {
 	pid := producerID(t, ts, owner)
 	ctx := context.Background()
 
-	ev1 := uuid.MustParse(soldStandingTicket(t, ts, owner))
-	ev2 := uuid.MustParse(soldStandingTicket(t, ts, owner))
+	ev1 := uuid.MustParse(soldStandingTicket(t, ts, pool, owner))
+	ev2 := uuid.MustParse(soldStandingTicket(t, ts, pool, owner))
 	tid1 := ticketOfEvent(t, ctx, pool, pid, ev1)
 	tid2 := ticketOfEvent(t, ctx, pool, pid, ev2)
 

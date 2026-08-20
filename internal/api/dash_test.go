@@ -43,8 +43,8 @@ func TestDashboardReflectsSale(t *testing.T) {
 	}
 	_, lots := getEventLots(t, ts, owner, eventID)
 
-	_, cbody := do(t, ts, "POST", "/api/v1/public/checkout", nil, map[string]any{
-		"event_id": eventID, "lot_id": lots[0], "quantity": 2, "method": "pix", "buyer_email": "c@x.com",
+	_, cbody := do(t, ts, "POST", "/api/v1/public/checkout", buyer(t, ts, pool, "c@x.com"), map[string]any{
+		"event_id": eventID, "lot_id": lots[0], "quantity": 2, "method": "pix",
 	})
 	asaasRef, _ := cbody["asaas_ref"].(string)
 	confirmWebhook(t, ts, asaasRef)
@@ -113,7 +113,7 @@ func TestAdminSummaryAndModeration(t *testing.T) {
 	_ = createLot(t, ts, owner, eventID, "Lote 1", 5000, 100, 0)
 	do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil)
 	_, lots := getEventLots(t, ts, owner, eventID)
-	_, cbody := do(t, ts, "POST", "/api/v1/public/checkout", nil, map[string]any{
+	_, cbody := do(t, ts, "POST", "/api/v1/public/checkout", buyer(t, ts, pool, "buy@admin-dash.com"), map[string]any{
 		"event_id": eventID, "lot_id": lots[0], "quantity": 1, "method": "pix",
 	})
 	confirmWebhook(t, ts, cbody["asaas_ref"].(string))

@@ -27,8 +27,8 @@ func TestEmissionSignsTicketOffline(t *testing.T) {
 	}
 	_, lots := getEventLots(t, ts, owner, eventID)
 
-	_, body := do(t, ts, "POST", "/api/v1/public/checkout", nil, map[string]any{
-		"event_id": eventID, "lot_id": lots[0], "quantity": 1, "method": "pix", "buyer_email": "c@x.com",
+	_, body := do(t, ts, "POST", "/api/v1/public/checkout", buyer(t, ts, pool, "c@ticket.com"), map[string]any{
+		"event_id": eventID, "lot_id": lots[0], "quantity": 1, "method": "pix",
 	})
 	asaasRef, _ := body["asaas_ref"].(string)
 	confirmWebhook(t, ts, asaasRef)
@@ -71,7 +71,7 @@ func TestRefundBurnsTickets(t *testing.T) {
 		t.Fatalf("publicar: %d", code)
 	}
 
-	_, body := do(t, ts, "POST", "/api/v1/public/checkout", nil, map[string]any{
+	_, body := do(t, ts, "POST", "/api/v1/public/checkout", buyer(t, ts, pool, "buy@refund.com"), map[string]any{
 		"event_id": eventID.String(), "lot_id": lotID.String(), "quantity": 2,
 		"seat_ids": []string{seats[0].String(), seats[1].String()}, "method": "pix",
 	})

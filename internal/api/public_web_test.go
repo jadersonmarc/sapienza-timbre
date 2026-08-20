@@ -86,7 +86,7 @@ func TestPublicDirectoryAndDetail(t *testing.T) {
 // TestPublicMinPriceResyncOnRollover: esgotado o lote 1, o min_price do diretório passa a
 // ser o do lote 2 (§3.10) — via o caminho real de checkout+webhook.
 func TestPublicMinPriceResyncOnRollover(t *testing.T) {
-	ts, _ := setup(t)
+	ts, pool := setup(t)
 	_, owner := createProducer(t, ts, "CasaMin", "owner@min.com", "senha1234")
 	eventID := createEvent(t, ts, owner, "Show Min", "shows")
 	_ = createLot(t, ts, owner, eventID, "Lote 1", 5000, 1, 0) // 1 unidade
@@ -99,8 +99,8 @@ func TestPublicMinPriceResyncOnRollover(t *testing.T) {
 	}
 
 	// Compra a única unidade do lote 1 (resolve o corrente) e confirma.
-	code, res := do(t, ts, "POST", "/api/v1/public/checkout", nil, map[string]any{
-		"event_id": eventID, "quantity": 1, "method": "pix", "buyer_email": "c@min.com",
+	code, res := do(t, ts, "POST", "/api/v1/public/checkout", buyer(t, ts, pool, "c@min.com"), map[string]any{
+		"event_id": eventID, "quantity": 1, "method": "pix",
 	})
 	if code != http.StatusCreated {
 		t.Fatalf("checkout: %d %v", code, res)
@@ -112,9 +112,10 @@ func TestPublicMinPriceResyncOnRollover(t *testing.T) {
 	}
 }
 
-// TestOtpGuestLinkAndScope: compra como convidado, cria conta por OTP com o MESMO e-mail
-// (verificado) e o ingresso anterior aparece em "meus ingressos"; outro subject não o vê.
-func TestOtpGuestLinkAndScope(t *testing.T) {
+// TestBuyerMustBeAuthedToBuy: compra exige cadastro — sem token → 401; autenticado, o
+// comprador compra e vê o ingresso em "meus ingressos"; outro comprador não enxerga o
+// ingresso alheio (IDOR/escopo).
+func TestBuyerMustBeAuthedToBuy(t *testing.T) {
 	ts, pool := setup(t)
 	_, owner := createProducer(t, ts, "CasaOtp", "owner@otp.com", "senha1234")
 	eventID := createEvent(t, ts, owner, "Show Otp", "shows")
@@ -122,17 +123,25 @@ func TestOtpGuestLinkAndScope(t *testing.T) {
 	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
 		t.Fatalf("publish: %d", code)
 	}
-	// Compra convidado + confirmação → ingresso no ticket_directory (subject_id nulo).
-	code, res := do(t, ts, "POST", "/api/v1/public/checkout", nil, map[string]any{
-		"event_id": eventID, "quantity": 1, "method": "pix", "buyer_email": "convidada@x.com",
+
+	// Sem sessão → recusado.
+	code, _ := do(t, ts, "POST", "/api/v1/public/checkout", nil, map[string]any{
+		"event_id": eventID, "quantity": 1, "method": "pix",
+	})
+	if code != http.StatusUnauthorized {
+		t.Fatalf("checkout sem sessão: esperava 401, veio %d", code)
+	}
+
+	// O comprador entra ANTES de comprar.
+	token := verifyOTP(t, ts, pool, "convidada@x.com", "123456")
+	code, res := do(t, ts, "POST", "/api/v1/public/checkout", bearer(token), map[string]any{
+		"event_id": eventID, "quantity": 1, "method": "pix",
 	})
 	if code != http.StatusCreated {
 		t.Fatalf("checkout: %d %v", code, res)
 	}
 	confirmWebhook(t, ts, res["asaas_ref"].(string))
 
-	// Cria a conta por OTP (código conhecido inserido direto) e verifica.
-	token := verifyOTP(t, ts, pool, "convidada@x.com", "123456")
 	code, mine := do(t, ts, "GET", "/api/v1/public/me/tickets", bearer(token), nil)
 	if code != http.StatusOK {
 		t.Fatalf("me/tickets: %d", code)

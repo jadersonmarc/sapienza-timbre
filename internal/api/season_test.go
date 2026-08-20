@@ -31,9 +31,9 @@ func TestSeasonPassIssuesPerDate(t *testing.T) {
 		}
 	}
 
-	// Compra pública do passe.
-	code, bbody := do(t, ts, "POST", "/api/v1/public/season-passes/"+passID+"/buy?producer="+pidStr, nil,
-		map[string]any{"buyer_email": "passe@x.com"})
+	// Compra do passe pelo comprador autenticado.
+	code, bbody := do(t, ts, "POST", "/api/v1/public/season-passes/"+passID+"/buy?producer="+pidStr, buyer(t, ts, pool, "passe@x.com"),
+		map[string]any{})
 	if code != http.StatusCreated {
 		t.Fatalf("comprar passe: %d %v", code, bbody)
 	}

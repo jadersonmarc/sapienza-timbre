@@ -16,17 +16,17 @@ func TestBuyerTransferMovesOwnership(t *testing.T) {
 	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
 		t.Fatalf("publish: %d", code)
 	}
-	// Compra convidado + confirmação.
-	code, res := do(t, ts, "POST", "/api/v1/public/checkout", nil, map[string]any{
-		"event_id": eventID, "quantity": 1, "method": "pix", "buyer_email": "ana@x.com",
+	// Ana entra ANTES de comprar (cadastro obrigatório).
+	ana := verifyOTP(t, ts, pool, "ana@x.com", "111111")
+	code, res := do(t, ts, "POST", "/api/v1/public/checkout", bearer(ana), map[string]any{
+		"event_id": eventID, "quantity": 1, "method": "pix",
 	})
 	if code != http.StatusCreated {
 		t.Fatalf("checkout: %d %v", code, res)
 	}
 	confirmWebhook(t, ts, res["asaas_ref"].(string))
 
-	// Ana entra e vê o ingresso.
-	ana := verifyOTP(t, ts, pool, "ana@x.com", "111111")
+	// Ana vê o ingresso.
 	_, mine := do(t, ts, "GET", "/api/v1/public/me/tickets", bearer(ana), nil)
 	tickets := asSlice(mine["tickets"])
 	if len(tickets) != 1 {
@@ -62,14 +62,14 @@ func TestBuyerReissue(t *testing.T) {
 	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
 		t.Fatalf("publish: %d", code)
 	}
-	code, res := do(t, ts, "POST", "/api/v1/public/checkout", nil, map[string]any{
-		"event_id": eventID, "quantity": 1, "method": "pix", "buyer_email": "clara@x.com",
+	clara := verifyOTP(t, ts, pool, "clara@x.com", "555555")
+	code, res := do(t, ts, "POST", "/api/v1/public/checkout", bearer(clara), map[string]any{
+		"event_id": eventID, "quantity": 1, "method": "pix",
 	})
 	if code != http.StatusCreated {
 		t.Fatalf("checkout: %d", code)
 	}
 	confirmWebhook(t, ts, res["asaas_ref"].(string))
-	clara := verifyOTP(t, ts, pool, "clara@x.com", "555555")
 	_, mine := do(t, ts, "GET", "/api/v1/public/me/tickets", bearer(clara), nil)
 	oldID := asSlice(mine["tickets"])[0].(map[string]any)["ticket_id"].(string)
 
@@ -98,14 +98,14 @@ func TestBuyerTransferRejectsNonOwner(t *testing.T) {
 	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
 		t.Fatalf("publish: %d", code)
 	}
-	code, res := do(t, ts, "POST", "/api/v1/public/checkout", nil, map[string]any{
-		"event_id": eventID, "quantity": 1, "method": "pix", "buyer_email": "dona@x.com",
+	dona := verifyOTP(t, ts, pool, "dona@x.com", "333333")
+	code, res := do(t, ts, "POST", "/api/v1/public/checkout", bearer(dona), map[string]any{
+		"event_id": eventID, "quantity": 1, "method": "pix",
 	})
 	if code != http.StatusCreated {
 		t.Fatalf("checkout: %d", code)
 	}
 	confirmWebhook(t, ts, res["asaas_ref"].(string))
-	dona := verifyOTP(t, ts, pool, "dona@x.com", "333333")
 	_, mine := do(t, ts, "GET", "/api/v1/public/me/tickets", bearer(dona), nil)
 	ticketID := asSlice(mine["tickets"])[0].(map[string]any)["ticket_id"].(string)
 

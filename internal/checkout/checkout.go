@@ -67,6 +67,9 @@ type Request struct {
 	BuyerName    string      `json:"buyer_name"`
 	BuyerEmail   string      `json:"buyer_email"`
 	BuyerCPF     string      `json:"buyer_cpf"`
+	// SubjectID identifica o comprador autenticado (preenchido pelo handler a partir do
+	// token de comprador; nunca vem do corpo).
+	SubjectID uuid.UUID `json:"-"`
 }
 
 // Result é o retorno do StartCheckout. AmountCents é o TOTAL cobrado (face + conveniência);
@@ -156,11 +159,15 @@ func StartCheckout(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, pr
 
 	// Ordem: total_cents = o que o comprador paga; guardamos a decomposição para o razão/estorno.
 	var orderID uuid.UUID
+	var subjectID *uuid.UUID
+	if req.SubjectID != uuid.Nil {
+		subjectID = &req.SubjectID
+	}
 	if err := tx.QueryRow(ctx, `
-		INSERT INTO orders (event_id, buyer_email, buyer_cpf, coupon_id, campaign_id, total_cents,
+		INSERT INTO orders (event_id, buyer_subject_id, buyer_email, buyer_cpf, coupon_id, campaign_id, total_cents,
 			face_cents, platform_fee_cents, processing_fee_cents, status)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending') RETURNING id`,
-		req.EventID, nilIfEmpty(req.BuyerEmail), nilIfEmpty(req.BuyerCPF), couponID, req.CampaignID,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending') RETURNING id`,
+		req.EventID, subjectID, nilIfEmpty(req.BuyerEmail), nilIfEmpty(req.BuyerCPF), couponID, req.CampaignID,
 		bd.TotalCents, bd.FaceCents, bd.PlatformFeeCents, bd.ProcessingCents,
 	).Scan(&orderID); err != nil {
 		return Result{}, fmt.Errorf("criar ordem: %w", err)

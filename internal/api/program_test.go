@@ -5,10 +5,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // sellAt vende 1 ingresso de um evento com lote de `price` e devolve o event id.
-func sellAt(t *testing.T, ts *httptest.Server, owner string, price int64) string {
+func sellAt(t *testing.T, ts *httptest.Server, pool *pgxpool.Pool, owner string, price int64) string {
 	t.Helper()
 	eventID := createEvent(t, ts, owner, "Prog", "shows")
 	_ = createLot(t, ts, owner, eventID, "Lote", price, 100, 0)
@@ -16,7 +18,7 @@ func sellAt(t *testing.T, ts *httptest.Server, owner string, price int64) string
 		t.Fatalf("publicar: %d", code)
 	}
 	_, lots := getEventLots(t, ts, owner, eventID)
-	_, body := do(t, ts, "POST", "/api/v1/public/checkout", nil, map[string]any{
+	_, body := do(t, ts, "POST", "/api/v1/public/checkout", buyer(t, ts, pool, "buy@prog.com"), map[string]any{
 		"event_id": eventID, "lot_id": lots[0], "quantity": 1, "method": "pix",
 	})
 	confirmWebhook(t, ts, body["asaas_ref"].(string))
@@ -45,7 +47,7 @@ func TestProducerProgram(t *testing.T) {
 	}
 
 	// Venda de face 10000 como sênior (modelo Sympla §4): taxa = 10% (1000) − rebate 20% (200) = 800.
-	sellAt(t, ts, owner, 10000)
+	sellAt(t, ts, pool, owner, 10000)
 	if taxa := scanInt(t, ctx, pool, pid, `SELECT amount_cents FROM ledger_entries WHERE kind='taxa'`); taxa != 800 {
 		t.Fatalf("taxa sênior: esperava 800, veio %d", taxa)
 	}
@@ -57,7 +59,7 @@ func TestProducerProgram(t *testing.T) {
 		admin, map[string]any{"originator_id": origStr}); code != http.StatusOK {
 		t.Fatalf("set origination: %d", code)
 	}
-	sellAt(t, ts, owner, 5000)
+	sellAt(t, ts, pool, owner, 5000)
 	var origEntries int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM origination_entries`).Scan(&origEntries); err != nil {
 		t.Fatalf("origination_entries: %v", err)

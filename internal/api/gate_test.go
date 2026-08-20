@@ -26,7 +26,7 @@ func soldSeatedTickets(t *testing.T, ts *httptest.Server, pool *pgxpool.Pool, ow
 	for i, s := range seats {
 		seatStrs[i] = s.String()
 	}
-	_, body := do(t, ts, "POST", "/api/v1/public/checkout", nil, map[string]any{
+	_, body := do(t, ts, "POST", "/api/v1/public/checkout", buyer(t, ts, pool, "buy@gate.com"), map[string]any{
 		"event_id": eventID.String(), "lot_id": lotID.String(), "quantity": n,
 		"seat_ids": seatStrs, "method": "pix",
 	})

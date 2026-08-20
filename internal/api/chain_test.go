@@ -56,7 +56,7 @@ func scanStr(t *testing.T, ctx context.Context, pool *pgxpool.Pool, pid uuid.UUI
 	return v
 }
 
-func soldStandingTicket(t *testing.T, ts *httptest.Server, owner string) string {
+func soldStandingTicket(t *testing.T, ts *httptest.Server, pool *pgxpool.Pool, owner string) string {
 	t.Helper()
 	eventID := createEvent(t, ts, owner, "Show Chain", "shows")
 	_ = createLot(t, ts, owner, eventID, "Lote 1", 5000, 100, 0)
@@ -64,7 +64,7 @@ func soldStandingTicket(t *testing.T, ts *httptest.Server, owner string) string 
 		t.Fatalf("publicar: %d", code)
 	}
 	_, lots := getEventLots(t, ts, owner, eventID)
-	_, body := do(t, ts, "POST", "/api/v1/public/checkout", nil, map[string]any{
+	_, body := do(t, ts, "POST", "/api/v1/public/checkout", buyer(t, ts, pool, "buy@chain.com"), map[string]any{
 		"event_id": eventID, "lot_id": lots[0], "quantity": 1, "method": "pix",
 	})
 	ref, _ := body["asaas_ref"].(string)
@@ -79,7 +79,7 @@ func TestChainMintAsync(t *testing.T) {
 	_, owner := createProducer(t, ts, "Casa Chain", "owner@chain.com", "senha1234")
 	pid := producerID(t, ts, owner)
 	ctx := context.Background()
-	soldStandingTicket(t, ts, owner)
+	soldStandingTicket(t, ts, pool, owner)
 
 	// Na venda: pendente + job na fila.
 	if st := scanStr(t, ctx, pool, pid, `SELECT chain_status FROM tickets LIMIT 1`); st != "pending" {
@@ -118,7 +118,7 @@ func TestChainDownDoesNotBlock(t *testing.T) {
 	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID.String()+"/publish", bearer(owner), nil); code != http.StatusOK {
 		t.Fatalf("publicar: %d", code)
 	}
-	_, body := do(t, ts, "POST", "/api/v1/public/checkout", nil, map[string]any{
+	_, body := do(t, ts, "POST", "/api/v1/public/checkout", buyer(t, ts, pool, "buy@rpc.com"), map[string]any{
 		"event_id": eventID.String(), "lot_id": lotID.String(), "quantity": 1,
 		"seat_ids": []string{seats[0].String()}, "method": "pix",
 	})
@@ -168,7 +168,7 @@ func TestPayoutSettlement(t *testing.T) {
 	_, owner := createProducer(t, ts, "Casa Payout", "owner@payout.com", "senha1234")
 	pid := producerID(t, ts, owner)
 	ctx := context.Background()
-	soldStandingTicket(t, ts, owner) // face 5000 → repasse 5000 (limpo); taxa plataforma 450
+	soldStandingTicket(t, ts, pool, owner) // face 5000 → repasse 5000 (limpo); taxa plataforma 450
 
 	// O repasse nasce disponível D+2 (futuro); antecipamos para o passado no teste.
 	inTenant(t, ctx, pool, pid, func(tx pgx.Tx) {

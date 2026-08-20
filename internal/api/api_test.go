@@ -88,6 +88,13 @@ func bearer(token string) map[string]string {
 	return map[string]string{"Authorization": "Bearer " + token}
 }
 
+// buyer autentica um comprador via OTP (código fixo) e devolve o header Bearer da sessão.
+// Compra agora exige cadastro — os testes passam esse header no checkout/buy.
+func buyer(t *testing.T, ts *httptest.Server, pool *pgxpool.Pool, email string) map[string]string {
+	t.Helper()
+	return bearer(verifyOTP(t, ts, pool, email, "123456"))
+}
+
 // seedAdmin cria um operador da plataforma (papel role) e devolve o header Bearer com o
 // JWT de admin (escopo "admin"). Substituiu o X-Admin-Token nos testes de /admin.
 func seedAdmin(t *testing.T, ts *httptest.Server, pool *pgxpool.Pool, email, role string) map[string]string {

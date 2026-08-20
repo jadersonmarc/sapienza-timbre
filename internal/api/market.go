@@ -90,10 +90,10 @@ type buyListingReq struct {
 	BuyerEmail string `json:"buyer_email"`
 }
 
-// buyListing é a compra PÚBLICA de um anúncio (o comprador sequer tem conta). Resolve o
-// produtor pelo índice público e cria a cobrança; a titularidade só passa na
+// buyListing é a compra de um anúncio pelo comprador AUTENTICADO (cadastro obrigatório).
+// Resolve o produtor pelo índice público e cria a cobrança; a titularidade só passa na
 // confirmação do pagamento (webhook).
-func (s *Server) buyListing(w http.ResponseWriter, r *http.Request) {
+func (s *Server) buyListing(w http.ResponseWriter, r *http.Request, subjectID uuid.UUID) {
 	listingID, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "id inválido")
@@ -101,6 +101,11 @@ func (s *Server) buyListing(w http.ResponseWriter, r *http.Request) {
 	}
 	var body buyListingReq
 	_ = decode(w, r, &body)
+	email, err := s.buyerEmail(r.Context(), subjectID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 
 	producerID, err := s.producerOfListing(r.Context(), listingID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -114,7 +119,7 @@ func (s *Server) buyListing(w http.ResponseWriter, r *http.Request) {
 	var res market.BuyResult
 	err = s.withTenant(r.Context(), producerID, func(tx pgx.Tx) error {
 		var e error
-		res, e = market.BuyListing(r.Context(), tx, s.seams.Payment, producerID, listingID, body.BuyerEmail)
+		res, e = market.BuyListing(r.Context(), tx, s.seams.Payment, producerID, listingID, email)
 		return e
 	})
 	if errors.Is(err, market.ErrListingUnavailable) {

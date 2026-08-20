@@ -91,9 +91,9 @@ type buyPassReq struct {
 	BuyerEmail string `json:"buyer_email"`
 }
 
-// buyPass é a compra PÚBLICA de um passe (o comprador sequer tem conta). Resolve o
-// produtor pelo diretório público (o passe pertence a um evento de referência).
-func (s *Server) buyPass(w http.ResponseWriter, r *http.Request) {
+// buyPass é a compra de um passe pelo comprador AUTENTICADO (cadastro obrigatório).
+// Resolve o produtor pelo diretório público (o passe pertence a um evento de referência).
+func (s *Server) buyPass(w http.ResponseWriter, r *http.Request, subjectID uuid.UUID) {
 	passID, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "id inválido")
@@ -106,10 +106,15 @@ func (s *Server) buyPass(w http.ResponseWriter, r *http.Request) {
 	}
 	var body buyPassReq
 	_ = decode(w, r, &body)
+	email, err := s.buyerEmail(r.Context(), subjectID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	var res season.BuyResult
 	err = s.withTenant(r.Context(), producerID, func(tx pgx.Tx) error {
 		var e error
-		res, e = season.BuyPass(r.Context(), tx, s.seams.Payment, producerID, passID, body.BuyerEmail)
+		res, e = season.BuyPass(r.Context(), tx, s.seams.Payment, producerID, passID, email)
 		return e
 	})
 	if errors.Is(err, season.ErrNoDates) {

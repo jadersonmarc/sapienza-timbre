@@ -60,10 +60,9 @@ func TestCheckoutPixStandingCycle(t *testing.T) {
 	_, lots := getEventLots(t, ts, owner, eventID)
 	lotID := lots[0]
 
-	// Compra PÚBLICA (sem token).
-	code, body := do(t, ts, "POST", "/api/v1/public/checkout", nil, map[string]any{
+	// Compra do comprador autenticado.
+	code, body := do(t, ts, "POST", "/api/v1/public/checkout", buyer(t, ts, pool, "comprador@x.com"), map[string]any{
 		"event_id": eventID, "lot_id": lotID, "quantity": 2, "method": "pix",
-		"buyer_email": "comprador@x.com",
 	})
 	if code != http.StatusCreated {
 		t.Fatalf("checkout: status %d, body %v", code, body)
@@ -127,7 +126,7 @@ func TestCheckoutPixSeatedCycle(t *testing.T) {
 		t.Fatalf("publicar: %d", code)
 	}
 
-	code, body := do(t, ts, "POST", "/api/v1/public/checkout", nil, map[string]any{
+	code, body := do(t, ts, "POST", "/api/v1/public/checkout", buyer(t, ts, pool, "buy@assento.com"), map[string]any{
 		"event_id": eventID.String(), "lot_id": lotID.String(), "quantity": 2,
 		"seat_ids": []string{seats[0].String(), seats[1].String()}, "method": "pix",
 	})
@@ -141,7 +140,7 @@ func TestCheckoutPixSeatedCycle(t *testing.T) {
 		t.Fatalf("esperava 2 ingressos com assento, veio %d", n)
 	}
 	// Assentos ocupados por ingresso: novo checkout dos mesmos assentos falha (409).
-	code, _ = do(t, ts, "POST", "/api/v1/public/checkout", nil, map[string]any{
+	code, _ = do(t, ts, "POST", "/api/v1/public/checkout", buyer(t, ts, pool, "buy@assento2.com"), map[string]any{
 		"event_id": eventID.String(), "lot_id": lotID.String(), "quantity": 1,
 		"seat_ids": []string{seats[0].String()}, "method": "pix",
 	})
