@@ -169,6 +169,9 @@ func (s *Server) getPublicEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var detail publicEventDetail
+	// Slice vazio (nunca null no JSON): o web faz .some/.find direto e quebraria com null.
+	detail.Lots = []publicLot{}
+	detail.Sectors = []publicSector{}
 	err = s.withTenant(r.Context(), producerID, func(tx pgx.Tx) error {
 		ev, e := catalog.GetEvent(r.Context(), tx, eventID)
 		if e != nil {
