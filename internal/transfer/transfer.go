@@ -46,9 +46,10 @@ func Execute(ctx context.Context, tx pgx.Tx, ticketID, toWalletID uuid.UUID, pri
 	var fromWallet *uuid.UUID
 	var status string
 	var transferableAfter time.Time
+	var chainStatus string
 	err := tx.QueryRow(ctx, `
-		SELECT event_id, lot_id, owner_wallet_id, status, transferable_after
-		  FROM tickets WHERE id = $1`, ticketID).Scan(&eventID, &lotID, &fromWallet, &status, &transferableAfter)
+		SELECT event_id, lot_id, owner_wallet_id, status, transferable_after, chain_status
+		  FROM tickets WHERE id = $1`, ticketID).Scan(&eventID, &lotID, &fromWallet, &status, &transferableAfter, &chainStatus)
 	if err != nil {
 		return Result{}, err
 	}
@@ -98,8 +99,10 @@ func Execute(ctx context.Context, tx pgx.Tx, ticketID, toWalletID uuid.UUID, pri
 	if _, err := tx.Exec(ctx, `UPDATE tickets SET owner_wallet_id=$2, updated_at=now() WHERE id=$1`, ticketID, toWalletID); err != nil {
 		return Result{}, err
 	}
-	// Registro on-chain em segundo plano (a transferência off-chain já valeu).
-	if enqueueChain {
+	// Registro on-chain em segundo plano (a transferência off-chain já valeu). Só quando o
+	// token já EXISTE na rede (minted) — transferência de ingresso não materializado não
+	// gera trabalho on-chain.
+	if enqueueChain && chainStatus == "minted" {
 		if _, err := tx.Exec(ctx, `INSERT INTO chain_jobs (ticket_id, kind) VALUES ($1,'transfer')`, ticketID); err != nil {
 			return Result{}, err
 		}

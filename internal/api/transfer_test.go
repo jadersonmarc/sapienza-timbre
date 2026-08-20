@@ -45,6 +45,10 @@ func TestRestrictedTransfer(t *testing.T) {
 	pid := producerID(t, ts, owner)
 	ctx := context.Background()
 	soldStandingTicket(t, ts, pool, owner) // Pix: transferível imediatamente; face 5000
+	// Materializa o token (mint) — a transferência on-chain só ocorre se o token já existe.
+	if _, err := chain.ProcessTenant(ctx, pool, okChain{}, pid); err != nil {
+		t.Fatalf("mint do ingresso: %v", err)
+	}
 	tid := firstTicket(t, ctx, pool, pid)
 	wallet := mkWallet(t, pool, "0xnovo-dono-1")
 

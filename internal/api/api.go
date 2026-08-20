@@ -50,6 +50,8 @@ type Server struct {
 	signer       *ticketing.Signer // assina ingressos (Ed25519) na emissão
 	adminToken   string            // gate do bootstrap de produtor (vazio = criação desligada)
 	webhookToken string            // valida o header do webhook do Asaas (vazio = sem checagem)
+	mintMode     chain.MintMode    // on_demand (default) | eager
+	deriver      *wallet.Deriver   // deriva/importa endereços do participante (pode ser nil)
 	seams        Seams             // drivers de rede/pagamento/carteira/notificação
 	limiter      *rateLimiter      // contenção de abuso na superfície pública (§4.1)
 }
@@ -62,10 +64,14 @@ const (
 )
 
 // NewServer constrói o servidor da API.
-func NewServer(pool *pgxpool.Pool, authz *auth.Authenticator, prov *producer.Provisioner, signer *ticketing.Signer, adminToken, webhookToken string, seams Seams) *Server {
+func NewServer(pool *pgxpool.Pool, authz *auth.Authenticator, prov *producer.Provisioner, signer *ticketing.Signer, adminToken, webhookToken string, mintMode chain.MintMode, deriver *wallet.Deriver, seams Seams) *Server {
+	if mintMode == "" {
+		mintMode = chain.MintModeOnDemand
+	}
 	return &Server{
 		pool: pool, auth: authz, prov: prov, signer: signer,
-		adminToken: adminToken, webhookToken: webhookToken, seams: seams,
+		adminToken: adminToken, webhookToken: webhookToken,
+		mintMode: mintMode, deriver: deriver, seams: seams,
 		limiter: newRateLimiter(publicRateLimit, publicRateWindow),
 	}
 }
@@ -73,7 +79,10 @@ func NewServer(pool *pgxpool.Pool, authz *auth.Authenticator, prov *producer.Pro
 // emitter monta o emissor (assinatura + metadados + entrega + fila on-chain) para um
 // produtor.
 func (s *Server) emitter(producerID uuid.UUID) checkout.Emitter {
-	return checkout.Emitter{Signer: s.signer, Notify: s.seams.Notify, Chain: s.seams.Chain, ProducerID: producerID}
+	return checkout.Emitter{
+		Signer: s.signer, Notify: s.seams.Notify, Chain: s.seams.Chain,
+		MintMode: s.mintMode, ProducerID: producerID,
+	}
 }
 
 // Handler devolve o mux da superfície /api/v1, embrulhado no log de acesso.
@@ -130,6 +139,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/public/me/tickets/{id}/transfer", s.buyerAuthed(s.buyerTransfer))
 	mux.HandleFunc("POST /api/v1/public/me/tickets/{id}/listings", s.buyerAuthed(s.buyerCreateListing))
 	mux.HandleFunc("POST /api/v1/public/me/tickets/{id}/reissue", s.buyerAuthed(s.buyerReissue))
+	mux.HandleFunc("POST /api/v1/public/me/tickets/{id}/export", s.buyerAuthed(s.buyerExport))
+	mux.HandleFunc("POST /api/v1/public/me/tickets/{id}/collectible", s.buyerAuthed(s.buyerCollectible))
 	// Camada pública (Onda 1): cadastro público de produtor (landing B2B) — self-service,
 	// nasce ativo. E cadastro de artista (catálogo global), também ativo na hora.
 	mux.HandleFunc("POST /api/v1/public/producer-signup", s.rateLimited("producer-signup", s.producerSignup))
@@ -152,6 +163,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/dash/events/{id}", s.requirePermission("relatorios", s.dashOverview))
 	mux.HandleFunc("GET /api/v1/dash/events/{id}/export.csv", s.requirePermission("relatorios", s.dashExportCSV))
 	mux.HandleFunc("GET /api/v1/dash/payouts", s.requirePermission("relatorios", s.dashPayouts))
+	// Materialização em massa dos ingressos de um evento (produtor, on-demand).
+	mux.HandleFunc("POST /api/v1/dash/events/{id}/materialize", s.requireOwner(s.bulkMaterializeEvent))
 	// Transferência restrita (Etapa 2.1) — por ora operada pelo owner.
 	mux.HandleFunc("POST /api/v1/tickets/{id}/transfer", s.requireOwner(s.transferTicket))
 	// Mercado secundário (Etapa 2.2): anúncio/cancelamento e procedência (owner);

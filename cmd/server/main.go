@@ -129,7 +129,17 @@ func main() {
 
 	authz := auth.New(cfg.JWTSecret)
 	prov := producer.New(pool, runner)
-	srv := api.NewServer(pool, authz, prov, signer, cfg.AdminToken, os.Getenv("ASAAS_WEBHOOK_TOKEN"), seams)
+	if !chain.ValidMintMode(cfg.ChainMintMode) {
+		log.Fatalf("CHAIN_MINT_MODE inválido: %q (use on_demand ou eager)", cfg.ChainMintMode)
+	}
+	// Derivação de endereço: CHAIN_HD_SEED_REF aponta para a semente no cofre. O fetch real
+	// do cofre é PROVISÓRIO (falha fechado até integrar); a semente nunca está em env/arquivo.
+	var deriver *wallet.Deriver
+	if cfg.ChainHDSeedRef != "" {
+		deriver = wallet.NewDeriver(wallet.VaultSeedProvider{Ref: cfg.ChainHDSeedRef}, nil)
+		slog.Warn("wallet: derivação de endereço ligada (CHAIN_HD_SEED_REF); provedor do cofre PROVISÓRIO")
+	}
+	srv := api.NewServer(pool, authz, prov, signer, cfg.AdminToken, os.Getenv("ASAAS_WEBHOOK_TOKEN"), chain.MintMode(cfg.ChainMintMode), deriver, seams)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler(pool))

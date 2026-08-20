@@ -326,7 +326,7 @@ func (s *Server) checkoutStatus(w http.ResponseWriter, r *http.Request) {
 // (§4.1 IDOR), lendo o índice público (sem varrer schemas). Inclui o token do QR.
 func (s *Server) myTickets(w http.ResponseWriter, r *http.Request, subjectID uuid.UUID) {
 	rows, err := s.pool.Query(r.Context(), `
-		SELECT event_id, event_title, event_starts_at, venue_city, ticket_id, token, seat_label, status
+		SELECT event_id, event_title, event_starts_at, venue_city, ticket_id, token, seat_label, status, chain_status
 		  FROM ticket_directory WHERE subject_id = $1 ORDER BY event_starts_at NULLS LAST, created_at DESC`, subjectID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -334,19 +334,20 @@ func (s *Server) myTickets(w http.ResponseWriter, r *http.Request, subjectID uui
 	}
 	defer rows.Close()
 	type ticket struct {
-		EventID   uuid.UUID  `json:"event_id"`
-		Title     string     `json:"event_title"`
-		StartsAt  *time.Time `json:"event_starts_at,omitempty"`
-		City      *string    `json:"venue_city,omitempty"`
-		TicketID  uuid.UUID  `json:"ticket_id"`
-		Token     *string    `json:"token,omitempty"`
-		SeatLabel *string    `json:"seat_label,omitempty"`
-		Status    string     `json:"status"`
+		EventID     uuid.UUID  `json:"event_id"`
+		Title       string     `json:"event_title"`
+		StartsAt    *time.Time `json:"event_starts_at,omitempty"`
+		City        *string    `json:"venue_city,omitempty"`
+		TicketID    uuid.UUID  `json:"ticket_id"`
+		Token       *string    `json:"token,omitempty"`
+		SeatLabel   *string    `json:"seat_label,omitempty"`
+		Status      string     `json:"status"`
+		ChainStatus string     `json:"chain_status"`
 	}
 	out := []ticket{}
 	for rows.Next() {
 		var t ticket
-		if err := rows.Scan(&t.EventID, &t.Title, &t.StartsAt, &t.City, &t.TicketID, &t.Token, &t.SeatLabel, &t.Status); err != nil {
+		if err := rows.Scan(&t.EventID, &t.Title, &t.StartsAt, &t.City, &t.TicketID, &t.Token, &t.SeatLabel, &t.Status, &t.ChainStatus); err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}

@@ -204,7 +204,7 @@ func Confirm(ctx context.Context, tx pgx.Tx, holdID, orderID, lotID uuid.UUID, t
 		var ticketID uuid.UUID
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO tickets (event_id, lot_id, order_id, seat_id, transferable_after, status, chain_status)
-			VALUES ($1, $2, $3, $4, $5, 'active', 'none')
+			VALUES ($1, $2, $3, $4, $5, 'active', 'not_materialized')
 			RETURNING id`, eventID, lotID, orderID, o.seatID, transferableAfter).Scan(&ticketID); err != nil {
 			return nil, fmt.Errorf("emitir ingresso: %w", err)
 		}

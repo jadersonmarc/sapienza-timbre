@@ -17,8 +17,9 @@ type MintRequest struct {
 
 // MintResult é o resultado de uma emissão.
 type MintResult struct {
-	TxHash  string
-	TokenID string
+	TxHash     string
+	TokenID    string
+	GasCostWei int64 // gás medido na testnet/rede (0 = não medido)
 }
 
 // TransferRequest descreve uma transferência restrita (pelo contrato da plataforma).
@@ -40,6 +41,23 @@ type TokenStatus struct {
 	TokenID string
 	Owner   string
 	Minted  bool
+}
+
+// MintMode controla QUANDO a emissão on-chain acontece. on_demand (default) materializa só
+// quando a posse precisa se mover na cadeia; eager emite na confirmação do pagamento
+// (comportamento anterior).
+type MintMode string
+
+const (
+	// MintModeOnDemand: ingresso nasce 'not_materialized' e só vira 'pending' sob demanda.
+	MintModeOnDemand MintMode = "on_demand"
+	// MintModeEager: emissão enfileirada já na confirmação do pagamento.
+	MintModeEager MintMode = "eager"
+)
+
+// ValidMintMode diz se m é um modo conhecido.
+func ValidMintMode(m string) bool {
+	return m == string(MintModeOnDemand) || m == string(MintModeEager)
 }
 
 // ChainDriver é a interface única com a rede. Enabled diz se há rede de verdade por

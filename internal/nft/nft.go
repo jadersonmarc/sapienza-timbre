@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/jadersonmarc/sapienza-timbre/internal/chain"
 	"github.com/jadersonmarc/sapienza-timbre/internal/ticketing"
 )
 
@@ -24,6 +25,8 @@ var (
 	ErrAlreadyDisputed = errors.New("nft: ingresso já em disputa")
 	// ErrNotReissuable: ingresso não pode ser reemitido (não está ativo).
 	ErrNotReissuable = errors.New("nft: ingresso não reemitível")
+	// ErrNoImportedAddress: o comprador não tem endereço importado para exportar.
+	ErrNoImportedAddress = errors.New("nft: nenhum endereço importado para este comprador")
 )
 
 type attr struct {
@@ -136,6 +139,24 @@ func ExportTicket(ctx context.Context, tx pgx.Tx, ticketID uuid.UUID) error {
 	return err
 }
 
+// RequestExport é a exportação sob demanda do PARTICIPANTE: exige endereço importado,
+// materializa o token (reason='export') e passa a custódia para o endereço importado.
+func RequestExport(ctx context.Context, tx pgx.Tx, subjectID, ticketID uuid.UUID) error {
+	var walletID uuid.UUID
+	err := tx.QueryRow(ctx, `SELECT id FROM public.wallets WHERE subject_id=$1 AND origin='imported' LIMIT 1`, subjectID).Scan(&walletID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNoImportedAddress
+	}
+	if err != nil {
+		return err
+	}
+	if err := chain.Materialize(ctx, tx, []uuid.UUID{ticketID}, chain.ReasonExport); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `UPDATE tickets SET custody='external', exported_at=now(), owner_wallet_id=$2, updated_at=now() WHERE id=$1`, ticketID, walletID)
+	return err
+}
+
 // OpenDispute abre uma disputa (bloqueia transferência; não bloqueia entrada).
 func OpenDispute(ctx context.Context, tx pgx.Tx, ticketID uuid.UUID, reason string) error {
 	_, err := tx.Exec(ctx, `INSERT INTO ticket_disputes (ticket_id, reason) VALUES ($1,$2)`, ticketID, nilStr(reason))
@@ -177,7 +198,7 @@ func Reissue(ctx context.Context, tx pgx.Tx, signer *ticketing.Signer, producerI
 	var newID uuid.UUID
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO tickets (event_id, lot_id, order_id, seat_id, owner_subject_id, owner_wallet_id, transferable_after, half_price, status, chain_status)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'active','none') RETURNING id`,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'active','not_materialized') RETURNING id`,
 		eventID, lotID, orderID, seatID, ownerSubject, ownerWallet, transferableAfter, halfPrice).Scan(&newID); err != nil {
 		return uuid.Nil, err
 	}

@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/jadersonmarc/sapienza-timbre/internal/chain"
 	"github.com/jadersonmarc/sapienza-timbre/internal/market"
 	"github.com/jadersonmarc/sapienza-timbre/internal/nft"
 	"github.com/jadersonmarc/sapienza-timbre/internal/ticketing"
@@ -100,7 +101,7 @@ func (s *Server) buyerTransfer(w http.ResponseWriter, r *http.Request, subjectID
 		if e != nil {
 			return e
 		}
-		if _, e := transfer.Execute(r.Context(), tx, ticketID, toWallet, 0, false); e != nil {
+		if _, e := transfer.Execute(r.Context(), tx, ticketID, toWallet, 0, s.seams.Chain.Enabled()); e != nil {
 			return e
 		}
 		_, e = tx.Exec(r.Context(), `
@@ -144,7 +145,7 @@ func (s *Server) buyerCreateListing(w http.ResponseWriter, r *http.Request, subj
 	var listing market.Listing
 	err = s.withTenant(r.Context(), producerID, func(tx pgx.Tx) error {
 		var e error
-		listing, e = market.CreateListing(r.Context(), tx, producerID, ticketID, body.PriceCents)
+		listing, e = market.CreateListing(r.Context(), tx, producerID, ticketID, body.PriceCents, s.seams.Chain.Enabled())
 		return e
 	})
 	if err != nil {
@@ -197,6 +198,61 @@ func (s *Server) buyerReissue(w http.ResponseWriter, r *http.Request, subjectID 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "ticket_id": newID})
+}
+
+// buyerExport exporta o ingresso para o endereço importado do comprador (on-demand):
+// materializa o token (reason='export') e passa a custódia. Sem endereço importado, falha.
+func (s *Server) buyerExport(w http.ResponseWriter, r *http.Request, subjectID uuid.UUID) {
+	ticketID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "id inválido")
+		return
+	}
+	producerID, err := s.ownsTicket(r.Context(), subjectID, ticketID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeErr(w, http.StatusForbidden, "este ingresso não é seu")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := s.withTenant(r.Context(), producerID, func(tx pgx.Tx) error {
+		return nft.RequestExport(r.Context(), tx, subjectID, ticketID)
+	}); err != nil {
+		if errors.Is(err, nft.ErrNoImportedAddress) {
+			writeErr(w, http.StatusConflict, "nenhuma carteira externa vinculada — importe um endereço antes de exportar")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// buyerCollectible materializa o ingresso a pedido do participante (colecionável).
+func (s *Server) buyerCollectible(w http.ResponseWriter, r *http.Request, subjectID uuid.UUID) {
+	ticketID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "id inválido")
+		return
+	}
+	producerID, err := s.ownsTicket(r.Context(), subjectID, ticketID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeErr(w, http.StatusForbidden, "este ingresso não é seu")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := s.withTenant(r.Context(), producerID, func(tx pgx.Tx) error {
+		return chain.Materialize(r.Context(), tx, []uuid.UUID{ticketID}, chain.ReasonCollectible)
+	}); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // writeTransferErr mapeia os erros de transferência/mercado para códigos claros.

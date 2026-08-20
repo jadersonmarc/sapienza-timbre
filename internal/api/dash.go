@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/jadersonmarc/sapienza-timbre/internal/auth"
+	"github.com/jadersonmarc/sapienza-timbre/internal/chain"
 	"github.com/jadersonmarc/sapienza-timbre/internal/dash"
 	"github.com/jadersonmarc/sapienza-timbre/internal/ledger"
 )
@@ -98,6 +99,44 @@ func (s *Server) dashPayouts(w http.ResponseWriter, r *http.Request, claims *aut
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"net_due_cents": netDue, "payouts": payouts})
+}
+
+// bulkMaterializeEvent materializa em massa os ingressos não materializados de um evento
+// (produtor, reason='bulk_producer'). Devolve quantos foram enfileirados.
+func (s *Server) bulkMaterializeEvent(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
+	eventID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "id inválido")
+		return
+	}
+	var count int
+	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
+		rows, e := tx.Query(r.Context(), `SELECT id FROM tickets WHERE event_id=$1 AND chain_status='not_materialized'`, eventID)
+		if e != nil {
+			return e
+		}
+		defer rows.Close()
+		var ids []uuid.UUID
+		for rows.Next() {
+			var id uuid.UUID
+			if e := rows.Scan(&id); e != nil {
+				return e
+			}
+			ids = append(ids, id)
+		}
+		if e := rows.Err(); e != nil {
+			return e
+		}
+		if e := chain.Materialize(r.Context(), tx, ids, chain.ReasonBulkProducer); e != nil {
+			return e
+		}
+		count = len(ids)
+		return nil
+	}); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"materialized": count})
 }
 
 // dashExportCSV exporta os ingressos do evento em CSV.

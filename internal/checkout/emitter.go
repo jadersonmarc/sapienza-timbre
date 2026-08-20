@@ -20,6 +20,7 @@ type Emitter struct {
 	Signer     *ticketing.Signer
 	Notify     notify.Notifier
 	Chain      chain.ChainDriver
+	MintMode   chain.MintMode // on_demand (não enfileira) | eager (enfileira no pagamento)
 	ProducerID uuid.UUID
 }
 
@@ -43,8 +44,8 @@ func (e Emitter) emit(ctx context.Context, tx pgx.Tx, ticketIDs []uuid.UUID, del
 		if err := nft.GenerateMetadata(ctx, tx, e.ProducerID, tid); err != nil {
 			return err
 		}
-		// Enfileira o mint on-chain (em segundo plano) só se há rede de verdade.
-		if e.Chain != nil && e.Chain.Enabled() {
+		// Emissão on-chain: só no modo eager (no on_demand, a materialização é sob demanda).
+		if e.MintMode == chain.MintModeEager && e.Chain != nil && e.Chain.Enabled() {
 			if err := chain.EnqueueMint(ctx, tx, tid); err != nil {
 				return err
 			}

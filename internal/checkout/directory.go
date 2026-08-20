@@ -43,15 +43,19 @@ func writeTicketDirectory(ctx context.Context, tx pgx.Tx, producerID, eventID uu
 			return err
 		}
 		var seatLabel *string
+		var chainStatus string
 		_ = tx.QueryRow(ctx, `
 			SELECT COALESCE(s.row_label,'') || COALESCE(s.number,'')
 			  FROM tickets t JOIN seats s ON s.id = t.seat_id WHERE t.id = $1`, tid).Scan(&seatLabel)
+		if err := tx.QueryRow(ctx, `SELECT chain_status FROM tickets WHERE id=$1`, tid).Scan(&chainStatus); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO ticket_directory
-			    (subject_id, buyer_email, producer_id, event_id, event_title, event_starts_at, venue_city, ticket_id, token, seat_label, status)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'active')
+			    (subject_id, buyer_email, producer_id, event_id, event_title, event_starts_at, venue_city, ticket_id, token, seat_label, status, chain_status)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'active',$11)
 			ON CONFLICT (producer_id, ticket_id) DO NOTHING`,
-			subjectID, nilIfEmpty(buyerEmail), producerID, eventID, title, startsAt, city, tid, token, seatLabel); err != nil {
+			subjectID, nilIfEmpty(buyerEmail), producerID, eventID, title, startsAt, city, tid, token, seatLabel, chainStatus); err != nil {
 			return err
 		}
 	}

@@ -369,8 +369,8 @@ func ConfirmPayment(ctx context.Context, tx pgx.Tx, em Emitter, producerID uuid.
 		for range quantity {
 			var tid uuid.UUID
 			if err := tx.QueryRow(ctx, `
-				INSERT INTO tickets (event_id, lot_id, order_id, transferable_after, status, chain_status)
-				VALUES ($1,$2,$3,$4,'active','none') RETURNING id`,
+			INSERT INTO tickets (event_id, lot_id, order_id, transferable_after, status, chain_status)
+			VALUES ($1,$2,$3,$4,'active','not_materialized') RETURNING id`,
 				eventID, lotID, orderID, transferableAfter).Scan(&tid); err != nil {
 				return nil, fmt.Errorf("emitir ingresso: %w", err)
 			}

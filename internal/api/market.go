@@ -32,7 +32,7 @@ func (s *Server) createListing(w http.ResponseWriter, r *http.Request, claims *a
 	var out market.Listing
 	err = s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
 		var e error
-		out, e = market.CreateListing(r.Context(), tx, claims.ProducerID, ticketID, body.PriceCents)
+		out, e = market.CreateListing(r.Context(), tx, claims.ProducerID, ticketID, body.PriceCents, s.seams.Chain.Enabled())
 		return e
 	})
 	switch {
@@ -119,11 +119,15 @@ func (s *Server) buyListing(w http.ResponseWriter, r *http.Request, subjectID uu
 	var res market.BuyResult
 	err = s.withTenant(r.Context(), producerID, func(tx pgx.Tx) error {
 		var e error
-		res, e = market.BuyListing(r.Context(), tx, s.seams.Payment, producerID, listingID, email)
+		res, e = market.BuyListing(r.Context(), tx, s.seams.Payment, producerID, listingID, email, s.seams.Chain.Enabled())
 		return e
 	})
 	if errors.Is(err, market.ErrListingUnavailable) {
 		writeErr(w, http.StatusConflict, "anúncio indisponível")
+		return
+	}
+	if errors.Is(err, market.ErrListingPendingMint) {
+		writeErr(w, http.StatusConflict, "ingresso ainda materializando na rede — tente em instantes")
 		return
 	}
 	if err != nil {

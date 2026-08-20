@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/jadersonmarc/sapienza-timbre/internal/chain"
 	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
 	"github.com/jadersonmarc/sapienza-timbre/internal/program"
 	"github.com/jadersonmarc/sapienza-timbre/internal/transfer"
@@ -25,19 +26,25 @@ var (
 	ErrAlreadyListed = errors.New("market: ingresso já anunciado")
 	// ErrListingUnavailable: anúncio inexistente ou não está mais à venda.
 	ErrListingUnavailable = errors.New("market: anúncio indisponível")
+	// ErrListingPendingMint: o anúncio existe, mas o ingresso ainda está materializando
+	// na rede (chain_status 'pending') — só fica comprável quando 'minted'.
+	ErrListingPendingMint = errors.New("market: ingresso ainda materializando na rede")
 )
 
 // Listing é um anúncio de revenda.
 type Listing struct {
-	ID         uuid.UUID `json:"id"`
-	TicketID   uuid.UUID `json:"ticket_id"`
-	PriceCents int64     `json:"price_cents"`
-	Status     string    `json:"status"`
+	ID          uuid.UUID `json:"id"`
+	TicketID    uuid.UUID `json:"ticket_id"`
+	PriceCents  int64     `json:"price_cents"`
+	Status      string    `json:"status"`
+	ChainStatus string    `json:"chain_status,omitempty"` // estado de materialização exposto ao vendedor
 }
 
 // CreateListing anuncia um ingresso para revenda (aplica teto; ingresso precisa estar
-// ativo e fora da janela de contestação). Escreve o índice público do anúncio.
-func CreateListing(ctx context.Context, tx pgx.Tx, producerID, ticketID uuid.UUID, priceCents int64) (Listing, error) {
+// ativo e fora da janela de contestação). Com rede ligada, materializa o token antes de
+// publicar (on-demand) — o anúncio fica indisponível até o mint concluir. Escreve o índice
+// público do anúncio.
+func CreateListing(ctx context.Context, tx pgx.Tx, producerID, ticketID uuid.UUID, priceCents int64, chainOn bool) (Listing, error) {
 	var eventID, lotID uuid.UUID
 	var ownerWallet *uuid.UUID
 	var status string
@@ -56,6 +63,12 @@ func CreateListing(ctx context.Context, tx pgx.Tx, producerID, ticketID uuid.UUI
 	if err := checkCap(ctx, tx, eventID, lotID, priceCents); err != nil {
 		return Listing{}, err
 	}
+	// A revenda move a posse na cadeia: materializa antes de publicar o anúncio.
+	if chainOn {
+		if err := chain.Materialize(ctx, tx, []uuid.UUID{ticketID}, chain.ReasonResaleListing); err != nil {
+			return Listing{}, err
+		}
+	}
 
 	var l Listing
 	err := tx.QueryRow(ctx, `
@@ -72,6 +85,10 @@ func CreateListing(ctx context.Context, tx pgx.Tx, producerID, ticketID uuid.UUI
 		INSERT INTO public.listing_index (listing_id, producer_id, ticket_id, price_cents, status)
 		VALUES ($1,$2,$3,$4,'active')`, l.ID, producerID, ticketID, priceCents); err != nil {
 		return Listing{}, err
+	}
+	// Expor o estado de materialização ao vendedor.
+	if chainOn {
+		_ = tx.QueryRow(ctx, `SELECT chain_status FROM tickets WHERE id=$1`, ticketID).Scan(&l.ChainStatus)
 	}
 	return l, nil
 }
@@ -100,15 +117,16 @@ type BuyResult struct {
 
 // BuyListing reserva o anúncio, cria a carteira do comprador, a ordem e a cobrança. A
 // troca de titularidade só acontece na confirmação do pagamento (ConfirmResale).
-func BuyListing(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, producerID, listingID uuid.UUID, buyerEmail string) (BuyResult, error) {
+func BuyListing(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, producerID, listingID uuid.UUID, buyerEmail string, chainOn bool) (BuyResult, error) {
 	var ticketID uuid.UUID
 	var eventID uuid.UUID
 	var price int64
 	var status string
+	var chainStatus string
 	if err := tx.QueryRow(ctx, `
-		SELECT l.ticket_id, l.price_cents, l.status, t.event_id
+		SELECT l.ticket_id, l.price_cents, l.status, t.event_id, t.chain_status
 		  FROM listings l JOIN tickets t ON t.id=l.ticket_id WHERE l.id=$1 FOR UPDATE OF l`, listingID).
-		Scan(&ticketID, &price, &status, &eventID); err != nil {
+		Scan(&ticketID, &price, &status, &eventID, &chainStatus); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return BuyResult{}, ErrListingUnavailable
 		}
@@ -116,6 +134,10 @@ func BuyListing(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, produ
 	}
 	if status != "active" {
 		return BuyResult{}, ErrListingUnavailable
+	}
+	// Com rede ligada, o anúncio só é comprável quando o token está materializado (minted).
+	if chainOn && chainStatus != "minted" {
+		return BuyResult{}, ErrListingPendingMint
 	}
 
 	// Carteira invisível do comprador (MPC real vem com a identidade; aqui um registro).

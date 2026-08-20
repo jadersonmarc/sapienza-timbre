@@ -18,6 +18,8 @@ type Config struct {
 	EncKey           string // reservado (AES-256-GCM por-tenant); vazio nesta etapa
 	TicketSigningKey string // seed Ed25519 base64 p/ assinar ingressos (vazio = efêmera)
 	LogLevel         string // debug|info|warn|error (default info)
+	ChainMintMode    string // on_demand (default) | eager — quando materializar emissão on-chain
+	ChainHDSeedRef   string // referência da semente HD no cofre (nunca a semente em si)
 }
 
 // Load lê o ambiente e valida os campos obrigatórios. Retorna erro em vez de
@@ -31,6 +33,8 @@ func Load() (Config, error) {
 		EncKey:           os.Getenv("TIMBRE_ENC_KEY"),
 		TicketSigningKey: os.Getenv("TIMBRE_TICKET_SIGNING_KEY"),
 		LogLevel:         getenv("LOG_LEVEL", "info"),
+		ChainMintMode:    getenv("CHAIN_MINT_MODE", "on_demand"),
+		ChainHDSeedRef:   os.Getenv("CHAIN_HD_SEED_REF"),
 	}
 
 	var missing []string

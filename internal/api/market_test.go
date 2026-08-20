@@ -33,6 +33,12 @@ func TestSecondaryMarketResale(t *testing.T) {
 	}
 	listingID, _ := lbody["id"].(string)
 
+	// O token precisa estar materializado (minted) antes da compra — o anúncio fica
+	// indisponível enquanto 'pending'. Aqui o mint roda de forma síncrona (teste).
+	if _, err := chain.ProcessTenant(ctx, pool, okChain{}, pid); err != nil {
+		t.Fatalf("mint do ingresso: %v", err)
+	}
+
 	// Compra do anúncio pelo comprador autenticado.
 	code, bbody := do(t, ts, "POST", "/api/v1/public/listings/"+listingID+"/buy", buyer(t, ts, pool, "comprador2@x.com"),
 		map[string]any{})

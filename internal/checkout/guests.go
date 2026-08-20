@@ -35,7 +35,7 @@ func IssueCourtesy(ctx context.Context, tx pgx.Tx, em Emitter, eventID uuid.UUID
 	var ticketID uuid.UUID
 	err := tx.QueryRow(ctx, `
 		INSERT INTO tickets (event_id, lot_id, seat_id, transferable_after, status, chain_status)
-		VALUES ($1,$2,$3, now(), 'active','none') RETURNING id`,
+		VALUES ($1,$2,$3, now(), 'active','not_materialized') RETURNING id`,
 		eventID, lot, seatID).Scan(&ticketID)
 	if isUniqueViolation(err) {
 		return uuid.Nil, inventory.ErrSeatUnavailable

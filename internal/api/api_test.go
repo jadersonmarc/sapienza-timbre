@@ -41,11 +41,15 @@ func setupSigned(t *testing.T) (*httptest.Server, *pgxpool.Pool, *ticketing.Sign
 }
 
 func setupCore(t *testing.T, chainDriver chain.ChainDriver) (*httptest.Server, *pgxpool.Pool, *ticketing.Signer) {
+	return setupCoreMode(t, chainDriver, chain.MintModeEager)
+}
+
+func setupCoreMode(t *testing.T, chainDriver chain.ChainDriver, mintMode chain.MintMode) (*httptest.Server, *pgxpool.Pool, *ticketing.Signer) {
 	t.Helper()
 	pool := testutil.Pool(t)
 	runner := tenancy.NewMigrationRunner(pool, migrations.Tenant)
 	signer := ticketing.GenerateSigner()
-	srv := api.NewServer(pool, auth.New("test-secret"), producer.New(pool, runner), signer, adminToken, "", api.Seams{
+	srv := api.NewServer(pool, auth.New("test-secret"), producer.New(pool, runner), signer, adminToken, "", mintMode, nil, api.Seams{
 		Chain:   chainDriver,
 		Payment: payment.NewFakeGateway(),
 		Wallet:  wallet.NoopWalletProvider{},

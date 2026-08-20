@@ -15,12 +15,12 @@ import (
 
 // EnqueueMint enfileira a emissão on-chain de um ingresso e marca chain_status=pending.
 // Roda na MESMA transação da emissão, mas o mint em si acontece depois, em segundo
-// plano — a venda nunca espera a rede (guardrail).
+// plano — a venda nunca espera a rede (guardrail). É o caminho EAGER (CHAIN_MINT_MODE).
 func EnqueueMint(ctx context.Context, tx pgx.Tx, ticketID uuid.UUID) error {
 	if _, err := tx.Exec(ctx, `INSERT INTO chain_jobs (ticket_id, kind) VALUES ($1,'mint')`, ticketID); err != nil {
 		return err
 	}
-	_, err := tx.Exec(ctx, `UPDATE tickets SET chain_status='pending', updated_at=now() WHERE id=$1 AND chain_status='none'`, ticketID)
+	_, err := tx.Exec(ctx, `UPDATE tickets SET chain_status='pending', updated_at=now() WHERE id=$1 AND chain_status='not_materialized'`, ticketID)
 	return err
 }
 
@@ -30,6 +30,7 @@ type job struct {
 	eventID, lotID uuid.UUID
 	seatID         *uuid.UUID
 	attempts, max  int
+	amount         int
 	ownerAddr      *string
 }
 
@@ -63,7 +64,7 @@ func ProcessTenant(ctx context.Context, pool *pgxpool.Pool, driver ChainDriver, 
 			}
 			continue
 		}
-		res, mErr := driver.Mint(ctx, MintRequest{TokenID: j.tokenID(), ToAddress: deref(j.ownerAddr), Amount: 1})
+		res, mErr := driver.Mint(ctx, MintRequest{TokenID: j.tokenID(), ToAddress: deref(j.ownerAddr), Amount: int64(j.amount)})
 		if err := finish(ctx, pool, tenantID, j, res, mErr); err != nil {
 			return done, err
 		}
@@ -115,7 +116,7 @@ func claim(ctx context.Context, pool *pgxpool.Pool, tenantID uuid.UUID, limit in
 		return nil, err
 	}
 	rows, err := tx.Query(ctx, `
-		SELECT j.id, j.ticket_id, j.kind, j.attempts, j.max_attempts,
+		SELECT j.id, j.ticket_id, j.kind, j.attempts, j.max_attempts, j.amount,
 		       t.event_id, t.lot_id, t.seat_id, w.address
 		  FROM chain_jobs j
 		  JOIN tickets t ON t.id = j.ticket_id
@@ -130,7 +131,7 @@ func claim(ctx context.Context, pool *pgxpool.Pool, tenantID uuid.UUID, limit in
 	var jobs []job
 	for rows.Next() {
 		var j job
-		if err := rows.Scan(&j.id, &j.ticketID, &j.kind, &j.attempts, &j.max, &j.eventID, &j.lotID, &j.seatID, &j.ownerAddr); err != nil {
+		if err := rows.Scan(&j.id, &j.ticketID, &j.kind, &j.attempts, &j.max, &j.amount, &j.eventID, &j.lotID, &j.seatID, &j.ownerAddr); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -184,13 +185,51 @@ func finish(ctx context.Context, pool *pgxpool.Pool, tenantID uuid.UUID, j job, 
 	if tokenID == "" {
 		tokenID = j.tokenID()
 	}
-	if _, err := tx.Exec(ctx, `UPDATE chain_jobs SET status='done', attempts=attempts+1, updated_at=now() WHERE id=$1`, j.id); err != nil {
+	if _, err := tx.Exec(ctx, `
+		UPDATE chain_jobs SET status='done', attempts=attempts+1, tx_hash=$2, gas_cost_wei=$3, updated_at=now()
+		 WHERE id=$1`, j.id, nilStr(res.TxHash), gasOrNil(res.GasCostWei)); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE tickets SET chain_status='minted', chain_token_id=$2, updated_at=now() WHERE id=$1`, j.ticketID, tokenID); err != nil {
+	// Ingressos afetados: pista agrupada (todo o lote pendente) ou assento individual.
+	var affected []uuid.UUID
+	if j.seatID == nil {
+		rows, err := tx.Query(ctx, `
+			SELECT id FROM tickets WHERE event_id=$1 AND lot_id=$2 AND seat_id IS NULL AND chain_status='pending'`,
+			j.eventID, j.lotID)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var id uuid.UUID
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return err
+			}
+			affected = append(affected, id)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+	} else {
+		affected = []uuid.UUID{j.ticketID}
+	}
+	if _, err := tx.Exec(ctx, `UPDATE tickets SET chain_status='minted', chain_token_id=$2, updated_at=now() WHERE id = ANY($1)`, affected, tokenID); err != nil {
+		return err
+	}
+	// Projeta no índice público (meus ingressos).
+	if _, err := tx.Exec(ctx, `UPDATE public.ticket_directory SET chain_status='minted' WHERE ticket_id = ANY($1)`, affected); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// gasOrNil converte gás 0 (não medido) em NULL.
+func gasOrNil(wei int64) *int64 {
+	if wei <= 0 {
+		return nil
+	}
+	return &wei
 }
 
 // readTenant roda fn numa tx read-only escopada ao tenant.

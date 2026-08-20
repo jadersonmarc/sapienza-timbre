@@ -163,7 +163,7 @@ func ConfirmPass(ctx context.Context, tx pgx.Tx, em checkout.Emitter, producerID
 		var tid uuid.UUID
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO tickets (event_id, lot_id, order_id, season_pass_id, transferable_after, status, chain_status)
-			VALUES ($1,$2,$3,$4,$5,'active','none') RETURNING id`,
+			VALUES ($1,$2,$3,$4,$5,'active','not_materialized') RETURNING id`,
 			d.eventID, d.lotID, orderID, passID, transferableAfter).Scan(&tid); err != nil {
 			return fmt.Errorf("emitir ingresso do passe: %w", err)
 		}
