@@ -38,7 +38,7 @@ func (s *Server) transferTicket(w http.ResponseWriter, r *http.Request, claims *
 	var res transfer.Result
 	err = s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
 		var e error
-		res, e = transfer.Execute(r.Context(), tx, ticketID, toWallet, body.PriceCents, s.seams.Chain.Enabled())
+		res, e = transfer.Execute(r.Context(), tx, ticketID, toWallet, body.PriceCents)
 		return e
 	})
 	switch {

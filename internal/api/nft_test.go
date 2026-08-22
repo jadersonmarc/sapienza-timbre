@@ -45,29 +45,8 @@ func TestTokenMetadataNoPersonalData(t *testing.T) {
 		t.Fatalf("token view: %d", code)
 	}
 	state, _ := sv["state"].(map[string]any)
-	if state["lifecycle"] != "transferivel" || state["chain"] != "aguardando_emissao" {
+	if state["lifecycle"] != "transferivel" {
 		t.Fatalf("estado inesperado: %v", state)
-	}
-}
-
-// TestExportDoesNotBlockEntry: exportar para carteira externa não quebra a portaria.
-func TestExportDoesNotBlockEntry(t *testing.T) {
-	ts, pool, _ := setupSigned(t)
-	_, owner := createProducer(t, ts, "Casa Export", "owner@export.com", "senha1234")
-	pid := producerID(t, ts, owner)
-	ctx := context.Background()
-	tokens := soldSeatedTickets(t, ts, pool, owner, pid, 1)
-	tid := firstTicket(t, ctx, pool, pid)
-
-	if code, _ := do(t, ts, "POST", "/api/v1/tickets/"+tid.String()+"/export", bearer(owner), nil); code != http.StatusOK {
-		t.Fatalf("export: %d", code)
-	}
-	if c := scanStr(t, ctx, pool, pid, `SELECT custody FROM tickets WHERE id=$1`, tid); c != "external" {
-		t.Fatalf("custódia deveria ser external, veio %s", c)
-	}
-	// A entrada segue funcionando com o ingresso exportado.
-	if _, vb := do(t, ts, "POST", "/api/v1/gate/validate", bearer(owner), map[string]any{"token": tokens[0], "gate": "G1"}); vb["verdict"] != "admitted" {
-		t.Fatalf("entrada com ingresso exportado: esperava admitted, veio %v", vb)
 	}
 }
 

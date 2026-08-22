@@ -6,11 +6,10 @@ import (
 	"strings"
 )
 
-// ErrNotWired: o BaseChainDriver está configurado mas a emissão on-chain real ainda
-// não foi ligada. A assinatura da transação EVM e o ERC-1155 dependem do contrato
-// auditado (pré-requisito da Fase 2). Até lá, os jobs de mint acumulam com este erro
-// registrado em chain_jobs.last_error — a venda e a portaria seguem intactas.
-var ErrNotWired = errors.New("chain: BaseChainDriver ainda não ligado (contrato auditado — Fase 2)")
+// ErrNotImplemented: o BaseChainDriver está configurado mas a emissão ERC-1155 está
+// DESATIVADA por desenho (o eixo on-chain hoje é prova por âncora, não posse por token).
+// Dormente até uma eventual retomada — nada chama mint/transfer/burn.
+var ErrNotImplemented = errors.New("chain: emissão ERC-1155 desativada (prova por âncora, não posse)")
 
 // BaseChainDriver fala com a Base (ERC-1155). É a implementação real por trás da
 // interface; o resto do sistema não sabe que ela existe. Só habilita quando há RPC e
@@ -29,12 +28,12 @@ func NewBase(rpcURL, contract string) *BaseChainDriver {
 func (b *BaseChainDriver) Enabled() bool { return b.rpcURL != "" && b.contract != "" }
 
 func (b *BaseChainDriver) Mint(context.Context, MintRequest) (MintResult, error) {
-	return MintResult{}, ErrNotWired
+	return MintResult{}, ErrNotImplemented
 }
 func (b *BaseChainDriver) Transfer(context.Context, TransferRequest) (TransferResult, error) {
-	return TransferResult{}, ErrNotWired
+	return TransferResult{}, ErrNotImplemented
 }
-func (b *BaseChainDriver) Burn(context.Context, string) error { return ErrNotWired }
+func (b *BaseChainDriver) Burn(context.Context, string) error { return ErrNotImplemented }
 func (b *BaseChainDriver) Status(context.Context, string) (TokenStatus, error) {
-	return TokenStatus{}, ErrNotWired
+	return TokenStatus{}, ErrNotImplemented
 }

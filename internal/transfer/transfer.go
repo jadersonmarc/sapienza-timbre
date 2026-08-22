@@ -35,10 +35,10 @@ type Result struct {
 }
 
 // Execute transfere a titularidade de um ingresso para outra carteira, aplicando teto
-// e royalty. Grava o transfer + royalty_entries, reatribui o dono e (se a rede estiver
-// ligada) enfileira a transferência on-chain. priceCents pode ser 0 (transferência sem
-// venda), caso em que o royalty é 0.
-func Execute(ctx context.Context, tx pgx.Tx, ticketID, toWalletID uuid.UUID, priceCents int64, enqueueChain bool) (Result, error) {
+// e royalty. Grava o transfer + royalty_entries e reatribui o dono. Tudo em custódia de
+// plataforma — sem registro on-chain (o eixo on-chain agora é prova por âncora).
+// priceCents pode ser 0 (transferência sem venda), caso em que o royalty é 0.
+func Execute(ctx context.Context, tx pgx.Tx, ticketID, toWalletID uuid.UUID, priceCents int64) (Result, error) {
 	if priceCents < 0 {
 		return Result{}, ErrPriceCap
 	}
@@ -46,10 +46,9 @@ func Execute(ctx context.Context, tx pgx.Tx, ticketID, toWalletID uuid.UUID, pri
 	var fromWallet *uuid.UUID
 	var status string
 	var transferableAfter time.Time
-	var chainStatus string
 	err := tx.QueryRow(ctx, `
-		SELECT event_id, lot_id, owner_wallet_id, status, transferable_after, chain_status
-		  FROM tickets WHERE id = $1`, ticketID).Scan(&eventID, &lotID, &fromWallet, &status, &transferableAfter, &chainStatus)
+		SELECT event_id, lot_id, owner_wallet_id, status, transferable_after
+		  FROM tickets WHERE id = $1`, ticketID).Scan(&eventID, &lotID, &fromWallet, &status, &transferableAfter)
 	if err != nil {
 		return Result{}, err
 	}
@@ -98,14 +97,6 @@ func Execute(ctx context.Context, tx pgx.Tx, ticketID, toWalletID uuid.UUID, pri
 	// Reatribui a titularidade (restrita: só por aqui).
 	if _, err := tx.Exec(ctx, `UPDATE tickets SET owner_wallet_id=$2, updated_at=now() WHERE id=$1`, ticketID, toWalletID); err != nil {
 		return Result{}, err
-	}
-	// Registro on-chain em segundo plano (a transferência off-chain já valeu). Só quando o
-	// token já EXISTE na rede (minted) — transferência de ingresso não materializado não
-	// gera trabalho on-chain.
-	if enqueueChain && chainStatus == "minted" {
-		if _, err := tx.Exec(ctx, `INSERT INTO chain_jobs (ticket_id, kind) VALUES ($1,'transfer')`, ticketID); err != nil {
-			return Result{}, err
-		}
 	}
 	return Result{TransferID: transferID, PriceCents: priceCents, RoyaltyCents: royalty}, nil
 }

@@ -8,8 +8,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/jadersonmarc/sapienza-timbre/internal/chain"
 )
 
 // mkWallet cria um subject + wallet em public e devolve o id da carteira.
@@ -37,18 +35,14 @@ func firstTicket(t *testing.T, ctx context.Context, pool *pgxpool.Pool, pid uuid
 	return id
 }
 
-// TestRestrictedTransfer cobre o teto, o royalty, a reatribuição de dono e o registro
-// on-chain assíncrono da transferência.
+// TestRestrictedTransfer cobre o teto, o royalty e a reatribuição de dono em custódia de
+// plataforma (sem registro on-chain — o eixo on-chain agora é prova por âncora).
 func TestRestrictedTransfer(t *testing.T) {
 	ts, pool, _ := setupCore(t, okChain{})
 	_, owner := createProducer(t, ts, "Casa Transf", "owner@transf.com", "senha1234")
 	pid := producerID(t, ts, owner)
 	ctx := context.Background()
 	soldStandingTicket(t, ts, pool, owner) // Pix: transferível imediatamente; face 5000
-	// Materializa o token (mint) — a transferência on-chain só ocorre se o token já existe.
-	if _, err := chain.ProcessTenant(ctx, pool, okChain{}, pid); err != nil {
-		t.Fatalf("mint do ingresso: %v", err)
-	}
 	tid := firstTicket(t, ctx, pool, pid)
 	wallet := mkWallet(t, pool, "0xnovo-dono-1")
 
@@ -68,7 +62,7 @@ func TestRestrictedTransfer(t *testing.T) {
 		t.Fatalf("royalty esperado 400, veio %v", body["royalty_cents"])
 	}
 
-	// Dono reatribuído + registros.
+	// Dono reatribuído + registros (custódia de plataforma).
 	if got := scanStr(t, ctx, pool, pid, `SELECT owner_wallet_id::text FROM tickets WHERE id=$1`, tid); got != wallet.String() {
 		t.Fatalf("dono não reatribuído: %s", got)
 	}
@@ -78,13 +72,8 @@ func TestRestrictedTransfer(t *testing.T) {
 	if n := scanInt(t, ctx, pool, pid, `SELECT count(*) FROM royalty_entries WHERE amount_cents=400`); n != 1 {
 		t.Fatalf("esperava 1 royalty_entry de 400, veio %d", n)
 	}
-
-	// Registro on-chain assíncrono confirma o transfer.
-	if _, err := chain.ProcessTenant(ctx, pool, okChain{}, pid); err != nil {
-		t.Fatalf("process transfer: %v", err)
-	}
-	if st := scanStr(t, ctx, pool, pid, `SELECT status FROM transfers WHERE ticket_id=$1`, tid); st != "confirmed" {
-		t.Fatalf("transfer on-chain: esperava confirmed, veio %s", st)
+	if n := scanInt(t, ctx, pool, pid, `SELECT count(*) FROM chain_jobs`); n != 0 {
+		t.Fatalf("transferência em custódia não deveria criar chain_jobs, veio %d", n)
 	}
 }
 

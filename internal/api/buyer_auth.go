@@ -189,14 +189,6 @@ func (s *Server) verifyCode(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "erro ao verificar")
 		return
 	}
-	// Endereço do participante é derivado na criação da conta (não na primeira emissão).
-	// Best-effort: sem semente disponível (cofre não ligado), a conta segue funcionando.
-	if s.deriver != nil {
-		_ = pgxTx(ctx, s.pool, func(tx pgx.Tx) error {
-			_, derr := s.deriver.DeriveAddress(ctx, tx, subjectID)
-			return derr
-		})
-	}
 	// Vínculo retroativo SÓ por e-mail verificado (§3.4).
 	if _, err := s.pool.Exec(ctx, `
 		UPDATE ticket_directory SET subject_id = $1

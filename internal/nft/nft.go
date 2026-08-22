@@ -16,7 +16,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/jadersonmarc/sapienza-timbre/internal/chain"
 	"github.com/jadersonmarc/sapienza-timbre/internal/ticketing"
 )
 
@@ -25,8 +24,6 @@ var (
 	ErrAlreadyDisputed = errors.New("nft: ingresso já em disputa")
 	// ErrNotReissuable: ingresso não pode ser reemitido (não está ativo).
 	ErrNotReissuable = errors.New("nft: ingresso não reemitível")
-	// ErrNoImportedAddress: o comprador não tem endereço importado para exportar.
-	ErrNoImportedAddress = errors.New("nft: nenhum endereço importado para este comprador")
 )
 
 type attr struct {
@@ -86,8 +83,6 @@ func GenerateMetadata(ctx context.Context, tx pgx.Tx, producerID, ticketID uuid.
 // State é o estado do token exposto ao portador.
 type State struct {
 	Lifecycle         string     `json:"lifecycle"` // intransferivel | transferivel | utilizado | queimado | transferido | cancelado
-	Chain             string     `json:"chain"`     // aguardando_emissao | emitido | falha
-	Custody           string     `json:"custody"`   // platform | external
 	TransferableAfter *time.Time `json:"transferable_after,omitempty"`
 	Disputed          bool       `json:"disputed"`
 }
@@ -95,13 +90,12 @@ type State struct {
 // TicketState computa o estado atual do token (calculado, não armazenado).
 func TicketState(ctx context.Context, tx pgx.Tx, ticketID uuid.UUID) (State, error) {
 	var st State
-	var status, chainStatus, custody string
+	var status string
 	var ta time.Time
-	if err := tx.QueryRow(ctx, `SELECT status, chain_status, custody, transferable_after FROM tickets WHERE id=$1`, ticketID).
-		Scan(&status, &chainStatus, &custody, &ta); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT status, transferable_after FROM tickets WHERE id=$1`, ticketID).
+		Scan(&status, &ta); err != nil {
 		return State{}, err
 	}
-	st.Custody = custody
 	st.TransferableAfter = &ta
 	var used bool
 	_ = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM checkins WHERE ticket_id=$1 AND NOT is_reentry)`, ticketID).Scan(&used)
@@ -121,40 +115,7 @@ func TicketState(ctx context.Context, tx pgx.Tx, ticketID uuid.UUID) (State, err
 	default:
 		st.Lifecycle = "transferivel"
 	}
-	switch chainStatus {
-	case "minted":
-		st.Chain = "emitido"
-	case "failed":
-		st.Chain = "falha"
-	default:
-		st.Chain = "aguardando_emissao"
-	}
 	return st, nil
-}
-
-// ExportTicket passa a custódia ao participante (carteira externa). Não toca status/
-// assinatura — o QR segue válido e a entrada na portaria continua funcionando.
-func ExportTicket(ctx context.Context, tx pgx.Tx, ticketID uuid.UUID) error {
-	_, err := tx.Exec(ctx, `UPDATE tickets SET custody='external', exported_at=now(), updated_at=now() WHERE id=$1`, ticketID)
-	return err
-}
-
-// RequestExport é a exportação sob demanda do PARTICIPANTE: exige endereço importado,
-// materializa o token (reason='export') e passa a custódia para o endereço importado.
-func RequestExport(ctx context.Context, tx pgx.Tx, subjectID, ticketID uuid.UUID) error {
-	var walletID uuid.UUID
-	err := tx.QueryRow(ctx, `SELECT id FROM public.wallets WHERE subject_id=$1 AND origin='imported' LIMIT 1`, subjectID).Scan(&walletID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrNoImportedAddress
-	}
-	if err != nil {
-		return err
-	}
-	if err := chain.Materialize(ctx, tx, []uuid.UUID{ticketID}, chain.ReasonExport); err != nil {
-		return err
-	}
-	_, err = tx.Exec(ctx, `UPDATE tickets SET custody='external', exported_at=now(), owner_wallet_id=$2, updated_at=now() WHERE id=$1`, ticketID, walletID)
-	return err
 }
 
 // OpenDispute abre uma disputa (bloqueia transferência; não bloqueia entrada).

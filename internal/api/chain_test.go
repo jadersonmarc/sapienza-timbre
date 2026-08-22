@@ -13,7 +13,6 @@ import (
 
 	"github.com/jadersonmarc/sapienza-timbre/internal/chain"
 	"github.com/jadersonmarc/sapienza-timbre/internal/ledger"
-	"github.com/jadersonmarc/sapienza-timbre/internal/ticketing"
 )
 
 // okChain minta com sucesso; failChain simula RPC fora do ar.
@@ -70,96 +69,6 @@ func soldStandingTicket(t *testing.T, ts *httptest.Server, pool *pgxpool.Pool, o
 	ref, _ := body["asaas_ref"].(string)
 	confirmWebhook(t, ts, ref)
 	return eventID
-}
-
-// TestChainMintAsync: a venda gera o ingresso com chain_status=pending e o mint
-// acontece em segundo plano (worker), virando minted.
-func TestChainMintAsync(t *testing.T) {
-	ts, pool, _ := setupCore(t, okChain{})
-	_, owner := createProducer(t, ts, "Casa Chain", "owner@chain.com", "senha1234")
-	pid := producerID(t, ts, owner)
-	ctx := context.Background()
-	soldStandingTicket(t, ts, pool, owner)
-
-	// Na venda: pendente + job na fila.
-	if st := scanStr(t, ctx, pool, pid, `SELECT chain_status FROM tickets LIMIT 1`); st != "pending" {
-		t.Fatalf("esperava chain_status pending, veio %s", st)
-	}
-	if n := scanInt(t, ctx, pool, pid, `SELECT count(*) FROM chain_jobs WHERE status='pending'`); n != 1 {
-		t.Fatalf("esperava 1 job pendente, veio %d", n)
-	}
-
-	// Worker minta em segundo plano.
-	minted, err := chain.ProcessTenant(ctx, pool, okChain{}, pid)
-	if err != nil || minted != 1 {
-		t.Fatalf("process: minted=%d err=%v", minted, err)
-	}
-	if st := scanStr(t, ctx, pool, pid, `SELECT chain_status FROM tickets LIMIT 1`); st != "minted" {
-		t.Fatalf("esperava minted, veio %s", st)
-	}
-	if tok := scanStr(t, ctx, pool, pid, `SELECT COALESCE(chain_token_id,'') FROM tickets LIMIT 1`); tok == "" {
-		t.Fatal("esperava chain_token_id preenchido")
-	}
-	if n := scanInt(t, ctx, pool, pid, `SELECT count(*) FROM chain_jobs WHERE status='done'`); n != 1 {
-		t.Fatalf("esperava 1 job done, veio %d", n)
-	}
-}
-
-// TestChainDownDoesNotBlock é o "pronto quando" da Etapa 1.8: com o RPC fora do ar, a
-// venda e a ENTRADA na portaria funcionam; o ingresso segue válido e o job re-tenta.
-func TestChainDownDoesNotBlock(t *testing.T) {
-	ts, pool, _ := setupCore(t, failChain{})
-	_, owner := createProducer(t, ts, "Casa RPC", "owner@rpc.com", "senha1234")
-	pid := producerID(t, ts, owner)
-	ctx := context.Background()
-
-	// Venda com mapa (para validar entrada por assento).
-	eventID, seats, lotID := seatedEvent(t, ts, pool, owner, pid, 1)
-	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID.String()+"/publish", bearer(owner), nil); code != http.StatusOK {
-		t.Fatalf("publicar: %d", code)
-	}
-	_, body := do(t, ts, "POST", "/api/v1/public/checkout", buyer(t, ts, pool, "buy@rpc.com"), map[string]any{
-		"event_id": eventID.String(), "lot_id": lotID.String(), "quantity": 1,
-		"seat_ids": []string{seats[0].String()}, "method": "pix",
-	})
-	confirmWebhook(t, ts, body["asaas_ref"].(string))
-
-	// A venda concluiu: ingresso ativo e pendente na rede (não bloqueou).
-	if st := scanStr(t, ctx, pool, pid, `SELECT status FROM tickets LIMIT 1`); st != "active" {
-		t.Fatalf("esperava ingresso active, veio %s", st)
-	}
-	if st := scanStr(t, ctx, pool, pid, `SELECT chain_status FROM tickets LIMIT 1`); st != "pending" {
-		t.Fatalf("esperava chain_status pending, veio %s", st)
-	}
-
-	// A ENTRADA funciona mesmo com a rede fora.
-	var token string
-	inTenant(t, ctx, pool, pid, func(tx pgx.Tx) {
-		var tid uuid.UUID
-		if err := tx.QueryRow(ctx, `SELECT id FROM tickets LIMIT 1`).Scan(&tid); err != nil {
-			t.Fatalf("ticket: %v", err)
-		}
-		var e error
-		token, e = ticketing.TicketToken(ctx, tx, tid)
-		if e != nil {
-			t.Fatalf("token: %v", e)
-		}
-	})
-	if _, vb := do(t, ts, "POST", "/api/v1/gate/validate", bearer(owner), map[string]any{"token": token, "gate": "G1"}); vb["verdict"] != "admitted" {
-		t.Fatalf("entrada com RPC fora: esperava admitted, veio %v", vb)
-	}
-
-	// O worker tenta e falha: job volta a pending (retry), ingresso segue válido.
-	minted, err := chain.ProcessTenant(ctx, pool, failChain{}, pid)
-	if err != nil || minted != 0 {
-		t.Fatalf("process: minted=%d err=%v", minted, err)
-	}
-	if n := scanInt(t, ctx, pool, pid, `SELECT count(*) FROM chain_jobs WHERE status='pending' AND attempts=1`); n != 1 {
-		t.Fatalf("esperava 1 job re-tentando (attempts=1), veio %d", n)
-	}
-	if st := scanStr(t, ctx, pool, pid, `SELECT status FROM tickets LIMIT 1`); st != "active" {
-		t.Fatalf("ingresso deveria seguir válido, veio %s", st)
-	}
 }
 
 // TestPayoutSettlement: o repasse disponível vira um payout.

@@ -75,23 +75,6 @@ func (s *Server) producerOfToken(ctx context.Context, ticketID uuid.UUID) (uuid.
 	return pid, err
 }
 
-// exportTicket passa a custódia ao participante (carteira externa). Operado pelo owner
-// nesta etapa; a autonomia do participante entra com a identidade.
-func (s *Server) exportTicket(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
-	ticketID, err := uuid.Parse(r.PathValue("id"))
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "id inválido")
-		return
-	}
-	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
-		return nft.ExportTicket(r.Context(), tx, ticketID)
-	}); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "custody": "external"})
-}
-
 type disputeReq struct {
 	Reason string `json:"reason"`
 }

@@ -20,7 +20,6 @@ type Emitter struct {
 	Signer     *ticketing.Signer
 	Notify     notify.Notifier
 	Chain      chain.ChainDriver
-	MintMode   chain.MintMode // on_demand (não enfileira) | eager (enfileira no pagamento)
 	ProducerID uuid.UUID
 }
 
@@ -40,15 +39,10 @@ func (e Emitter) emit(ctx context.Context, tx pgx.Tx, ticketIDs []uuid.UUID, del
 		if err := ticketing.SignTicket(ctx, tx, e.Signer, tid); err != nil {
 			return err
 		}
-		// Metadados públicos ERC-1155 (sem dado pessoal).
+		// Metadados públicos (sem dado pessoal). A emissão on-chain (mint) está DESATIVADA:
+		// o eixo on-chain agora é prova por âncora, não posse por token.
 		if err := nft.GenerateMetadata(ctx, tx, e.ProducerID, tid); err != nil {
 			return err
-		}
-		// Emissão on-chain: só no modo eager (no on_demand, a materialização é sob demanda).
-		if e.MintMode == chain.MintModeEager && e.Chain != nil && e.Chain.Enabled() {
-			if err := chain.EnqueueMint(ctx, tx, tid); err != nil {
-				return err
-			}
 		}
 		if e.Notify == nil || deliverTo == "" {
 			continue

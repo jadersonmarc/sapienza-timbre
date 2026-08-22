@@ -49,15 +49,17 @@ type TokenStatus struct {
 type MintMode string
 
 const (
-	// MintModeOnDemand: ingresso nasce 'not_materialized' e só vira 'pending' sob demanda.
+	// MintModeOff: nenhum caminho materializa token (default).
+	MintModeOff MintMode = "off"
+	// MintModeOnDemand: dormente — materialização sob demanda (não usado hoje).
 	MintModeOnDemand MintMode = "on_demand"
-	// MintModeEager: emissão enfileirada já na confirmação do pagamento.
+	// MintModeEager: dormente — emissão enfileirada no pagamento (comportamento antigo).
 	MintModeEager MintMode = "eager"
 )
 
 // ValidMintMode diz se m é um modo conhecido.
 func ValidMintMode(m string) bool {
-	return m == string(MintModeOnDemand) || m == string(MintModeEager)
+	return m == string(MintModeOff) || m == string(MintModeOnDemand) || m == string(MintModeEager)
 }
 
 // ChainDriver é a interface única com a rede. Enabled diz se há rede de verdade por

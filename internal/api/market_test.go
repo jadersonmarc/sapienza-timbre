@@ -4,8 +4,6 @@ import (
 	"context"
 	"net/http"
 	"testing"
-
-	"github.com/jadersonmarc/sapienza-timbre/internal/chain"
 )
 
 // TestSecondaryMarketResale é o "pronto quando" da Etapa 2.2: um anúncio é comprado, o
@@ -32,12 +30,6 @@ func TestSecondaryMarketResale(t *testing.T) {
 		t.Fatalf("anúncio: %d %v", code, lbody)
 	}
 	listingID, _ := lbody["id"].(string)
-
-	// O token precisa estar materializado (minted) antes da compra — o anúncio fica
-	// indisponível enquanto 'pending'. Aqui o mint roda de forma síncrona (teste).
-	if _, err := chain.ProcessTenant(ctx, pool, okChain{}, pid); err != nil {
-		t.Fatalf("mint do ingresso: %v", err)
-	}
 
 	// Compra do anúncio pelo comprador autenticado.
 	code, bbody := do(t, ts, "POST", "/api/v1/public/listings/"+listingID+"/buy", buyer(t, ts, pool, "comprador2@x.com"),
@@ -84,13 +76,5 @@ func TestSecondaryMarketResale(t *testing.T) {
 	link0, _ := links[0].(map[string]any)
 	if link0["price_cents"].(float64) != 4000 {
 		t.Fatalf("elo com preço 4000 esperado, veio %v", link0)
-	}
-
-	// Registro on-chain assíncrono da transferência confirma.
-	if _, err := chain.ProcessTenant(ctx, pool, okChain{}, pid); err != nil {
-		t.Fatalf("process: %v", err)
-	}
-	if st := scanStr(t, ctx, pool, pid, `SELECT status FROM transfers WHERE ticket_id=$1`, tid); st != "confirmed" {
-		t.Fatalf("transfer on-chain deveria confirmar, veio %s", st)
 	}
 }
