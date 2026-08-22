@@ -20,7 +20,7 @@ func TestCampaignAttributionAndAudience(t *testing.T) {
 	eventID := createEvent(t, ts, owner, "Show Divulga", "shows")
 	_ = createLot(t, ts, owner, eventID, "Lote 1", 5000, 100, 0)
 	do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil)
-	_, lots := getEventLots(t, ts, owner, eventID)
+	_, _ = getEventLots(t, ts, owner, eventID)
 
 	// Campanha instagram.
 	code, cb := do(t, ts, "POST", "/api/v1/events/"+eventID+"/campaigns", bearer(owner),
@@ -42,9 +42,9 @@ func TestCampaignAttributionAndAudience(t *testing.T) {
 	}
 
 	// Compra atribuída à campanha.
-	_, body := do(t, ts, "POST", "/api/v1/public/checkout", buyer(t, ts, pool, "buy@promo.com"), map[string]any{
-		"event_id": eventID, "lot_id": lots[0], "quantity": 1, "method": "pix", "campaign_id": campaignID,
-	})
+	body := buyViaSession(t, ts, buyer(t, ts, pool, "buy@promo.com"), map[string]any{
+		"event_id": eventID, "quantity": 1, "campaign_id": campaignID,
+	}, "pix")
 	confirmWebhook(t, ts, body["asaas_ref"].(string))
 
 	// Perfil por fonte mostra instagram.
@@ -86,7 +86,7 @@ func TestWaitlistNotifiedOnRollover(t *testing.T) {
 	eventID := createEvent(t, ts, owner, "Show Espera", "shows")
 	_ = createLot(t, ts, owner, eventID, "Lote 1", 5000, 1, 0) // estoque 1 → esgota na 1ª venda
 	do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil)
-	_, lots := getEventLots(t, ts, owner, eventID)
+	_, _ = getEventLots(t, ts, owner, eventID)
 
 	// Alguém entra na lista de espera.
 	if code, _ := do(t, ts, "POST", "/api/v1/public/events/"+eventID+"/waitlist", nil,
@@ -95,9 +95,9 @@ func TestWaitlistNotifiedOnRollover(t *testing.T) {
 	}
 
 	// Uma compra esgota o lote → virada → aviso.
-	_, body := do(t, ts, "POST", "/api/v1/public/checkout", buyer(t, ts, pool, "buy@waitlist.com"), map[string]any{
-		"event_id": eventID, "lot_id": lots[0], "quantity": 1, "method": "pix",
-	})
+	body := buyViaSession(t, ts, buyer(t, ts, pool, "buy@waitlist.com"), map[string]any{
+		"event_id": eventID, "quantity": 1,
+	}, "pix")
 	confirmWebhook(t, ts, body["asaas_ref"].(string))
 
 	if notified := scanInt(t, ctx, pool, pid, `SELECT count(*) FROM waitlist WHERE event_id=$1 AND notified_at IS NOT NULL`, uuid.MustParse(eventID)); notified != 1 {

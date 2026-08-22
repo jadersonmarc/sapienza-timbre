@@ -62,10 +62,10 @@ func soldStandingTicket(t *testing.T, ts *httptest.Server, pool *pgxpool.Pool, o
 	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
 		t.Fatalf("publicar: %d", code)
 	}
-	_, lots := getEventLots(t, ts, owner, eventID)
-	_, body := do(t, ts, "POST", "/api/v1/public/checkout", buyer(t, ts, pool, "buy@chain.com"), map[string]any{
-		"event_id": eventID, "lot_id": lots[0], "quantity": 1, "method": "pix",
-	})
+	_, _ = getEventLots(t, ts, owner, eventID)
+	body := buyViaSession(t, ts, buyer(t, ts, pool, "buy@chain.com"), map[string]any{
+		"event_id": eventID, "quantity": 1,
+	}, "pix")
 	ref, _ := body["asaas_ref"].(string)
 	confirmWebhook(t, ts, ref)
 	return eventID

@@ -41,11 +41,10 @@ func TestDashboardReflectsSale(t *testing.T) {
 	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
 		t.Fatalf("publicar: %d", code)
 	}
-	_, lots := getEventLots(t, ts, owner, eventID)
-
-	_, cbody := do(t, ts, "POST", "/api/v1/public/checkout", buyer(t, ts, pool, "c@x.com"), map[string]any{
-		"event_id": eventID, "lot_id": lots[0], "quantity": 2, "method": "pix",
-	})
+	_, _ = getEventLots(t, ts, owner, eventID)
+	cbody := buyViaSession(t, ts, buyer(t, ts, pool, "c@x.com"), map[string]any{
+		"event_id": eventID, "quantity": 2,
+	}, "pix")
 	asaasRef, _ := cbody["asaas_ref"].(string)
 	confirmWebhook(t, ts, asaasRef)
 
@@ -112,10 +111,10 @@ func TestAdminSummaryAndModeration(t *testing.T) {
 	eventID := createEvent(t, ts, owner, "Show Admin", "shows")
 	_ = createLot(t, ts, owner, eventID, "Lote 1", 5000, 100, 0)
 	do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil)
-	_, lots := getEventLots(t, ts, owner, eventID)
-	_, cbody := do(t, ts, "POST", "/api/v1/public/checkout", buyer(t, ts, pool, "buy@admin-dash.com"), map[string]any{
-		"event_id": eventID, "lot_id": lots[0], "quantity": 1, "method": "pix",
-	})
+	_, _ = getEventLots(t, ts, owner, eventID)
+	cbody := buyViaSession(t, ts, buyer(t, ts, pool, "buy@admin-dash.com"), map[string]any{
+		"event_id": eventID, "quantity": 1,
+	}, "pix")
 	confirmWebhook(t, ts, cbody["asaas_ref"].(string))
 
 	adminHdr := seedAdmin(t, ts, pool, "admin@dash.com", "super_admin")

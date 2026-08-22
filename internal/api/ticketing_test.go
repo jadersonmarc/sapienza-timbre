@@ -25,11 +25,11 @@ func TestEmissionSignsTicketOffline(t *testing.T) {
 	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
 		t.Fatalf("publicar: %d", code)
 	}
-	_, lots := getEventLots(t, ts, owner, eventID)
+	_, _ = getEventLots(t, ts, owner, eventID)
 
-	_, body := do(t, ts, "POST", "/api/v1/public/checkout", buyer(t, ts, pool, "c@ticket.com"), map[string]any{
-		"event_id": eventID, "lot_id": lots[0], "quantity": 1, "method": "pix",
-	})
+	body := buyViaSession(t, ts, buyer(t, ts, pool, "c@ticket.com"), map[string]any{
+		"event_id": eventID, "quantity": 1,
+	}, "pix")
 	asaasRef, _ := body["asaas_ref"].(string)
 	confirmWebhook(t, ts, asaasRef)
 
@@ -66,15 +66,15 @@ func TestRefundBurnsTickets(t *testing.T) {
 	_, owner := createProducer(t, ts, "Casa Estorno", "owner@estorno.com", "senha1234")
 	pid := producerID(t, ts, owner)
 	ctx := context.Background()
-	eventID, seats, lotID := seatedEvent(t, ts, pool, owner, pid, 2)
+	eventID, seats, _ := seatedEvent(t, ts, pool, owner, pid, 2)
 	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID.String()+"/publish", bearer(owner), nil); code != http.StatusOK {
 		t.Fatalf("publicar: %d", code)
 	}
 
-	_, body := do(t, ts, "POST", "/api/v1/public/checkout", buyer(t, ts, pool, "buy@refund.com"), map[string]any{
-		"event_id": eventID.String(), "lot_id": lotID.String(), "quantity": 2,
-		"seat_ids": []string{seats[0].String(), seats[1].String()}, "method": "pix",
-	})
+	body := buyViaSession(t, ts, buyer(t, ts, pool, "buy@refund.com"), map[string]any{
+		"event_id": eventID.String(), "quantity": 2,
+		"seat_ids": []string{seats[0].String(), seats[1].String()},
+	}, "pix")
 	asaasRef, _ := body["asaas_ref"].(string)
 	confirmWebhook(t, ts, asaasRef)
 

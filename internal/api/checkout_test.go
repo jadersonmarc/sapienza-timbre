@@ -60,13 +60,10 @@ func TestCheckoutPixStandingCycle(t *testing.T) {
 	_, lots := getEventLots(t, ts, owner, eventID)
 	lotID := lots[0]
 
-	// Compra do comprador autenticado.
-	code, body := do(t, ts, "POST", "/api/v1/public/checkout", buyer(t, ts, pool, "comprador@x.com"), map[string]any{
-		"event_id": eventID, "lot_id": lotID, "quantity": 2, "method": "pix",
-	})
-	if code != http.StatusCreated {
-		t.Fatalf("checkout: status %d, body %v", code, body)
-	}
+	// Compra pela sessão (cria → bind → pay), com o comprador autenticado.
+	body := buyViaSession(t, ts, buyer(t, ts, pool, "comprador@x.com"), map[string]any{
+		"event_id": eventID, "quantity": 2,
+	}, "pix")
 	if body["pix_code"] == nil || body["pix_code"] == "" {
 		t.Fatalf("esperava pix_code no checkout, veio %v", body)
 	}
@@ -120,32 +117,28 @@ func TestCheckoutPixSeatedCycle(t *testing.T) {
 	_, owner := createProducer(t, ts, "Casa Assento", "owner@assento.com", "senha1234")
 	pid := producerID(t, ts, owner)
 	ctx := context.Background()
-	eventID, seats, lotID := seatedEvent(t, ts, pool, owner, pid, 2)
+	eventID, seats, _ := seatedEvent(t, ts, pool, owner, pid, 2)
 
 	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID.String()+"/publish", bearer(owner), nil); code != http.StatusOK {
 		t.Fatalf("publicar: %d", code)
 	}
 
-	code, body := do(t, ts, "POST", "/api/v1/public/checkout", buyer(t, ts, pool, "buy@assento.com"), map[string]any{
-		"event_id": eventID.String(), "lot_id": lotID.String(), "quantity": 2,
-		"seat_ids": []string{seats[0].String(), seats[1].String()}, "method": "pix",
-	})
-	if code != http.StatusCreated {
-		t.Fatalf("checkout seated: status %d, body %v", code, body)
-	}
+	body := buyViaSession(t, ts, buyer(t, ts, pool, "buy@assento.com"), map[string]any{
+		"event_id": eventID.String(), "quantity": 2,
+		"seat_ids": []string{seats[0].String(), seats[1].String()},
+	}, "pix")
 	asaasRef, _ := body["asaas_ref"].(string)
 	confirmWebhook(t, ts, asaasRef)
 
 	if n := scanInt(t, ctx, pool, pid, `SELECT count(*) FROM tickets WHERE status='active' AND seat_id IS NOT NULL`); n != 2 {
 		t.Fatalf("esperava 2 ingressos com assento, veio %d", n)
 	}
-	// Assentos ocupados por ingresso: novo checkout dos mesmos assentos falha (409).
-	code, _ = do(t, ts, "POST", "/api/v1/public/checkout", buyer(t, ts, pool, "buy@assento2.com"), map[string]any{
-		"event_id": eventID.String(), "lot_id": lotID.String(), "quantity": 1,
-		"seat_ids": []string{seats[0].String()}, "method": "pix",
+	// Assentos ocupados por ingresso: nova sessão com os mesmos assentos falha na reserva.
+	code, _ := do(t, ts, "POST", "/api/v1/public/checkout/sessions", nil, map[string]any{
+		"event_id": eventID.String(), "quantity": 1, "seat_ids": []string{seats[0].String()},
 	})
 	if code != http.StatusConflict {
-		t.Fatalf("checkout de assento ocupado: esperava 409, veio %d", code)
+		t.Fatalf("reserva de assento ocupado: esperava 409, veio %d", code)
 	}
 }
 

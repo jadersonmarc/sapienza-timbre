@@ -46,7 +46,7 @@ func setupAttest(t *testing.T, anchorer chain.Anchorer, anchorMode chain.AnchorM
 		VALUES ($1,$2,'ed25519') ON CONFLICT (key_id) DO NOTHING`, keyID, attestSigner.PublicKeyB64()); err != nil {
 		t.Fatalf("registrar chave: %v", err)
 	}
-	srv := api.NewServer(pool, auth.New("test-secret"), producer.New(pool, runner), signer, attestSigner, keyID, adminToken, "", anchorer, anchorMode, api.Seams{
+	srv := api.NewServer(pool, auth.New("test-secret"), producer.New(pool, runner), signer, attestSigner, keyID, adminToken, "", 10*time.Minute, anchorer, anchorMode, api.Seams{
 		Chain: chain.NoopChainDriver{}, Payment: payment.NewFakeGateway(), Notify: notify.NewLogNotifier(),
 	})
 	ts := httptest.NewServer(srv.Handler())
@@ -71,10 +71,10 @@ func buyStanding(t *testing.T, ts *httptest.Server, pool *pgxpool.Pool, owner st
 	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
 		t.Fatalf("publicar: %d", code)
 	}
-	_, lots := getEventLots(t, ts, owner, eventID)
-	_, body := do(t, ts, "POST", "/api/v1/public/checkout", buyer(t, ts, pool, "buy@attest.com"), map[string]any{
-		"event_id": eventID, "lot_id": lots[0], "quantity": n, "method": "pix",
-	})
+	_, _ = getEventLots(t, ts, owner, eventID)
+	body := buyViaSession(t, ts, buyer(t, ts, pool, "buy@attest.com"), map[string]any{
+		"event_id": eventID, "quantity": n,
+	}, "pix")
 	confirmWebhook(t, ts, body["asaas_ref"].(string))
 	return firstTicket(t, ctx, pool, pid)
 }

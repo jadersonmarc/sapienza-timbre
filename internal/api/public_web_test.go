@@ -99,12 +99,9 @@ func TestPublicMinPriceResyncOnRollover(t *testing.T) {
 	}
 
 	// Compra a única unidade do lote 1 (resolve o corrente) e confirma.
-	code, res := do(t, ts, "POST", "/api/v1/public/checkout", buyer(t, ts, pool, "c@min.com"), map[string]any{
-		"event_id": eventID, "quantity": 1, "method": "pix",
-	})
-	if code != http.StatusCreated {
-		t.Fatalf("checkout: %d %v", code, res)
-	}
+	res := buyViaSession(t, ts, buyer(t, ts, pool, "c@min.com"), map[string]any{
+		"event_id": eventID, "quantity": 1,
+	}, "pix")
 	confirmWebhook(t, ts, res["asaas_ref"].(string))
 
 	if mp := directoryMinPrice(t, ts); mp != 7000 {
@@ -124,22 +121,18 @@ func TestBuyerMustBeAuthedToBuy(t *testing.T) {
 		t.Fatalf("publish: %d", code)
 	}
 
-	// Sem sessão → recusado.
-	code, _ := do(t, ts, "POST", "/api/v1/public/checkout", nil, map[string]any{
-		"event_id": eventID, "quantity": 1, "method": "pix",
-	})
-	if code != http.StatusUnauthorized {
-		t.Fatalf("checkout sem sessão: esperava 401, veio %d", code)
+	// Cria a sessão sem conta (seleção sobrevive) e paga com o comprador autenticado.
+	// O caminho de convidado (POST /public/checkout) não existe mais.
+	if code, _ := do(t, ts, "POST", "/api/v1/public/checkout", nil, map[string]any{
+		"event_id": eventID, "quantity": 1,
+	}); code != http.StatusNotFound {
+		t.Fatalf("convidado não deve existir: esperava 404, veio %d", code)
 	}
 
-	// O comprador entra ANTES de comprar.
 	token := verifyOTP(t, ts, pool, "convidada@x.com", "123456")
-	code, res := do(t, ts, "POST", "/api/v1/public/checkout", bearer(token), map[string]any{
-		"event_id": eventID, "quantity": 1, "method": "pix",
-	})
-	if code != http.StatusCreated {
-		t.Fatalf("checkout: %d %v", code, res)
-	}
+	res := buyViaSession(t, ts, bearer(token), map[string]any{
+		"event_id": eventID, "quantity": 1,
+	}, "pix")
 	confirmWebhook(t, ts, res["asaas_ref"].(string))
 
 	code, mine := do(t, ts, "GET", "/api/v1/public/me/tickets", bearer(token), nil)

@@ -16,14 +16,9 @@ func TestBuyerTransferMovesOwnership(t *testing.T) {
 	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
 		t.Fatalf("publish: %d", code)
 	}
-	// Ana entra ANTES de comprar (cadastro obrigatório).
+	// Ana entra ANTES de comprar (a conta é exigida no pagamento, pela sessão).
 	ana := verifyOTP(t, ts, pool, "ana@x.com", "111111")
-	code, res := do(t, ts, "POST", "/api/v1/public/checkout", bearer(ana), map[string]any{
-		"event_id": eventID, "quantity": 1, "method": "pix",
-	})
-	if code != http.StatusCreated {
-		t.Fatalf("checkout: %d %v", code, res)
-	}
+	res := buyViaSession(t, ts, bearer(ana), map[string]any{"event_id": eventID, "quantity": 1}, "pix")
 	confirmWebhook(t, ts, res["asaas_ref"].(string))
 
 	// Ana vê o ingresso.
@@ -63,12 +58,7 @@ func TestBuyerReissue(t *testing.T) {
 		t.Fatalf("publish: %d", code)
 	}
 	clara := verifyOTP(t, ts, pool, "clara@x.com", "555555")
-	code, res := do(t, ts, "POST", "/api/v1/public/checkout", bearer(clara), map[string]any{
-		"event_id": eventID, "quantity": 1, "method": "pix",
-	})
-	if code != http.StatusCreated {
-		t.Fatalf("checkout: %d", code)
-	}
+	res := buyViaSession(t, ts, bearer(clara), map[string]any{"event_id": eventID, "quantity": 1}, "pix")
 	confirmWebhook(t, ts, res["asaas_ref"].(string))
 	_, mine := do(t, ts, "GET", "/api/v1/public/me/tickets", bearer(clara), nil)
 	oldID := asSlice(mine["tickets"])[0].(map[string]any)["ticket_id"].(string)
@@ -99,12 +89,7 @@ func TestBuyerTransferRejectsNonOwner(t *testing.T) {
 		t.Fatalf("publish: %d", code)
 	}
 	dona := verifyOTP(t, ts, pool, "dona@x.com", "333333")
-	code, res := do(t, ts, "POST", "/api/v1/public/checkout", bearer(dona), map[string]any{
-		"event_id": eventID, "quantity": 1, "method": "pix",
-	})
-	if code != http.StatusCreated {
-		t.Fatalf("checkout: %d", code)
-	}
+	res := buyViaSession(t, ts, bearer(dona), map[string]any{"event_id": eventID, "quantity": 1}, "pix")
 	confirmWebhook(t, ts, res["asaas_ref"].(string))
 	_, mine := do(t, ts, "GET", "/api/v1/public/me/tickets", bearer(dona), nil)
 	ticketID := asSlice(mine["tickets"])[0].(map[string]any)["ticket_id"].(string)

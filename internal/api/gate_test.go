@@ -18,7 +18,7 @@ import (
 func soldSeatedTickets(t *testing.T, ts *httptest.Server, pool *pgxpool.Pool, owner string, pid uuid.UUID, n int) []string {
 	t.Helper()
 	ctx := context.Background()
-	eventID, seats, lotID := seatedEvent(t, ts, pool, owner, pid, n)
+	eventID, seats, _ := seatedEvent(t, ts, pool, owner, pid, n)
 	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID.String()+"/publish", bearer(owner), nil); code != http.StatusOK {
 		t.Fatalf("publicar: %d", code)
 	}
@@ -26,10 +26,9 @@ func soldSeatedTickets(t *testing.T, ts *httptest.Server, pool *pgxpool.Pool, ow
 	for i, s := range seats {
 		seatStrs[i] = s.String()
 	}
-	_, body := do(t, ts, "POST", "/api/v1/public/checkout", buyer(t, ts, pool, "buy@gate.com"), map[string]any{
-		"event_id": eventID.String(), "lot_id": lotID.String(), "quantity": n,
-		"seat_ids": seatStrs, "method": "pix",
-	})
+	body := buyViaSession(t, ts, buyer(t, ts, pool, "buy@gate.com"), map[string]any{
+		"event_id": eventID.String(), "quantity": n, "seat_ids": seatStrs,
+	}, "pix")
 	asaasRef, _ := body["asaas_ref"].(string)
 	confirmWebhook(t, ts, asaasRef)
 

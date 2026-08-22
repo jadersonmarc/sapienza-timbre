@@ -88,11 +88,10 @@ func TestTransferBlockedInWindow(t *testing.T) {
 	eventID := createEvent(t, ts, owner, "Show Janela", "shows")
 	_ = createLot(t, ts, owner, eventID, "Lote 1", 5000, 100, 0)
 	do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil)
-	_, lots := getEventLots(t, ts, owner, eventID)
 	// Cartão → transferable_after = now + 60d.
-	_, body := do(t, ts, "POST", "/api/v1/public/checkout", buyer(t, ts, pool, "buy@transfer.com"), map[string]any{
-		"event_id": eventID, "lot_id": lots[0], "quantity": 1, "method": "credit_card",
-	})
+	body := buyViaSession(t, ts, buyer(t, ts, pool, "buy@transfer.com"), map[string]any{
+		"event_id": eventID, "quantity": 1,
+	}, "credit_card")
 	confirmWebhook(t, ts, body["asaas_ref"].(string))
 
 	tid := firstTicket(t, ctx, pool, pid)

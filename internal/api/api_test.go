@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -48,7 +49,7 @@ func setupCoreMode(t *testing.T, chainDriver chain.ChainDriver, mintMode chain.M
 	pool := testutil.Pool(t)
 	runner := tenancy.NewMigrationRunner(pool, migrations.Tenant)
 	signer := ticketing.GenerateSigner()
-	srv := api.NewServer(pool, auth.New("test-secret"), producer.New(pool, runner), signer, signer, "", adminToken, "", chain.NoopAnchorer{}, chain.AnchorModeOff, api.Seams{
+	srv := api.NewServer(pool, auth.New("test-secret"), producer.New(pool, runner), signer, signer, "", adminToken, "", 10*time.Minute, chain.NoopAnchorer{}, chain.AnchorModeOff, api.Seams{
 		Chain:   chainDriver,
 		Payment: payment.NewFakeGateway(),
 		Notify:  notify.NewLogNotifier(),
@@ -107,6 +108,29 @@ func courtesyCategoryID(t *testing.T, ctx context.Context, pool *pgxpool.Pool, p
 		}
 	})
 	return id.String()
+}
+
+// buyViaSession compra pela sessão (cria sem auth → bind → pay) e devolve o corpo do pay.
+// `sel` é a seleção (event_id, quantity, seat_ids, half_price_qty, coupon_code); method vai
+// no pay. Substitui o antigo POST /public/checkout nos testes.
+func buyViaSession(t *testing.T, ts *httptest.Server, buyerHdr map[string]string, sel map[string]any, method string) map[string]any {
+	t.Helper()
+	code, sess := do(t, ts, "POST", "/api/v1/public/checkout/sessions", nil, sel)
+	if code != http.StatusCreated {
+		t.Fatalf("create session: %d %v", code, sess)
+	}
+	id, _ := sess["id"].(string)
+	if id == "" {
+		t.Fatalf("sessão sem id: %v", sess)
+	}
+	if code, _ := do(t, ts, "POST", "/api/v1/public/checkout/sessions/"+id+"/bind", buyerHdr, nil); code != http.StatusOK {
+		t.Fatalf("bind: %d", code)
+	}
+	code, body := do(t, ts, "POST", "/api/v1/public/checkout/sessions/"+id+"/pay", buyerHdr, map[string]any{"method": method})
+	if code != http.StatusCreated {
+		t.Fatalf("pay: %d %v", code, body)
+	}
+	return body
 }
 
 // seedAdmin cria um operador da plataforma (papel role) e devolve o header Bearer com o
