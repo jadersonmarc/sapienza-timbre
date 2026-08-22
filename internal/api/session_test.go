@@ -16,14 +16,27 @@ import (
 // createSession cria uma sessão anônima e devolve id + anon_token.
 func createSession(t *testing.T, ts *httptest.Server, sel map[string]any) (string, string) {
 	t.Helper()
-	code, body := do(t, ts, "POST", "/api/v1/public/checkout/sessions", nil, sel)
-	if code != http.StatusCreated {
-		t.Fatalf("create session: %d %v", code, body)
+	return createSessionWithToken(t, ts, sel, "")
+}
+
+// createSessionWithToken cria uma sessão com um anon_token fornecido (retomada/próprio).
+func createSessionWithToken(t *testing.T, ts *httptest.Server, sel map[string]any, anon string) (string, string) {
+	t.Helper()
+	body := map[string]any{}
+	for k, v := range sel {
+		body[k] = v
 	}
-	id, _ := body["id"].(string)
-	tok, _ := body["anon_token"].(string)
+	if anon != "" {
+		body["anon_token"] = anon
+	}
+	code, res := do(t, ts, "POST", "/api/v1/public/checkout/sessions", nil, body)
+	if code != http.StatusCreated {
+		t.Fatalf("create session: %d %v", code, res)
+	}
+	id, _ := res["id"].(string)
+	tok, _ := res["anon_token"].(string)
 	if id == "" || tok == "" {
-		t.Fatalf("sessão sem id/token: %v", body)
+		t.Fatalf("sessão sem id/token: %v", res)
 	}
 	return id, tok
 }
@@ -223,17 +236,17 @@ func TestResumeByAnonToken(t *testing.T) {
 	}
 }
 
-// TestSessionCapPerIP: teto de sessões abertas por IP impede criação em massa.
+// TestSessionCapPerIP: o teto de sessões por IP é grosseiro (50) — a 51ª é recusada.
 func TestSessionCapPerIP(t *testing.T) {
 	ts, _ := setup(t)
 	_, owner := createProducer(t, ts, "Casa Cap", "owner@cap.com", "senha1234")
 	eventID := createEvent(t, ts, owner, "Show Cap", "shows")
-	_ = createLot(t, ts, owner, eventID, "Lote 1", 5000, 100, 0)
+	_ = createLot(t, ts, owner, eventID, "Lote 1", 5000, 100, 200)
 	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
 		t.Fatalf("publicar: %d", code)
 	}
-	// Abre o teto (5) de sessões e verifica que a próxima é recusada.
-	for i := 0; i < checkout.MaxOpenSessionsPerIP; i++ {
+	lim := checkout.DefaultLimits()
+	for i := 0; i < lim.MaxOpenSessionsPerIP; i++ {
 		code, _ := do(t, ts, "POST", "/api/v1/public/checkout/sessions", nil, map[string]any{"event_id": eventID, "quantity": 1})
 		if code != http.StatusCreated {
 			t.Fatalf("sessão %d: %d", i, code)
@@ -241,6 +254,230 @@ func TestSessionCapPerIP(t *testing.T) {
 	}
 	if code, _ := do(t, ts, "POST", "/api/v1/public/checkout/sessions", nil, map[string]any{"event_id": eventID, "quantity": 1}); code != http.StatusTooManyRequests {
 		t.Fatalf("teto por IP: esperava 429, veio %d", code)
+	}
+}
+
+// TestSeatedIPHeldSeatsLimit: evento com assento marcado recusa reserva acima de
+// MaxHeldSeatsPerIP no mesmo IP.
+func TestSeatedIPHeldSeatsLimit(t *testing.T) {
+	ts, pool := setup(t)
+	_, owner := createProducer(t, ts, "Casa Seats", "owner@seats.com", "senha1234")
+	pid := producerID(t, ts, owner)
+	eventID, seats, _ := seatedEvent(t, ts, pool, owner, pid, 40)
+	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID.String()+"/publish", bearer(owner), nil); code != http.StatusOK {
+		t.Fatalf("publicar: %d", code)
+	}
+	lim := checkout.DefaultLimits()
+	// Reserva assentos 1 a 1 até encher o teto; a próxima é recusada (429).
+	for i := 0; i < lim.MaxHeldSeatsPerIP; i++ {
+		code, _ := do(t, ts, "POST", "/api/v1/public/checkout/sessions", nil, map[string]any{
+			"event_id": eventID.String(), "quantity": 1, "seat_ids": []string{seats[i].String()},
+		})
+		if code != http.StatusCreated {
+			t.Fatalf("sessão %d: %d", i, code)
+		}
+	}
+	if code, _ := do(t, ts, "POST", "/api/v1/public/checkout/sessions", nil, map[string]any{
+		"event_id": eventID.String(), "quantity": 1, "seat_ids": []string{seats[lim.MaxHeldSeatsPerIP].String()},
+	}); code != http.StatusTooManyRequests {
+		t.Fatalf("teto de assentos por IP: esperava 429, veio %d", code)
+	}
+}
+
+// TestStandingIgnoresHeldSeatsLimit: evento em pé não aplica limite de assentos por IP.
+func TestStandingIgnoresHeldSeatsLimit(t *testing.T) {
+	ts, _ := setup(t)
+	_, owner := createProducer(t, ts, "Casa Pista", "owner@pista.com", "senha1234")
+	eventID := createEvent(t, ts, owner, "Show Pista", "shows")
+	_ = createLot(t, ts, owner, eventID, "Lote 1", 5000, 100, 500)
+	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
+		t.Fatalf("publicar: %d", code)
+	}
+	// Mais do que MaxHeldSeatsPerIP sessões em pé do mesmo IP: todas passam (sem limite).
+	lim := checkout.DefaultLimits()
+	for i := 0; i < lim.MaxHeldSeatsPerIP+5; i++ {
+		code, _ := do(t, ts, "POST", "/api/v1/public/checkout/sessions", nil, map[string]any{"event_id": eventID, "quantity": 1})
+		if code != http.StatusCreated {
+			t.Fatalf("sessão pista %d: %d", i, code)
+		}
+	}
+}
+
+// TestResumeSameEventReturnsExisting: criar sessão com anon_token que já tem sessão open no
+// mesmo evento devolve a existente, sem criar outra.
+func TestResumeSameEventReturnsExisting(t *testing.T) {
+	ts, pool := setup(t)
+	_, owner := createProducer(t, ts, "Casa Resume", "owner@resume2.com", "senha1234")
+	pid := producerID(t, ts, owner)
+	ctx := context.Background()
+	eventID := createEvent(t, ts, owner, "Show Resume2", "shows")
+	_ = createLot(t, ts, owner, eventID, "Lote 1", 5000, 100, 0)
+	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
+		t.Fatalf("publicar: %d", code)
+	}
+	id1, _ := createSessionWithToken(t, ts, map[string]any{"event_id": eventID, "quantity": 1}, "tok-resume")
+	id2, _ := createSessionWithToken(t, ts, map[string]any{"event_id": eventID, "quantity": 1}, "tok-resume")
+	if id1 != id2 {
+		t.Fatalf("retomada deveria devolver a mesma sessão: %s vs %s", id1, id2)
+	}
+	if n := scanInt(t, ctx, pool, pid, `SELECT count(*) FROM checkout_sessions WHERE anon_token='tok-resume'`); n != 1 {
+		t.Fatalf("esperava 1 sessão, veio %d", n)
+	}
+}
+
+// TestCreateExpiresOwnOtherEvent: criar sessão expira as 'open' do mesmo anon_token em outro
+// evento e libera as reservas.
+func TestCreateExpiresOwnOtherEvent(t *testing.T) {
+	ts, pool := setup(t)
+	_, owner := createProducer(t, ts, "Casa Own", "owner@own.com", "senha1234")
+	pid := producerID(t, ts, owner)
+	ctx := context.Background()
+	evA := createEvent(t, ts, owner, "Show A", "shows")
+	lotA := createLot(t, ts, owner, evA, "Lote 1", 5000, 100, 0)
+	_ = createLot(t, ts, owner, evA, "Lote 2", 7000, 100, 1)
+	if code, _ := do(t, ts, "POST", "/api/v1/events/"+evA+"/publish", bearer(owner), nil); code != http.StatusOK {
+		t.Fatalf("publicar: %d", code)
+	}
+	evB := createEvent(t, ts, owner, "Show B", "shows")
+	_ = createLot(t, ts, owner, evB, "Lote 1", 5000, 100, 0)
+	if code, _ := do(t, ts, "POST", "/api/v1/events/"+evB+"/publish", bearer(owner), nil); code != http.StatusOK {
+		t.Fatalf("publicar: %d", code)
+	}
+
+	// Sessão open no evento A reserva 2 do lote.
+	createSessionWithToken(t, ts, map[string]any{"event_id": evA, "quantity": 2}, "tok-own")
+	if h := scanInt(t, ctx, pool, pid, `SELECT held_count FROM lots WHERE id=$1`, uuid.MustParse(lotA)); h != 2 {
+		t.Fatalf("esperava held 2, veio %d", h)
+	}
+
+	// Criar sessão no evento B com o mesmo anon_token expira a do evento A e libera o lote.
+	createSessionWithToken(t, ts, map[string]any{"event_id": evB, "quantity": 1}, "tok-own")
+	if st := scanStr(t, ctx, pool, pid, `SELECT status FROM checkout_sessions WHERE event_id=$1`, uuid.MustParse(evA)); st != "expired" {
+		t.Fatalf("sessão do evento A deveria estar expirada, veio %s", st)
+	}
+	if h := scanInt(t, ctx, pool, pid, `SELECT held_count FROM lots WHERE id=$1`, uuid.MustParse(lotA)); h != 0 {
+		t.Fatalf("lote do evento A deveria ser liberado, veio %d", h)
+	}
+}
+
+// TestAuthStartedExtendsOnce: auth-started estende reserva e sessão UMA vez; a segunda
+// chamada não estende, e o bind depois não estende de novo.
+func TestAuthStartedExtendsOnce(t *testing.T) {
+	ts, pool := setup(t)
+	_, owner := createProducer(t, ts, "Casa Auth", "owner@auth.com", "senha1234")
+	pid := producerID(t, ts, owner)
+	ctx := context.Background()
+	eventID, seats, _ := seatedEvent(t, ts, pool, owner, pid, 1)
+	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID.String()+"/publish", bearer(owner), nil); code != http.StatusOK {
+		t.Fatalf("publicar: %d", code)
+	}
+	id, tok := createSession(t, ts, map[string]any{
+		"event_id": eventID.String(), "quantity": 1, "seat_ids": []string{seats[0].String()},
+	})
+	readExp := func() time.Time {
+		var t2 time.Time
+		inTenant(t, ctx, pool, pid, func(tx pgx.Tx) {
+			if err := tx.QueryRow(ctx, `SELECT expires_at FROM seat_occupancy WHERE seat_id=$1 AND kind='hold' AND NOT released`, seats[0]).Scan(&t2); err != nil {
+				t.Fatalf("expires_at: %v", err)
+			}
+		})
+		return t2
+	}
+	hdr := map[string]string{"X-Anon-Token": tok}
+	base := readExp()
+	if code, _ := do(t, ts, "POST", "/api/v1/public/checkout/sessions/"+id+"/auth-started", hdr, nil); code != http.StatusOK {
+		t.Fatalf("auth-started: %d", code)
+	}
+	after1 := readExp()
+	if after1.Sub(base) < 30*time.Second {
+		t.Fatalf("auth-started deveria estender a reserva (base=%v after=%v)", base, after1)
+	}
+	if code, _ := do(t, ts, "POST", "/api/v1/public/checkout/sessions/"+id+"/auth-started", hdr, nil); code != http.StatusOK {
+		t.Fatalf("auth-started 2: %d", code)
+	}
+	if after2 := readExp(); !after2.Equal(after1) {
+		t.Fatalf("segunda chamada não deveria estender (after1=%v after2=%v)", after1, after2)
+	}
+	// Bind após auth-started não estende de novo (grace já aplicado).
+	ana := buyer(t, ts, pool, "auth@x.com")
+	if code, _ := do(t, ts, "POST", "/api/v1/public/checkout/sessions/"+id+"/bind", ana, nil); code != http.StatusOK {
+		t.Fatalf("bind: %d", code)
+	}
+	if after3 := readExp(); !after3.Equal(after1) {
+		t.Fatalf("bind não deveria estender de novo (after1=%v after3=%v)", after1, after3)
+	}
+}
+
+// TestSweeperClearsClientIP: sessão expirada pelo sweeper fica com client_ip nulo.
+func TestSweeperClearsClientIP(t *testing.T) {
+	ts, pool := setup(t)
+	_, owner := createProducer(t, ts, "Casa IP", "owner@ip.com", "senha1234")
+	pid := producerID(t, ts, owner)
+	ctx := context.Background()
+	eventID := createEvent(t, ts, owner, "Show IP", "shows")
+	_ = createLot(t, ts, owner, eventID, "Lote 1", 5000, 100, 0)
+	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
+		t.Fatalf("publicar: %d", code)
+	}
+	id, _ := createSession(t, ts, map[string]any{"event_id": eventID, "quantity": 1})
+	if ip := scanStr(t, ctx, pool, pid, `SELECT COALESCE(client_ip,'') FROM checkout_sessions WHERE id=$1`, uuid.MustParse(id)); ip == "" {
+		t.Fatalf("client_ip deveria estar preenchido")
+	}
+	inTenant(t, ctx, pool, pid, func(tx pgx.Tx) {
+		if _, err := tx.Exec(ctx, `UPDATE checkout_sessions SET expires_at=now()-interval '1 minute' WHERE id=$1`, uuid.MustParse(id)); err != nil {
+			t.Fatalf("expirar: %v", err)
+		}
+		if _, err := checkout.ExpireOpenSessions(ctx, tx); err != nil {
+			t.Fatalf("expire: %v", err)
+		}
+	})
+	if ip := scanStr(t, ctx, pool, pid, `SELECT COALESCE(client_ip,'') FROM checkout_sessions WHERE id=$1`, uuid.MustParse(id)); ip != "" {
+		t.Fatalf("client_ip deveria ser limpo ao expirar, veio %q", ip)
+	}
+}
+
+// TestPaidIPPurgedAfterRetention: sessão paid tem client_ip apagado após a retenção.
+func TestPaidIPPurgedAfterRetention(t *testing.T) {
+	ts, pool := setup(t)
+	_, owner := createProducer(t, ts, "Casa RetIP", "owner@retip.com", "senha1234")
+	pid := producerID(t, ts, owner)
+	ctx := context.Background()
+	eventID := createEvent(t, ts, owner, "Show RetIP", "shows")
+	_ = createLot(t, ts, owner, eventID, "Lote 1", 5000, 100, 0)
+	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
+		t.Fatalf("publicar: %d", code)
+	}
+	id, tok := createSession(t, ts, map[string]any{"event_id": eventID, "quantity": 1})
+	_ = tok
+	// Marca como paid e envelhece além da retenção.
+	inTenant(t, ctx, pool, pid, func(tx pgx.Tx) {
+		if _, err := tx.Exec(ctx, `UPDATE checkout_sessions SET status='paid', updated_at=now()-interval '10 days' WHERE id=$1`, uuid.MustParse(id)); err != nil {
+			t.Fatalf("paid: %v", err)
+		}
+		if err := checkout.PurgePaidIPs(ctx, tx, checkout.DefaultLimits().IPRetention); err != nil {
+			t.Fatalf("purge: %v", err)
+		}
+	})
+	if ip := scanStr(t, ctx, pool, pid, `SELECT COALESCE(client_ip,'') FROM checkout_sessions WHERE id=$1`, uuid.MustParse(id)); ip != "" {
+		t.Fatalf("client_ip deveria ser apagado após a retenção, veio %q", ip)
+	}
+}
+
+// TestSessionResponseNoClientIP: nenhuma resposta de API expõe client_ip.
+func TestSessionResponseNoClientIP(t *testing.T) {
+	ts, _ := setup(t)
+	_, owner := createProducer(t, ts, "Casa NoIP", "owner@noip.com", "senha1234")
+	eventID := createEvent(t, ts, owner, "Show NoIP", "shows")
+	_ = createLot(t, ts, owner, eventID, "Lote 1", 5000, 100, 0)
+	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
+		t.Fatalf("publicar: %d", code)
+	}
+	code, body := do(t, ts, "POST", "/api/v1/public/checkout/sessions", nil, map[string]any{"event_id": eventID, "quantity": 1})
+	if code != http.StatusCreated {
+		t.Fatalf("create: %d", code)
+	}
+	if _, has := body["client_ip"]; has {
+		t.Fatalf("resposta não deveria expor client_ip: %v", body)
 	}
 }
 
