@@ -47,9 +47,9 @@ type Server struct {
 	prov         *producer.Provisioner
 	signer       *ticketing.Signer // assina ingressos (Ed25519) na emissão
 	attest       *ticketing.Signer // assina atestados (chave própria, propósito distinto)
-	attestKeyID  string            // identificador estável da chave de atestação
-	authGrace    time.Duration     // extensão única da reserva no bind (TIMBRE_CHECKOUT_AUTH_GRACE)
-	adminToken   string            // gate do bootstrap de produtor (vazio = criação desligada)
+	attestKeyID     string          // identificador estável da chave de atestação
+	checkoutLimits  checkout.Limits // limites/TTLs da sessão de checkout (env)
+	adminToken      string          // gate do bootstrap de produtor (vazio = criação desligada)
 	webhookToken string            // valida o header do webhook do Asaas (vazio = sem checagem)
 	anchorer     chain.Anchorer    // envia a âncora do atestado (off = noop)
 	anchorMode   chain.AnchorMode  // off | log — âncora do atestado
@@ -65,19 +65,19 @@ const (
 )
 
 // NewServer constrói o servidor da API.
-func NewServer(pool *pgxpool.Pool, authz *auth.Authenticator, prov *producer.Provisioner, signer, attest *ticketing.Signer, attestKeyID, adminToken, webhookToken string, authGrace time.Duration, anchorer chain.Anchorer, anchorMode chain.AnchorMode, seams Seams) *Server {
+func NewServer(pool *pgxpool.Pool, authz *auth.Authenticator, prov *producer.Provisioner, signer, attest *ticketing.Signer, attestKeyID, adminToken, webhookToken string, checkoutLimits checkout.Limits, anchorer chain.Anchorer, anchorMode chain.AnchorMode, seams Seams) *Server {
 	if anchorMode == "" {
 		anchorMode = chain.AnchorModeOff
 	}
 	if anchorer == nil {
 		anchorer = chain.NoopAnchorer{}
 	}
-	if authGrace <= 0 {
-		authGrace = checkout.DefaultAuthGrace
+	if checkoutLimits.MaxOpenSessionsPerIP <= 0 {
+		checkoutLimits = checkout.DefaultLimits()
 	}
 	return &Server{
 		pool: pool, auth: authz, prov: prov, signer: signer, attest: attest,
-		attestKeyID: attestKeyID, authGrace: authGrace,
+		attestKeyID: attestKeyID, checkoutLimits: checkoutLimits,
 		adminToken: adminToken, webhookToken: webhookToken,
 		anchorer: anchorer, anchorMode: anchorMode, seams: seams,
 		limiter: newRateLimiter(publicRateLimit, publicRateWindow),
@@ -157,6 +157,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/public/checkout/sessions", s.rateLimited("session-create", s.createSession))
 	mux.HandleFunc("GET /api/v1/public/checkout/sessions/{id}", s.getSession)
 	mux.HandleFunc("PATCH /api/v1/public/checkout/sessions/{id}", s.rateLimited("session-patch", s.patchSession))
+	mux.HandleFunc("POST /api/v1/public/checkout/sessions/{id}/auth-started", s.authStarted)
 	mux.HandleFunc("POST /api/v1/public/checkout/sessions/{id}/bind", s.buyerAuthed(s.bindSession))
 	mux.HandleFunc("POST /api/v1/public/checkout/sessions/{id}/pay", s.buyerAuthed(s.paySession))
 	mux.HandleFunc("POST /api/v1/webhooks/asaas", s.asaasWebhook)

@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -22,6 +21,7 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/api"
 	"github.com/jadersonmarc/sapienza-timbre/internal/auth"
 	"github.com/jadersonmarc/sapienza-timbre/internal/chain"
+	"github.com/jadersonmarc/sapienza-timbre/internal/checkout"
 	"github.com/jadersonmarc/sapienza-timbre/internal/notify"
 	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
 	"github.com/jadersonmarc/sapienza-timbre/internal/producer"
@@ -49,7 +49,7 @@ func setupCoreMode(t *testing.T, chainDriver chain.ChainDriver, mintMode chain.M
 	pool := testutil.Pool(t)
 	runner := tenancy.NewMigrationRunner(pool, migrations.Tenant)
 	signer := ticketing.GenerateSigner()
-	srv := api.NewServer(pool, auth.New("test-secret"), producer.New(pool, runner), signer, signer, "", adminToken, "", 10*time.Minute, chain.NoopAnchorer{}, chain.AnchorModeOff, api.Seams{
+	srv := api.NewServer(pool, auth.New("test-secret"), producer.New(pool, runner), signer, signer, "", adminToken, "", checkout.DefaultLimits(), chain.NoopAnchorer{}, chain.AnchorModeOff, api.Seams{
 		Chain:   chainDriver,
 		Payment: payment.NewFakeGateway(),
 		Notify:  notify.NewLogNotifier(),

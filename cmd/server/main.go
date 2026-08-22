@@ -180,24 +180,20 @@ func main() {
 		}
 	}
 
-	// Extensão única da reserva no bind (TIMBRE_CHECKOUT_AUTH_GRACE, em segundos).
-	authGrace := checkout.DefaultAuthGrace
-	if v := os.Getenv("TIMBRE_CHECKOUT_AUTH_GRACE"); v != "" {
-		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
-			authGrace = time.Duration(secs) * time.Second
-		}
-	}
-
 	// Fechamento automático de eventos (N horas após ends_at) e worker de âncora, em
 	// segundo plano.
 	go attest.NewCloser(pool, attestSigner, anchorer, chain.AnchorMode(cfg.AnchorMode), attestKeyID, closeAfter).Run(ctx)
 	go attest.NewAnchorWorker(pool, anchorer).Run(ctx)
-	// Varredura de sessões de checkout vencidas (libera a reserva), em segundo plano.
-	go checkout.NewSessionSweeper(pool).Run(ctx)
+	// Limites da sessão de checkout (configuráveis por env, default calibrado para CGNAT).
+	checkoutLimits := checkout.LimitsFromEnv()
+
+	// Varredura de sessões de checkout vencidas (libera a reserva e purga client_ip), em
+	// segundo plano.
+	go checkout.NewSessionSweeper(pool, checkoutLimits).Run(ctx)
 
 	authz := auth.New(cfg.JWTSecret)
 	prov := producer.New(pool, runner)
-	srv := api.NewServer(pool, authz, prov, signer, attestSigner, attestKeyID, cfg.AdminToken, os.Getenv("ASAAS_WEBHOOK_TOKEN"), authGrace, anchorer, chain.AnchorMode(cfg.AnchorMode), seams)
+	srv := api.NewServer(pool, authz, prov, signer, attestSigner, attestKeyID, cfg.AdminToken, os.Getenv("ASAAS_WEBHOOK_TOKEN"), checkoutLimits, anchorer, chain.AnchorMode(cfg.AnchorMode), seams)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler(pool))
