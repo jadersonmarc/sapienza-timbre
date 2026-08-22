@@ -15,56 +15,7 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/market"
 	"github.com/jadersonmarc/sapienza-timbre/internal/pricing"
 	"github.com/jadersonmarc/sapienza-timbre/internal/season"
-	"github.com/jadersonmarc/sapienza-timbre/internal/store"
 )
-
-// publicCheckout é a compra do COMPRADOR AUTENTICADO (cadastro obrigatório — o ingresso
-// só é vendido a quem tem conta/sessão). Resolve o produtor pelo diretório público e roda
-// o checkout no schema dele. O e-mail vem da conta (não do corpo).
-func (s *Server) publicCheckout(w http.ResponseWriter, r *http.Request, subjectID uuid.UUID) {
-	var req checkout.Request
-	if err := decode(w, r, &req); err != nil {
-		writeErr(w, http.StatusBadRequest, "corpo inválido")
-		return
-	}
-	if req.EventID == uuid.Nil {
-		writeErr(w, http.StatusBadRequest, "event_id obrigatório")
-		return
-	}
-	email, err := s.buyerEmail(r.Context(), subjectID)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	req.SubjectID = subjectID
-	req.BuyerEmail = email
-	producerID, err := s.producerOfEvent(r.Context(), req.EventID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		writeErr(w, http.StatusNotFound, "evento não encontrado ou não publicado")
-		return
-	}
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	var res checkout.Result
-	err = s.withTenant(r.Context(), producerID, func(tx pgx.Tx) error {
-		prod, e := store.GetProducer(r.Context(), tx, producerID)
-		if e != nil {
-			return e
-		}
-		res, e = checkout.StartCheckout(r.Context(), tx, s.seams.Payment, checkout.Producer{
-			ID: prod.ID, RetentionPct: prod.RetentionPct, AsaasWalletID: prod.AsaasWalletID,
-		}, req)
-		return e
-	})
-	if err != nil {
-		writeCheckoutErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, res)
-}
 
 // publicQuote devolve a decomposição de preço (valor de face + taxa de conveniência +
 // total) sem criar ordem — a tela de checkout mostra o total antes de confirmar e recalcula

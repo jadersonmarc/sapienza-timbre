@@ -92,30 +92,52 @@ type splitInfo struct {
 }
 
 // StartCheckout valida, reserva, precifica, cria ordem/pagamento e cria a cobrança no
-// gateway. Deixa o pagamento 'pending'; a confirmação vem pelo webhook.
+// gateway. Deixa o pagamento 'pending'; a confirmação vem pelo webhook. (Caminho legado:
+// a compra nova passa por checkout_sessions — reserva na criação da sessão e pay finaliza.)
 func StartCheckout(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, prod Producer, req Request) (Result, error) {
-	if req.Quantity <= 0 || (req.Method != payment.MethodPix && req.Method != payment.MethodCard) {
-		return Result{}, ErrBadRequest
-	}
-	seated := len(req.SeatIDs) > 0
-	if seated && len(req.SeatIDs) != req.Quantity {
-		return Result{}, ErrSeatsMismatch
-	}
-	if req.HalfPriceQty < 0 || req.HalfPriceQty > req.Quantity {
-		return Result{}, ErrBadRequest
-	}
-
-	// TRAVA DE ORDEM (não negociar): sempre LOTE primeiro (ReserveFromLot = UPDATE lots,
-	// trava a linha do lote), ASSENTO depois (inventory.Hold trava seat_occupancy). Ordem
-	// invertida entre caminhos = deadlock sob concorrência. Vale para pista E seated.
-	//
-	// Resolve o lote VIGENTE e reserva nele (held_count), com retry na virada (Correção 2):
-	// o lote pode esgotar entre resolver e reservar; re-resolvemos e tentamos o próximo.
-	lot, err := reserveCurrentLot(ctx, tx, req.EventID, req.Quantity)
+	lot, holdID, err := reserve(ctx, tx, req)
 	if err != nil {
 		return Result{}, err
 	}
+	return finalizeOrder(ctx, tx, gw, prod, req, lot, holdID)
+}
 
+// reserve valida a seleção e reserva lote (held_count) + assentos (hold), devolvendo o lote
+// reservado e o id do hold (nil para pista). TRAVA DE ORDEM (não negociar): sempre LOTE
+// primeiro (ReserveFromLot = UPDATE lots), ASSENTO depois (inventory.Hold trava
+// seat_occupancy). Ordem invertida entre caminhos = deadlock sob concorrência.
+func reserve(ctx context.Context, tx pgx.Tx, req Request) (catalog.Lot, *uuid.UUID, error) {
+	if req.Quantity <= 0 {
+		return catalog.Lot{}, nil, ErrBadRequest
+	}
+	seated := len(req.SeatIDs) > 0
+	if seated && len(req.SeatIDs) != req.Quantity {
+		return catalog.Lot{}, nil, ErrSeatsMismatch
+	}
+	if req.HalfPriceQty < 0 || req.HalfPriceQty > req.Quantity {
+		return catalog.Lot{}, nil, ErrBadRequest
+	}
+	lot, err := reserveCurrentLot(ctx, tx, req.EventID, req.Quantity)
+	if err != nil {
+		return catalog.Lot{}, nil, err
+	}
+	var holdID *uuid.UUID
+	if seated {
+		id, err := inventory.Hold(ctx, tx, req.EventID, req.SeatIDs, inventory.DefaultTTL)
+		if err != nil {
+			return catalog.Lot{}, nil, err
+		}
+		holdID = &id
+	}
+	return lot, holdID, nil
+}
+
+// finalizeOrder precifica e cria ordem/itens/pagamento/cobrança a partir de uma reserva JÁ
+// feita (lote reservado + hold, se houver). Usado pelo StartCheckout e pelo PaySession.
+func finalizeOrder(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, prod Producer, req Request, lot catalog.Lot, holdID *uuid.UUID) (Result, error) {
+	if req.Method != payment.MethodPix && req.Method != payment.MethodCard {
+		return Result{}, ErrBadRequest
+	}
 	// Preço unitário por ingresso (assento usa sector_price_rules; pista usa o lote).
 	unitPrices, err := unitPrices(ctx, tx, lot, req)
 	if err != nil {
@@ -135,18 +157,6 @@ func StartCheckout(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, pr
 		return Result{}, err
 	}
 	bd := pricing.Compute(face, req.Method, rebatePct)
-
-	// Assento (seated): DEPOIS do lote (ordem lote→assento). Se o pagamento não confirmar,
-	// a tx inteira rola atrás e a reserva do lote volta junto; a varredura de abandono
-	// (inventory.Sweeper) cobre ordens que ficaram 'pending'.
-	var holdID *uuid.UUID
-	if seated {
-		id, err := inventory.Hold(ctx, tx, req.EventID, req.SeatIDs, inventory.DefaultTTL)
-		if err != nil {
-			return Result{}, err
-		}
-		holdID = &id
-	}
 
 	// Split: o produtor recebe o FACE; a plataforma fica com a taxa de conveniência (a
 	// adquirência deduz o processamento do total no ato).

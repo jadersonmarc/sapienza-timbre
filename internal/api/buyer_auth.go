@@ -61,15 +61,26 @@ func (s *Server) buyerEmail(ctx context.Context, subjectID uuid.UUID) (string, e
 	return *email, nil
 }
 
-// buyerMe devolve a sessão do comprador (subject + e-mail). O web usa para decidir entre
-// "entre para comprar" e o formulário de compra — compra exige cadastro.
+// buyerMe devolve a sessão do comprador (subject + e-mail + dados da conta). O web usa para
+// decidir entre "entre para comprar" e o formulário de compra — compra exige cadastro.
 func (s *Server) buyerMe(w http.ResponseWriter, r *http.Request, subjectID uuid.UUID) {
-	email, err := s.buyerEmail(r.Context(), subjectID)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	var email, name, cpf *string
+	if err := s.pool.QueryRow(r.Context(), `SELECT email, display_name, cpf FROM subjects WHERE id=$1`, subjectID).
+		Scan(&email, &name, &cpf); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"subject_id": subjectID, "email": email})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"subject_id": subjectID,
+		"email":      ptrOrEmpty(email), "name": ptrOrEmpty(name), "cpf": ptrOrEmpty(cpf),
+	})
+}
+
+func ptrOrEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 type requestCodeReq struct {

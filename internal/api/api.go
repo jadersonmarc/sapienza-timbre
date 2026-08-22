@@ -48,6 +48,7 @@ type Server struct {
 	signer       *ticketing.Signer // assina ingressos (Ed25519) na emissão
 	attest       *ticketing.Signer // assina atestados (chave própria, propósito distinto)
 	attestKeyID  string            // identificador estável da chave de atestação
+	authGrace    time.Duration     // extensão única da reserva no bind (TIMBRE_CHECKOUT_AUTH_GRACE)
 	adminToken   string            // gate do bootstrap de produtor (vazio = criação desligada)
 	webhookToken string            // valida o header do webhook do Asaas (vazio = sem checagem)
 	anchorer     chain.Anchorer    // envia a âncora do atestado (off = noop)
@@ -64,16 +65,20 @@ const (
 )
 
 // NewServer constrói o servidor da API.
-func NewServer(pool *pgxpool.Pool, authz *auth.Authenticator, prov *producer.Provisioner, signer, attest *ticketing.Signer, attestKeyID, adminToken, webhookToken string, anchorer chain.Anchorer, anchorMode chain.AnchorMode, seams Seams) *Server {
+func NewServer(pool *pgxpool.Pool, authz *auth.Authenticator, prov *producer.Provisioner, signer, attest *ticketing.Signer, attestKeyID, adminToken, webhookToken string, authGrace time.Duration, anchorer chain.Anchorer, anchorMode chain.AnchorMode, seams Seams) *Server {
 	if anchorMode == "" {
 		anchorMode = chain.AnchorModeOff
 	}
 	if anchorer == nil {
 		anchorer = chain.NoopAnchorer{}
 	}
+	if authGrace <= 0 {
+		authGrace = checkout.DefaultAuthGrace
+	}
 	return &Server{
 		pool: pool, auth: authz, prov: prov, signer: signer, attest: attest,
-		attestKeyID: attestKeyID, adminToken: adminToken, webhookToken: webhookToken,
+		attestKeyID: attestKeyID, authGrace: authGrace,
+		adminToken: adminToken, webhookToken: webhookToken,
 		anchorer: anchorer, anchorMode: anchorMode, seams: seams,
 		limiter: newRateLimiter(publicRateLimit, publicRateWindow),
 	}
@@ -134,7 +139,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/public/events/{id}/occupancy", s.eventOccupancy)
 	mux.HandleFunc("GET /api/v1/public/categories", s.listPublicCategories)
 	mux.HandleFunc("GET /api/v1/public/config", s.publicConfig)
-	mux.HandleFunc("GET /api/v1/public/checkout/{orderId}/status", s.checkoutStatus)
+	mux.HandleFunc("GET /api/v1/public/checkout/orders/{orderId}/status", s.checkoutStatus)
 	mux.HandleFunc("GET /api/v1/public/me/tickets", s.buyerAuthed(s.myTickets))
 	mux.HandleFunc("GET /api/v1/public/me", s.buyerAuthed(s.buyerMe))
 	mux.HandleFunc("DELETE /api/v1/public/me", s.buyerAuthed(s.deleteMe))
@@ -146,10 +151,14 @@ func (s *Server) Handler() http.Handler {
 	// nasce ativo. E cadastro de artista (catálogo global), também ativo na hora.
 	mux.HandleFunc("POST /api/v1/public/producer-signup", s.rateLimited("producer-signup", s.producerSignup))
 	mux.HandleFunc("POST /api/v1/public/artist-signup", s.rateLimited("artist-signup", s.artistSignup))
-	// Checkout (Etapa 1.4): compra é do comprador AUTENTICADO (cadastro obrigatório);
-	// webhook é global.
+	// Checkout (Etapa 1.4): sessão de checkout — a conta é exigida no momento de pagar.
+	// A seleção e a reserva sobrevivem ao desvio de autenticação. Webhook é global.
 	mux.HandleFunc("POST /api/v1/public/checkout/quote", s.rateLimited("quote", s.publicQuote))
-	mux.HandleFunc("POST /api/v1/public/checkout", s.rateLimited("checkout", s.buyerAuthed(s.publicCheckout)))
+	mux.HandleFunc("POST /api/v1/public/checkout/sessions", s.rateLimited("session-create", s.createSession))
+	mux.HandleFunc("GET /api/v1/public/checkout/sessions/{id}", s.getSession)
+	mux.HandleFunc("PATCH /api/v1/public/checkout/sessions/{id}", s.rateLimited("session-patch", s.patchSession))
+	mux.HandleFunc("POST /api/v1/public/checkout/sessions/{id}/bind", s.buyerAuthed(s.bindSession))
+	mux.HandleFunc("POST /api/v1/public/checkout/sessions/{id}/pay", s.buyerAuthed(s.paySession))
 	mux.HandleFunc("POST /api/v1/webhooks/asaas", s.asaasWebhook)
 	// Lista de convidados / cortesias — do owner.
 	mux.HandleFunc("POST /api/v1/events/{id}/guests", s.requireOwner(s.createGuest))
