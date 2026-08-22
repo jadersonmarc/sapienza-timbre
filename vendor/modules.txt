@@ -30,6 +30,11 @@ github.com/jackc/puddle/v2/internal/genstack
 # github.com/jadersonmarc/sapienza-kit v0.0.0 => ../sapienza-kit
 ## explicit; go 1.26.1
 github.com/jadersonmarc/sapienza-kit/tenancy
+# github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
+## explicit; go 1.13
+github.com/skip2/go-qrcode
+github.com/skip2/go-qrcode/bitset
+github.com/skip2/go-qrcode/reedsolomon
 # golang.org/x/crypto v0.50.0
 ## explicit; go 1.25.0
 golang.org/x/crypto/bcrypt

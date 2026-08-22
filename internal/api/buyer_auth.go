@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
-	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -141,9 +140,10 @@ func (s *Server) requestCode(w http.ResponseWriter, r *http.Request) {
 		neutral()
 		return
 	}
+	// Assunto com o código de propósito (lido na notificação do celular, sem abrir o e-mail).
 	_ = s.seams.Notify.Send(ctx, notify.Message{
-		Channel: "email", To: email, Subject: "Seu código de acesso Timbre",
-		Body: fmt.Sprintf("Seu código de acesso é %s. Ele vale por %d minutos.", code, int(otpTTL.Minutes())),
+		Kind: notify.KindAuthCode, Channel: "email", To: email,
+		Code: code, CodeMinutes: int(otpTTL.Minutes()),
 	})
 	neutral()
 }

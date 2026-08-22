@@ -13,6 +13,7 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/checkout"
 	"github.com/jadersonmarc/sapienza-timbre/internal/inventory"
 	"github.com/jadersonmarc/sapienza-timbre/internal/market"
+	"github.com/jadersonmarc/sapienza-timbre/internal/notify"
 	"github.com/jadersonmarc/sapienza-timbre/internal/pricing"
 	"github.com/jadersonmarc/sapienza-timbre/internal/season"
 )
@@ -83,7 +84,10 @@ func (s *Server) asaasWebhook(w http.ResponseWriter, r *http.Request) {
 	if err := s.withTenant(r.Context(), producerID, func(tx pgx.Tx) error {
 		switch {
 		case evt.Refunded:
-			return checkout.RefundPayment(r.Context(), tx, evt.AsaasRef)
+			if err := checkout.RefundPayment(r.Context(), tx, evt.AsaasRef); err != nil {
+				return err
+			}
+			return notifyRefund(r.Context(), s.seams.Notify, tx, evt.AsaasRef)
 		case kind == "resale":
 			return market.ConfirmResale(r.Context(), tx, producerID, evt.AsaasRef)
 		case kind == "season":
@@ -103,6 +107,32 @@ func (s *Server) producerOfEvent(ctx context.Context, eventID uuid.UUID) (uuid.U
 	var pid uuid.UUID
 	err := s.pool.QueryRow(ctx, `SELECT producer_id FROM public.event_directory WHERE event_id = $1`, eventID).Scan(&pid)
 	return pid, err
+}
+
+// notifyRefund envia a confirmação de estorno ao comprador (assíncrono — nunca bloqueia o
+// webhook). Estrutura pronta; texto simples.
+func notifyRefund(ctx context.Context, n notify.Notifier, tx pgx.Tx, asaasRef string) error {
+	if n == nil {
+		return nil
+	}
+	var to string
+	var eventName string
+	var total int64
+	err := tx.QueryRow(ctx, `
+		SELECT o.buyer_email, e.title, o.total_cents
+		  FROM orders o
+		  JOIN events e ON e.id = o.event_id
+		 WHERE o.id = (SELECT order_id FROM payments WHERE asaas_ref = $1)`, asaasRef).
+		Scan(&to, &eventName, &total)
+	if errors.Is(err, pgx.ErrNoRows) || to == "" {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return n.Send(ctx, notify.Message{
+		Kind: notify.KindRefunded, To: to, EventName: eventName, OrderValueCents: total,
+	})
 }
 
 func (s *Server) producerOfPayment(ctx context.Context, asaasRef string) (uuid.UUID, string, error) {

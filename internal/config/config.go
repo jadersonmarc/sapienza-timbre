@@ -22,6 +22,11 @@ type Config struct {
 	AnchorMode       string // off (default) | log — âncora do atestado
 	AttestationKey   string // seed Ed25519 base64 p/ assinar atestados (vazio = efêmera)
 	AttestationKeyID string // identificador curto e estável da chave de atestação
+	Notifier         string // log (default) | resend — provedor de e-mail
+	ResendAPIKey     string // chave da API do Resend (obrigatória quando Notifier=resend)
+	MailFrom         string // remetente "Nome <email>" (domínio do envio, nunca fixo no código)
+	MailReplyTo      string // opcional — reply-to das mensagens
+	PublicBaseURL    string // base pública do site p/ montar links nas mensagens
 }
 
 // Load lê o ambiente e valida os campos obrigatórios. Retorna erro em vez de
@@ -39,6 +44,11 @@ func Load() (Config, error) {
 		AnchorMode:       getenv("TIMBRE_ANCHOR_MODE", "off"),
 		AttestationKey:   os.Getenv("TIMBRE_ATTESTATION_KEY"),
 		AttestationKeyID: os.Getenv("TIMBRE_ATTESTATION_KEY_ID"),
+		Notifier:         getenv("TIMBRE_NOTIFIER", "log"),
+		ResendAPIKey:     os.Getenv("TIMBRE_RESEND_API_KEY"),
+		MailFrom:         os.Getenv("TIMBRE_MAIL_FROM"),
+		MailReplyTo:      os.Getenv("TIMBRE_MAIL_REPLY_TO"),
+		PublicBaseURL:    os.Getenv("TIMBRE_PUBLIC_BASE_URL"),
 	}
 
 	var missing []string
@@ -55,6 +65,19 @@ func Load() (Config, error) {
 	}
 	if c.AnchorMode != "off" && c.AnchorMode != "log" {
 		return Config{}, fmt.Errorf("TIMBRE_ANCHOR_MODE inválido: %q (use off ou log)", c.AnchorMode)
+	}
+	// Notifier: log (default) | resend. Valor desconhecido falha — nada de default silencioso.
+	switch c.Notifier {
+	case "log":
+	case "resend":
+		if c.ResendAPIKey == "" {
+			return Config{}, fmt.Errorf("TIMBRE_NOTIFIER=resend exige TIMBRE_RESEND_API_KEY")
+		}
+		if c.MailFrom == "" {
+			return Config{}, fmt.Errorf("TIMBRE_NOTIFIER=resend exige TIMBRE_MAIL_FROM")
+		}
+	default:
+		return Config{}, fmt.Errorf("TIMBRE_NOTIFIER inválido: %q (use log ou resend)", c.Notifier)
 	}
 	if len(missing) > 0 {
 		return Config{}, fmt.Errorf("faltam variáveis obrigatórias: %s", strings.Join(missing, ", "))

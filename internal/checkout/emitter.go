@@ -51,9 +51,45 @@ func (e Emitter) emit(ctx context.Context, tx pgx.Tx, ticketIDs []uuid.UUID, del
 		if err != nil {
 			return err
 		}
+		info, err := loadTicketEmailInfo(ctx, tx, tid)
+		if err != nil {
+			return err
+		}
 		_ = e.Notify.Send(ctx, notify.Message{
-			Channel: "email", To: deliverTo, Subject: "Seu ingresso Timbre", Body: token,
+			Kind: notify.KindTicket, Channel: "email", To: deliverTo,
+			ProducerID: &e.ProducerID, EventID: &info.eventID, TicketID: &tid,
+			EventName: info.title, EventStarts: info.starts,
+			VenueCity: info.city, Address: info.address,
+			SectorName: info.sector, SeatLabel: info.seat,
+			QRContent: token,
 		})
 	}
 	return nil
+}
+
+// ticketEmailInfo carrega os dados do evento/assento para a mensagem de ingresso (uma
+// mensagem por ingresso — quem compra quatro repassa três).
+type ticketEmailInfo struct {
+	eventID uuid.UUID
+	title   string
+	starts  string
+	city    string
+	address string
+	sector  string
+	seat    string
+}
+
+func loadTicketEmailInfo(ctx context.Context, tx pgx.Tx, ticketID uuid.UUID) (ticketEmailInfo, error) {
+	var i ticketEmailInfo
+	err := tx.QueryRow(ctx, `
+		SELECT t.event_id, e.title, to_char(e.starts_at, 'DD/MM/YYYY HH24:MI'),
+		       COALESCE(e.city,''), COALESCE(e.address,''),
+		       COALESCE(se.name,''), COALESCE(s.row_label,'') || COALESCE(s.number,'')
+		  FROM tickets t
+		  JOIN events e ON e.id = t.event_id
+		  LEFT JOIN seats s ON s.id = t.seat_id
+		  LEFT JOIN sectors se ON se.id = s.sector_id
+		 WHERE t.id = $1`, ticketID).
+		Scan(&i.eventID, &i.title, &i.starts, &i.city, &i.address, &i.sector, &i.seat)
+	return i, err
 }

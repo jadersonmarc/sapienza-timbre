@@ -90,19 +90,18 @@ func main() {
 		chainDriver = chain.NewBase(rpc, os.Getenv("CHAIN_CONTRACT"))
 		chainKind = "base"
 	}
-	// Notificação: SMTP real se configurado (provider-agnóstico), senão o log (default).
-	// Vale para a entrega do QR e para o código de acesso (OTP) do comprador.
-	var notifier notify.Notifier = notify.NewLogNotifier()
+	// Notificação: envio ASSÍNCRONO. O Service enfileira em public.notifications; o worker
+	// drena a fila e envia pelo provedor (Resend ou log). O caminho de venda/código nunca
+	// espera o envio. A chave de API nunca aparece em log.
+	notifier := notify.NewService(pool, cfg.PublicBaseURL) // implementa notify.Notifier (enfileira)
+	var provider notify.Provider = notify.LogProvider{}
 	notifyKind := "log"
-	smtpCfg := notify.SMTPConfig{
-		Host: os.Getenv("SMTP_HOST"), Port: os.Getenv("SMTP_PORT"),
-		Username: os.Getenv("SMTP_USERNAME"), Password: os.Getenv("SMTP_PASSWORD"),
-		From: os.Getenv("SMTP_FROM"),
+	if cfg.Notifier == "resend" {
+		provider = notify.NewResendProvider(cfg.ResendAPIKey, cfg.MailFrom, cfg.MailReplyTo)
+		notifyKind = "resend"
 	}
-	if smtpCfg.Configured() {
-		notifier = notify.NewSMTPNotifier(smtpCfg)
-		notifyKind = "smtp"
-	}
+	go notify.NewWorker(pool, provider).Run(ctx)
+
 	seams := api.Seams{
 		Chain:   chainDriver,
 		Payment: pay,
