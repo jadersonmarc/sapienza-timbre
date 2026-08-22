@@ -83,16 +83,15 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, sessionPublic(sess))
 }
 
-// sessionByAnon carrega a sessão exigindo o anon_token no header (autoriza a retomada).
+// sessionByAnon carrega a sessão exigindo o anon_token que identifica o navegador. O token
+// deve corresponder EXATAMENTE ao gravado naquela sessão e a sessão deve estar 'open' (após
+// o bind, o anon_token deixa de servir). Divergência ou ausência devolve 404 — nunca 403,
+// que confirmaria que a sessão existe.
 func (s *Server) sessionByAnon(w http.ResponseWriter, r *http.Request, tx pgx.Tx, id uuid.UUID) (checkout.Session, bool) {
 	anon := r.Header.Get("X-Anon-Token")
 	sess, err := checkout.GetSession(r.Context(), tx, id)
-	if err != nil {
+	if err != nil || anon == "" || sess.Status != "open" || !subtleCompare(sess.AnonToken, anon) {
 		writeErr(w, http.StatusNotFound, "sessão não encontrada")
-		return checkout.Session{}, false
-	}
-	if anon == "" || sess.AnonToken != anon {
-		writeErr(w, http.StatusUnauthorized, "token anônimo inválido")
 		return checkout.Session{}, false
 	}
 	return sess, true

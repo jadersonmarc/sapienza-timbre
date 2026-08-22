@@ -315,10 +315,12 @@ func PaySession(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, prod 
 }
 
 // ExpireOpenSessions expira sessões abertas vencidas, libera a reserva (hold ou lote) e limpa
-// o client_ip (dado pessoal — não serve mais após o encerramento). Roda sob tenancy.
+// o client_ip (dado pessoal — não serve mais após o encerramento). Sessão que JÁ foi
+// vinculada ('authenticated') vira 'abandoned' (quem entrou e não pagou abandonou); sessão
+// 'open' que nunca foi vinculada vira 'expired'. Roda sob tenancy.
 func ExpireOpenSessions(ctx context.Context, tx pgx.Tx) (int, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT id, items, hold_id FROM checkout_sessions
+		SELECT id, status, items, hold_id FROM checkout_sessions
 		 WHERE status IN ('open','authenticated') AND expires_at <= now()
 		 FOR UPDATE SKIP LOCKED`)
 	if err != nil {
@@ -326,13 +328,14 @@ func ExpireOpenSessions(ctx context.Context, tx pgx.Tx) (int, error) {
 	}
 	type row struct {
 		id     uuid.UUID
+		status string
 		items  json.RawMessage
 		holdID *uuid.UUID
 	}
 	var list []row
 	for rows.Next() {
 		var r row
-		if err := rows.Scan(&r.id, &r.items, &r.holdID); err != nil {
+		if err := rows.Scan(&r.id, &r.status, &r.items, &r.holdID); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -354,7 +357,11 @@ func ExpireOpenSessions(ctx context.Context, tx pgx.Tx) (int, error) {
 				return 0, err
 			}
 		}
-		if _, err := tx.Exec(ctx, `UPDATE checkout_sessions SET status='expired', client_ip=NULL, updated_at=now() WHERE id=$1`, r.id); err != nil {
+		newStatus := "expired"
+		if r.status == "authenticated" {
+			newStatus = "abandoned"
+		}
+		if _, err := tx.Exec(ctx, `UPDATE checkout_sessions SET status=$2, client_ip=NULL, updated_at=now() WHERE id=$1`, r.id, newStatus); err != nil {
 			return 0, err
 		}
 	}
