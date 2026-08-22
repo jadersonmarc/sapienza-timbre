@@ -134,6 +134,58 @@ func EventFinance(ctx context.Context, tx pgx.Tx, eventID uuid.UUID) (Finance, e
 	return f, rows.Err()
 }
 
+// SessionFunnel é o funil da sessão de checkout por evento: quem chegou a 'authenticated'
+// (vinculado) contra quem pagou. Sessão vinculada e não paga vira 'abandoned' na expiração.
+type SessionFunnel struct {
+	Bound     int `json:"bound"`     // chegou a authenticated (paid + abandoned)
+	Paid      int `json:"paid"`
+	Abandoned int `json:"abandoned"` // vinculada e não paga (expirou após o bind)
+}
+
+// EventSessionFunnel agrega as sessões de checkout de um evento.
+func EventSessionFunnel(ctx context.Context, tx pgx.Tx, eventID uuid.UUID) (SessionFunnel, error) {
+	var f SessionFunnel
+	if err := tx.QueryRow(ctx, `
+		SELECT COUNT(*) FILTER (WHERE status='paid'),
+		       COUNT(*) FILTER (WHERE status='abandoned')
+		  FROM checkout_sessions WHERE event_id=$1`, eventID).Scan(&f.Paid, &f.Abandoned); err != nil {
+		return f, err
+	}
+	f.Bound = f.Paid + f.Abandoned
+	return f, nil
+}
+
+// PlatformSessionFunnel agrega o funil da plataforma inteira (administrativo).
+func PlatformSessionFunnel(ctx context.Context, pool *pgxpool.Pool) (SessionFunnel, error) {
+	var f SessionFunnel
+	schemas, err := tenancy.ListTenantSchemas(ctx, pool)
+	if err != nil {
+		return f, err
+	}
+	for _, tid := range schemas {
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			return f, err
+		}
+		if err := tenancy.WithTenant(ctx, tx, tid); err != nil {
+			tx.Rollback(ctx)
+			return f, err
+		}
+		var paid, ab int
+		if err := tx.QueryRow(ctx, `
+			SELECT COUNT(*) FILTER (WHERE status='paid'), COUNT(*) FILTER (WHERE status='abandoned')
+			  FROM checkout_sessions`).Scan(&paid, &ab); err != nil {
+			tx.Rollback(ctx)
+			return f, err
+		}
+		tx.Commit(ctx)
+		f.Paid += paid
+		f.Abandoned += ab
+	}
+	f.Bound = f.Paid + f.Abandoned
+	return f, nil
+}
+
 // ProducerSummary é o resumo do produtor (para o painel-mãe).
 type ProducerSummary struct {
 	EventsActive   int   `json:"events_active"`

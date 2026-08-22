@@ -216,13 +216,13 @@ func TestResumeByAnonToken(t *testing.T) {
 	}
 	id, tok := createSession(t, ts, map[string]any{"event_id": eventID, "quantity": 2, "coupon_code": "TST"})
 
-	// Sem token → 401; token errado → 401.
-	if code, _ := do(t, ts, "GET", "/api/v1/public/checkout/sessions/"+id, nil, nil); code != http.StatusUnauthorized {
-		t.Fatalf("sem anon_token: esperava 401, veio %d", code)
+	// Sem token → 404; token errado (de outro navegador) → 404.
+	if code, _ := do(t, ts, "GET", "/api/v1/public/checkout/sessions/"+id, nil, nil); code != http.StatusNotFound {
+		t.Fatalf("sem anon_token: esperava 404, veio %d", code)
 	}
 	hdr := map[string]string{"X-Anon-Token": "errado"}
-	if code, _ := do(t, ts, "GET", "/api/v1/public/checkout/sessions/"+id, hdr, nil); code != http.StatusUnauthorized {
-		t.Fatalf("anon_token errado: esperava 401, veio %d", code)
+	if code, _ := do(t, ts, "GET", "/api/v1/public/checkout/sessions/"+id, hdr, nil); code != http.StatusNotFound {
+		t.Fatalf("anon_token de outro navegador: esperava 404, veio %d", code)
 	}
 
 	hdr = map[string]string{"X-Anon-Token": tok}
@@ -233,6 +233,41 @@ func TestResumeByAnonToken(t *testing.T) {
 	items := body["items"].(map[string]any)
 	if items["quantity"].(float64) != 2 || items["coupon_code"] != "TST" {
 		t.Fatalf("seleção não retomada intacta: %v", items)
+	}
+
+	// PATCH e auth-started seguem a mesma regra (404 para token errado/ausente).
+	if code, _ := do(t, ts, "PATCH", "/api/v1/public/checkout/sessions/"+id, map[string]string{"X-Anon-Token": "errado"},
+		map[string]any{"quantity": 1}); code != http.StatusNotFound {
+		t.Fatalf("PATCH com token errado: esperava 404, veio %d", code)
+	}
+	if code, _ := do(t, ts, "POST", "/api/v1/public/checkout/sessions/"+id+"/auth-started", map[string]string{"X-Anon-Token": "errado"}, nil); code != http.StatusNotFound {
+		t.Fatalf("auth-started com token errado: esperava 404, veio %d", code)
+	}
+}
+
+// TestAnonStopsAfterBind: após o bind, o anon_token não dá mais acesso; só o subject dono
+// segue no pagamento.
+func TestAnonStopsAfterBind(t *testing.T) {
+	ts, pool := setup(t)
+	_, owner := createProducer(t, ts, "Casa StopAnon", "owner@stopanon.com", "senha1234")
+	eventID := createEvent(t, ts, owner, "Show StopAnon", "shows")
+	_ = createLot(t, ts, owner, eventID, "Lote 1", 5000, 100, 0)
+	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
+		t.Fatalf("publicar: %d", code)
+	}
+	id, tok := createSession(t, ts, map[string]any{"event_id": eventID, "quantity": 1})
+
+	ana := buyer(t, ts, pool, "stop@x.com")
+	if code, _ := do(t, ts, "POST", "/api/v1/public/checkout/sessions/"+id+"/bind", ana, nil); code != http.StatusOK {
+		t.Fatalf("bind: %d", code)
+	}
+	// anon_token não acessa mais (sessão authenticated).
+	if code, _ := do(t, ts, "GET", "/api/v1/public/checkout/sessions/"+id, map[string]string{"X-Anon-Token": tok}, nil); code != http.StatusNotFound {
+		t.Fatalf("anon após bind: esperava 404, veio %d", code)
+	}
+	// O subject dono segue para o pagamento.
+	if code, _ := do(t, ts, "POST", "/api/v1/public/checkout/sessions/"+id+"/pay", ana, map[string]any{"method": "pix"}); code != http.StatusCreated {
+		t.Fatalf("pay do dono: %d", code)
 	}
 }
 
@@ -463,6 +498,115 @@ func TestPaidIPPurgedAfterRetention(t *testing.T) {
 	}
 }
 
+// TestAuthenticatedExpiresToAbandoned: sessão vinculada que expira vira 'abandoned',
+// libera a reserva e limpa o client_ip.
+func TestAuthenticatedExpiresToAbandoned(t *testing.T) {
+	ts, pool := setup(t)
+	_, owner := createProducer(t, ts, "Casa Aban", "owner@aban.com", "senha1234")
+	pid := producerID(t, ts, owner)
+	ctx := context.Background()
+	eventID, seats, _ := seatedEvent(t, ts, pool, owner, pid, 1)
+	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID.String()+"/publish", bearer(owner), nil); code != http.StatusOK {
+		t.Fatalf("publicar: %d", code)
+	}
+	id, _ := createSession(t, ts, map[string]any{
+		"event_id": eventID.String(), "quantity": 1, "seat_ids": []string{seats[0].String()},
+	})
+	ana := buyer(t, ts, pool, "aban@x.com")
+	if code, _ := do(t, ts, "POST", "/api/v1/public/checkout/sessions/"+id+"/bind", ana, nil); code != http.StatusOK {
+		t.Fatalf("bind: %d", code)
+	}
+	inTenant(t, ctx, pool, pid, func(tx pgx.Tx) {
+		if _, err := tx.Exec(ctx, `UPDATE checkout_sessions SET expires_at=now()-interval '1 minute' WHERE id=$1`, uuid.MustParse(id)); err != nil {
+			t.Fatalf("expirar: %v", err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE seat_occupancy SET expires_at=now()-interval '1 minute' WHERE seat_id=$1 AND kind='hold'`, seats[0]); err != nil {
+			t.Fatalf("expirar ocupação: %v", err)
+		}
+		if _, err := checkout.ExpireOpenSessions(ctx, tx); err != nil {
+			t.Fatalf("expire: %v", err)
+		}
+	})
+	if st := scanStr(t, ctx, pool, pid, `SELECT status FROM checkout_sessions WHERE id=$1`, uuid.MustParse(id)); st != "abandoned" {
+		t.Fatalf("sessão vinculada deveria virar abandoned, veio %s", st)
+	}
+	if ip := scanStr(t, ctx, pool, pid, `SELECT COALESCE(client_ip,'') FROM checkout_sessions WHERE id=$1`, uuid.MustParse(id)); ip != "" {
+		t.Fatalf("client_ip deveria ser limpo, veio %q", ip)
+	}
+	// Assento liberado.
+	if n := scanInt(t, ctx, pool, pid, `SELECT count(*) FROM seat_occupancy WHERE seat_id=$1 AND kind='hold' AND NOT released`, seats[0]); n != 0 {
+		t.Fatalf("assento deveria ser liberado, veio %d", n)
+	}
+}
+
+// TestOpenExpiresToExpired: sessão 'open' que expira continua virando 'expired'.
+func TestOpenExpiresToExpired(t *testing.T) {
+	ts, pool := setup(t)
+	_, owner := createProducer(t, ts, "Casa OpExp", "owner@opexp.com", "senha1234")
+	pid := producerID(t, ts, owner)
+	ctx := context.Background()
+	eventID := createEvent(t, ts, owner, "Show OpExp", "shows")
+	_ = createLot(t, ts, owner, eventID, "Lote 1", 5000, 100, 0)
+	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
+		t.Fatalf("publicar: %d", code)
+	}
+	id, _ := createSession(t, ts, map[string]any{"event_id": eventID, "quantity": 1})
+	inTenant(t, ctx, pool, pid, func(tx pgx.Tx) {
+		if _, err := tx.Exec(ctx, `UPDATE checkout_sessions SET expires_at=now()-interval '1 minute' WHERE id=$1`, uuid.MustParse(id)); err != nil {
+			t.Fatalf("expirar: %v", err)
+		}
+		if _, err := checkout.ExpireOpenSessions(ctx, tx); err != nil {
+			t.Fatalf("expire: %v", err)
+		}
+	})
+	if st := scanStr(t, ctx, pool, pid, `SELECT status FROM checkout_sessions WHERE id=$1`, uuid.MustParse(id)); st != "expired" {
+		t.Fatalf("sessão open deveria virar expired, veio %s", st)
+	}
+}
+
+// TestSessionFunnelInOverview: a métrica de vinculadas contra pagas aparece no painel.
+func TestSessionFunnelInOverview(t *testing.T) {
+	ts, pool := setup(t)
+	_, owner := createProducer(t, ts, "Casa Funil", "owner@funil.com", "senha1234")
+	pid := producerID(t, ts, owner)
+	ctx := context.Background()
+	eventID := createEvent(t, ts, owner, "Show Funil", "shows")
+	_ = createLot(t, ts, owner, eventID, "Lote 1", 5000, 100, 0)
+	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
+		t.Fatalf("publicar: %d", code)
+	}
+
+	// Uma compra paga.
+	body := buyViaSession(t, ts, buyer(t, ts, pool, "paga@funil.com"), map[string]any{"event_id": eventID, "quantity": 1}, "pix")
+	confirmWebhook(t, ts, body["asaas_ref"].(string))
+
+	// Uma vinculada que abandonou (bind + expira).
+	id, _ := createSession(t, ts, map[string]any{"event_id": eventID, "quantity": 1})
+	ana := buyer(t, ts, pool, "abandona@funil.com")
+	if code, _ := do(t, ts, "POST", "/api/v1/public/checkout/sessions/"+id+"/bind", ana, nil); code != http.StatusOK {
+		t.Fatalf("bind: %d", code)
+	}
+	inTenant(t, ctx, pool, pid, func(tx pgx.Tx) {
+		if _, err := tx.Exec(ctx, `UPDATE checkout_sessions SET expires_at=now()-interval '1 minute' WHERE id=$1`, uuid.MustParse(id)); err != nil {
+			t.Fatalf("expirar: %v", err)
+		}
+		if _, err := checkout.ExpireOpenSessions(ctx, tx); err != nil {
+			t.Fatalf("expire: %v", err)
+		}
+	})
+
+	code, body := do(t, ts, "GET", "/api/v1/dash/events/"+eventID, bearer(owner), nil)
+	if code != http.StatusOK {
+		t.Fatalf("dash overview: %d", code)
+	}
+	funnel := body["session_funnel"].(map[string]any)
+	paid := funnel["paid"].(float64)
+	abandoned := funnel["abandoned"].(float64)
+	bound := funnel["bound"].(float64)
+	if paid < 1 || abandoned < 1 || bound != paid+abandoned {
+		t.Fatalf("funil inesperado: %v", funnel)
+	}
+}
 // TestSessionResponseNoClientIP: nenhuma resposta de API expõe client_ip.
 func TestSessionResponseNoClientIP(t *testing.T) {
 	ts, _ := setup(t)

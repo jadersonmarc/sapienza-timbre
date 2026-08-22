@@ -73,5 +73,14 @@ func (s *Server) adminSummary(w http.ResponseWriter, r *http.Request, claims *au
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, sum)
+	funnel, err := dash.PlatformSessionFunnel(r.Context(), s.pool)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"producers_total": sum.ProducersTotal, "producers_pending": sum.ProducersPending,
+		"events_active": sum.EventsActive, "revenue_today_cents": sum.RevenueTodayCents,
+		"session_funnel": funnel,
+	})
 }

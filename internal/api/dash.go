@@ -26,6 +26,7 @@ func (s *Server) dashOverview(w http.ResponseWriter, r *http.Request, claims *au
 		occ   dash.Occupancy
 		chk   dash.Checkin
 		fin   dash.Finance
+		funnel dash.SessionFunnel
 	)
 	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
 		var e error
@@ -38,7 +39,10 @@ func (s *Server) dashOverview(w http.ResponseWriter, r *http.Request, claims *au
 		if chk, e = dash.CheckinProgress(r.Context(), tx, eventID); e != nil {
 			return e
 		}
-		fin, e = dash.EventFinance(r.Context(), tx, eventID)
+		if fin, e = dash.EventFinance(r.Context(), tx, eventID); e != nil {
+			return e
+		}
+		funnel, e = dash.EventSessionFunnel(r.Context(), tx, eventID)
 		return e
 	}); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -46,6 +50,7 @@ func (s *Server) dashOverview(w http.ResponseWriter, r *http.Request, claims *au
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"sales": sales, "occupancy": occ, "checkin": chk, "finance": fin,
+		"session_funnel": funnel,
 	})
 }
 
