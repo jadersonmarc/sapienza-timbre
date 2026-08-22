@@ -157,9 +157,10 @@ func TestCourtesyWithSeat(t *testing.T) {
 	pid := producerID(t, ts, owner)
 	ctx := context.Background()
 	eventID, seats, lotID := seatedEvent(t, ts, pool, owner, pid, 2)
+	catID := courtesyCategoryID(t, ctx, pool, pid, "convidado")
 
 	code, body := do(t, ts, "POST", "/api/v1/events/"+eventID.String()+"/guests", bearer(owner),
-		map[string]any{"name": "Convidada", "cpf": "12345678900", "lot_id": lotID.String(), "seat_id": seats[0].String()})
+		map[string]any{"name": "Convidada", "cpf": "12345678900", "lot_id": lotID.String(), "seat_id": seats[0].String(), "courtesy_category_id": catID})
 	if code != http.StatusCreated {
 		t.Fatalf("cortesia: status %d, body %v", code, body)
 	}
@@ -168,7 +169,7 @@ func TestCourtesyWithSeat(t *testing.T) {
 	}
 	// Segunda cortesia no mesmo assento → 409.
 	code, _ = do(t, ts, "POST", "/api/v1/events/"+eventID.String()+"/guests", bearer(owner),
-		map[string]any{"name": "Outro", "lot_id": lotID.String(), "seat_id": seats[0].String()})
+		map[string]any{"name": "Outro", "lot_id": lotID.String(), "seat_id": seats[0].String(), "courtesy_category_id": catID})
 	if code != http.StatusConflict {
 		t.Fatalf("cortesia em assento ocupado: esperava 409, veio %d", code)
 	}

@@ -29,16 +29,14 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/producer"
 	"github.com/jadersonmarc/sapienza-timbre/internal/store"
 	"github.com/jadersonmarc/sapienza-timbre/internal/ticketing"
-	"github.com/jadersonmarc/sapienza-timbre/internal/wallet"
 )
 
-// Seams reúne os drivers trocáveis (rede, pagamento, carteira, notificação). São
-// injetados com defaults (Noop/stub) nesta etapa e consumidos pelos handlers de
-// operação das próximas etapas — o padrão espelha o WhatsAppDriver da Margot.
+// Seams reúne os drivers trocáveis (rede, pagamento, notificação). São injetados com
+// defaults (Noop/stub) e consumidos pelos handlers — o padrão espelha o WhatsAppDriver da
+// Margot. (O eixo de posse/MPC foi removido; a rede agora só ancora atestados.)
 type Seams struct {
 	Chain   chain.ChainDriver
 	Payment payment.PaymentGateway
-	Wallet  wallet.WalletProvider
 	Notify  notify.Notifier
 }
 
@@ -48,11 +46,13 @@ type Server struct {
 	auth         *auth.Authenticator
 	prov         *producer.Provisioner
 	signer       *ticketing.Signer // assina ingressos (Ed25519) na emissão
+	attest       *ticketing.Signer // assina atestados (chave própria, propósito distinto)
+	attestKeyID  string            // identificador estável da chave de atestação
 	adminToken   string            // gate do bootstrap de produtor (vazio = criação desligada)
 	webhookToken string            // valida o header do webhook do Asaas (vazio = sem checagem)
-	mintMode     chain.MintMode    // on_demand (default) | eager
-	deriver      *wallet.Deriver   // deriva/importa endereços do participante (pode ser nil)
-	seams        Seams             // drivers de rede/pagamento/carteira/notificação
+	anchorer     chain.Anchorer    // envia a âncora do atestado (off = noop)
+	anchorMode   chain.AnchorMode  // off | log — âncora do atestado
+	seams        Seams             // drivers de rede/pagamento/notificação
 	limiter      *rateLimiter      // contenção de abuso na superfície pública (§4.1)
 }
 
@@ -64,14 +64,17 @@ const (
 )
 
 // NewServer constrói o servidor da API.
-func NewServer(pool *pgxpool.Pool, authz *auth.Authenticator, prov *producer.Provisioner, signer *ticketing.Signer, adminToken, webhookToken string, mintMode chain.MintMode, deriver *wallet.Deriver, seams Seams) *Server {
-	if mintMode == "" {
-		mintMode = chain.MintModeOnDemand
+func NewServer(pool *pgxpool.Pool, authz *auth.Authenticator, prov *producer.Provisioner, signer, attest *ticketing.Signer, attestKeyID, adminToken, webhookToken string, anchorer chain.Anchorer, anchorMode chain.AnchorMode, seams Seams) *Server {
+	if anchorMode == "" {
+		anchorMode = chain.AnchorModeOff
+	}
+	if anchorer == nil {
+		anchorer = chain.NoopAnchorer{}
 	}
 	return &Server{
-		pool: pool, auth: authz, prov: prov, signer: signer,
-		adminToken: adminToken, webhookToken: webhookToken,
-		mintMode: mintMode, deriver: deriver, seams: seams,
+		pool: pool, auth: authz, prov: prov, signer: signer, attest: attest,
+		attestKeyID: attestKeyID, adminToken: adminToken, webhookToken: webhookToken,
+		anchorer: anchorer, anchorMode: anchorMode, seams: seams,
 		limiter: newRateLimiter(publicRateLimit, publicRateWindow),
 	}
 }
@@ -81,7 +84,7 @@ func NewServer(pool *pgxpool.Pool, authz *auth.Authenticator, prov *producer.Pro
 func (s *Server) emitter(producerID uuid.UUID) checkout.Emitter {
 	return checkout.Emitter{
 		Signer: s.signer, Notify: s.seams.Notify, Chain: s.seams.Chain,
-		MintMode: s.mintMode, ProducerID: producerID,
+		ProducerID: producerID,
 	}
 }
 
@@ -139,8 +142,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/public/me/tickets/{id}/transfer", s.buyerAuthed(s.buyerTransfer))
 	mux.HandleFunc("POST /api/v1/public/me/tickets/{id}/listings", s.buyerAuthed(s.buyerCreateListing))
 	mux.HandleFunc("POST /api/v1/public/me/tickets/{id}/reissue", s.buyerAuthed(s.buyerReissue))
-	mux.HandleFunc("POST /api/v1/public/me/tickets/{id}/export", s.buyerAuthed(s.buyerExport))
-	mux.HandleFunc("POST /api/v1/public/me/tickets/{id}/collectible", s.buyerAuthed(s.buyerCollectible))
 	// Camada pública (Onda 1): cadastro público de produtor (landing B2B) — self-service,
 	// nasce ativo. E cadastro de artista (catálogo global), também ativo na hora.
 	mux.HandleFunc("POST /api/v1/public/producer-signup", s.rateLimited("producer-signup", s.producerSignup))
@@ -153,6 +154,21 @@ func (s *Server) Handler() http.Handler {
 	// Lista de convidados / cortesias — do owner.
 	mux.HandleFunc("POST /api/v1/events/{id}/guests", s.requireOwner(s.createGuest))
 	mux.HandleFunc("GET /api/v1/events/{id}/guests", s.authed(s.listGuests))
+	// Categorias de cortesia (por produtor) — contrapartida e atestação.
+	mux.HandleFunc("GET /api/v1/courtesy-categories", s.authed(s.listCourtesyCategories))
+	mux.HandleFunc("POST /api/v1/courtesy-categories", s.requireOwner(s.createCourtesyCategory))
+	mux.HandleFunc("PATCH /api/v1/courtesy-categories/{id}", s.requireOwner(s.patchCourtesyCategory))
+	// Compromissos declarados do evento (contrapartida).
+	mux.HandleFunc("POST /api/v1/events/{id}/commitments", s.requireOwner(s.createCommitment))
+	mux.HandleFunc("GET /api/v1/events/{id}/commitments", s.authed(s.listCommitments))
+	mux.HandleFunc("DELETE /api/v1/commitments/{id}", s.requireOwner(s.deleteCommitment))
+	// Fechamento e atestação.
+	mux.HandleFunc("POST /api/v1/events/{id}/close", s.requireOwner(s.closeEvent))
+	mux.HandleFunc("POST /api/v1/events/{id}/attestations/{attId}/anchor", s.requireOwner(s.reanchorEvent))
+	mux.HandleFunc("GET /api/v1/events/{id}/reports/audience", s.requirePermission("relatorios", s.audienceReport))
+	mux.HandleFunc("GET /api/v1/events/{id}/reports/commitments", s.requirePermission("relatorios", s.commitmentsReport))
+	// Verificação pública do atestado (sem auth).
+	mux.HandleFunc("GET /api/v1/public/attestations/{id}", s.publicAttestation)
 	// Portaria (Etapa 1.6): validação e sync exigem a permissão granular 'checkin'.
 	mux.HandleFunc("GET /api/v1/gate/config", s.requirePermission("checkin", s.gateConfig))
 	mux.HandleFunc("GET /api/v1/gate/events/{id}/seatmap", s.requirePermission("checkin", s.gateSeatmap))
@@ -163,8 +179,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/dash/events/{id}", s.requirePermission("relatorios", s.dashOverview))
 	mux.HandleFunc("GET /api/v1/dash/events/{id}/export.csv", s.requirePermission("relatorios", s.dashExportCSV))
 	mux.HandleFunc("GET /api/v1/dash/payouts", s.requirePermission("relatorios", s.dashPayouts))
-	// Materialização em massa dos ingressos de um evento (produtor, on-demand).
-	mux.HandleFunc("POST /api/v1/dash/events/{id}/materialize", s.requireOwner(s.bulkMaterializeEvent))
 	// Transferência restrita (Etapa 2.1) — por ora operada pelo owner.
 	mux.HandleFunc("POST /api/v1/tickets/{id}/transfer", s.requireOwner(s.transferTicket))
 	// Mercado secundário (Etapa 2.2): anúncio/cancelamento e procedência (owner);
@@ -185,7 +199,6 @@ func (s *Server) Handler() http.Handler {
 	// reemissão pelo owner (autonomia do participante vem com a identidade).
 	mux.HandleFunc("GET /api/v1/public/tokens/{id}/metadata", s.tokenMetadata)
 	mux.HandleFunc("GET /api/v1/public/tokens/{id}", s.tokenView)
-	mux.HandleFunc("POST /api/v1/tickets/{id}/export", s.requireOwner(s.exportTicket))
 	mux.HandleFunc("POST /api/v1/tickets/{id}/dispute", s.requireOwner(s.disputeTicket))
 	mux.HandleFunc("POST /api/v1/tickets/{id}/reissue", s.requireOwner(s.reissueTicket))
 	mux.HandleFunc("POST /api/v1/public/checkins/{id}/review", s.submitReview)

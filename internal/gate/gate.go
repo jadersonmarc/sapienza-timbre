@@ -69,8 +69,9 @@ func Checkin(ctx context.Context, tx pgx.Tx, v *ticketing.Verifier, producerID u
 
 	// Ingresso precisa existir e estar ativo (não queimado/cancelado).
 	var status string
+	var eventID uuid.UUID
 	var seatID, ownerSubject, ownerWallet *uuid.UUID
-	err = tx.QueryRow(ctx, `SELECT status, seat_id, owner_subject_id, owner_wallet_id FROM tickets WHERE id=$1`, payload.TicketID).Scan(&status, &seatID, &ownerSubject, &ownerWallet)
+	err = tx.QueryRow(ctx, `SELECT status, event_id, seat_id, owner_subject_id, owner_wallet_id FROM tickets WHERE id=$1`, payload.TicketID).Scan(&status, &eventID, &seatID, &ownerSubject, &ownerWallet)
 	if errors.Is(err, pgx.ErrNoRows) {
 		res.Verdict = Unknown
 		return res, nil
@@ -79,6 +80,15 @@ func Checkin(ctx context.Context, tx pgx.Tx, v *ticketing.Verifier, producerID u
 		return Result{}, err
 	}
 	if status != "active" {
+		res.Verdict = Invalid
+		return res, nil
+	}
+	// Evento fechado (atestado vigente) não aceita novos check-ins.
+	var closed bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM event_attestations WHERE event_id=$1 AND supersedes_id IS NULL)`, eventID).Scan(&closed); err != nil {
+		return Result{}, err
+	}
+	if closed {
 		res.Verdict = Invalid
 		return res, nil
 	}

@@ -129,13 +129,12 @@ func (s *Server) asaasWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	em := s.emitter(producerID)
-	chainOn := s.seams.Chain.Enabled()
 	if err := s.withTenant(r.Context(), producerID, func(tx pgx.Tx) error {
 		switch {
 		case evt.Refunded:
 			return checkout.RefundPayment(r.Context(), tx, evt.AsaasRef)
 		case kind == "resale":
-			return market.ConfirmResale(r.Context(), tx, producerID, evt.AsaasRef, chainOn)
+			return market.ConfirmResale(r.Context(), tx, producerID, evt.AsaasRef)
 		case kind == "season":
 			return season.ConfirmPass(r.Context(), tx, em, producerID, evt.AsaasRef)
 		default:
@@ -181,10 +180,11 @@ func writeCheckoutErr(w http.ResponseWriter, err error) {
 // ── lista de convidados / cortesias ──────────────────────────────────────────
 
 type createGuestReq struct {
-	Name   string  `json:"name"`
-	CPF    string  `json:"cpf"`
-	LotID  *string `json:"lot_id"`
-	SeatID *string `json:"seat_id"`
+	Name                string  `json:"name"`
+	CPF                 string  `json:"cpf"`
+	LotID               *string `json:"lot_id"`
+	SeatID              *string `json:"seat_id"`
+	CourtesyCategoryID  string  `json:"courtesy_category_id"`
 }
 
 // createGuest emite uma cortesia: registra o convidado e emite um ingresso (com
@@ -204,6 +204,11 @@ func (s *Server) createGuest(w http.ResponseWriter, r *http.Request, claims *aut
 		writeErr(w, http.StatusBadRequest, "name obrigatório")
 		return
 	}
+	categoryID, err := uuid.Parse(body.CourtesyCategoryID)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "courtesy_category_id obrigatório")
+		return
+	}
 	lotID, err := parseUUIDPtr(body.LotID)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "lot_id inválido")
@@ -218,7 +223,7 @@ func (s *Server) createGuest(w http.ResponseWriter, r *http.Request, claims *aut
 	em := s.emitter(claims.ProducerID)
 	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
 		var e error
-		ticketID, e = checkout.IssueCourtesy(r.Context(), tx, em, eventID, lotID, seatID, body.Name, body.CPF)
+		ticketID, e = checkout.IssueCourtesy(r.Context(), tx, em, eventID, lotID, seatID, categoryID, body.Name, body.CPF)
 		return e
 	}); err != nil {
 		if errors.Is(err, inventory.ErrSeatUnavailable) {

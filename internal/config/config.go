@@ -18,8 +18,10 @@ type Config struct {
 	EncKey           string // reservado (AES-256-GCM por-tenant); vazio nesta etapa
 	TicketSigningKey string // seed Ed25519 base64 p/ assinar ingressos (vazio = efêmera)
 	LogLevel         string // debug|info|warn|error (default info)
-	ChainMintMode    string // on_demand (default) | eager — quando materializar emissão on-chain
-	ChainHDSeedRef   string // referência da semente HD no cofre (nunca a semente em si)
+	ChainMintMode    string // off (default) — nenhum caminho materializa token
+	AnchorMode       string // off (default) | log — âncora do atestado
+	AttestationKey   string // seed Ed25519 base64 p/ assinar atestados (vazio = efêmera)
+	AttestationKeyID string // identificador curto e estável da chave de atestação
 }
 
 // Load lê o ambiente e valida os campos obrigatórios. Retorna erro em vez de
@@ -33,8 +35,10 @@ func Load() (Config, error) {
 		EncKey:           os.Getenv("TIMBRE_ENC_KEY"),
 		TicketSigningKey: os.Getenv("TIMBRE_TICKET_SIGNING_KEY"),
 		LogLevel:         getenv("LOG_LEVEL", "info"),
-		ChainMintMode:    getenv("CHAIN_MINT_MODE", "on_demand"),
-		ChainHDSeedRef:   os.Getenv("CHAIN_HD_SEED_REF"),
+		ChainMintMode:    getenv("CHAIN_MINT_MODE", "off"),
+		AnchorMode:       getenv("TIMBRE_ANCHOR_MODE", "off"),
+		AttestationKey:   os.Getenv("TIMBRE_ATTESTATION_KEY"),
+		AttestationKeyID: os.Getenv("TIMBRE_ATTESTATION_KEY_ID"),
 	}
 
 	var missing []string
@@ -43,6 +47,14 @@ func Load() (Config, error) {
 	}
 	if c.JWTSecret == "" {
 		missing = append(missing, "TIMBRE_JWT_SECRET")
+	}
+	// Chave de atestação definida exige o identificador estável (senão a rotação invalidaria
+	// atestados antigos — a verificação resolve pelo key_id, nunca pela chave corrente).
+	if c.AttestationKey != "" && strings.TrimSpace(c.AttestationKeyID) == "" {
+		missing = append(missing, "TIMBRE_ATTESTATION_KEY_ID (obrigatório quando TIMBRE_ATTESTATION_KEY é definida)")
+	}
+	if c.AnchorMode != "off" && c.AnchorMode != "log" {
+		return Config{}, fmt.Errorf("TIMBRE_ANCHOR_MODE inválido: %q (use off ou log)", c.AnchorMode)
 	}
 	if len(missing) > 0 {
 		return Config{}, fmt.Errorf("faltam variáveis obrigatórias: %s", strings.Join(missing, ", "))

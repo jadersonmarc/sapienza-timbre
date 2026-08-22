@@ -87,6 +87,17 @@ func (s *Signer) Sign(p Payload) ([]byte, error) {
 	return ed25519.Sign(s.priv, msg), nil
 }
 
+// SignBytes assina bytes arbitrários (ex.: o resumo SHA-256 do atestado). Usado com a
+// chave de ATESTAÇÃO (propósito distinto da chave do QR).
+func (s *Signer) SignBytes(b []byte) []byte {
+	return ed25519.Sign(s.priv, b)
+}
+
+// PublicKeyBytes devolve a chave pública crua (para a verificação pública do atestado).
+func (s *Signer) PublicKeyBytes() []byte {
+	return append([]byte(nil), s.pub...)
+}
+
 // Verifier valida tokens conhecendo APENAS a chave pública. É a portaria offline.
 type Verifier struct {
 	pub ed25519.PublicKey

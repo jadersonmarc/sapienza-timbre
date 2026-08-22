@@ -12,10 +12,10 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/inventory"
 )
 
-// IssueCourtesy emite uma cortesia: registra o convidado e emite um ingresso ativo
-// (transferível imediatamente). Com assento específico, ocupa-o para não ser vendido
-// — se já estiver ocupado (hold ou ingresso), falha com inventory.ErrSeatUnavailable.
-func IssueCourtesy(ctx context.Context, tx pgx.Tx, em Emitter, eventID uuid.UUID, lotID, seatID *uuid.UUID, name, cpf string) (uuid.UUID, error) {
+// IssueCourtesy emite uma cortesia: registra o convidado (com categoria) e emite um
+// ingresso ativo (transferível imediatamente). Com assento específico, ocupa-o para não
+// ser vendido — se já estiver ocupado (hold ou ingresso), falha com ErrSeatUnavailable.
+func IssueCourtesy(ctx context.Context, tx pgx.Tx, em Emitter, eventID uuid.UUID, lotID, seatID *uuid.UUID, categoryID uuid.UUID, name, cpf string) (uuid.UUID, error) {
 	// Resolve o lote (cortesia precisa de um, para portaria/relatório).
 	var lot uuid.UUID
 	if lotID != nil {
@@ -26,9 +26,9 @@ func IssueCourtesy(ctx context.Context, tx pgx.Tx, em Emitter, eventID uuid.UUID
 	}
 
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO guest_list_entries (event_id, name, cpf, lot_id, seat_id, status)
-		VALUES ($1,$2,$3,$4,$5,'issued')`,
-		eventID, name, nilIfEmpty(cpf), lot, seatID); err != nil {
+		INSERT INTO guest_list_entries (event_id, name, cpf, lot_id, seat_id, courtesy_category_id, status)
+		VALUES ($1,$2,$3,$4,$5,$6,'issued')`,
+		eventID, name, nilIfEmpty(cpf), lot, seatID, categoryID); err != nil {
 		return uuid.Nil, fmt.Errorf("registrar convidado: %w", err)
 	}
 

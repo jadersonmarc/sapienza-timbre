@@ -26,7 +26,6 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/producer"
 	"github.com/jadersonmarc/sapienza-timbre/internal/testutil"
 	"github.com/jadersonmarc/sapienza-timbre/internal/ticketing"
-	"github.com/jadersonmarc/sapienza-timbre/internal/wallet"
 )
 
 const adminToken = "test-admin"
@@ -49,10 +48,9 @@ func setupCoreMode(t *testing.T, chainDriver chain.ChainDriver, mintMode chain.M
 	pool := testutil.Pool(t)
 	runner := tenancy.NewMigrationRunner(pool, migrations.Tenant)
 	signer := ticketing.GenerateSigner()
-	srv := api.NewServer(pool, auth.New("test-secret"), producer.New(pool, runner), signer, adminToken, "", mintMode, nil, api.Seams{
+	srv := api.NewServer(pool, auth.New("test-secret"), producer.New(pool, runner), signer, signer, "", adminToken, "", chain.NoopAnchorer{}, chain.AnchorModeOff, api.Seams{
 		Chain:   chainDriver,
 		Payment: payment.NewFakeGateway(),
-		Wallet:  wallet.NoopWalletProvider{},
 		Notify:  notify.NewLogNotifier(),
 	})
 	ts := httptest.NewServer(srv.Handler())
@@ -97,6 +95,18 @@ func bearer(token string) map[string]string {
 func buyer(t *testing.T, ts *httptest.Server, pool *pgxpool.Pool, email string) map[string]string {
 	t.Helper()
 	return bearer(verifyOTP(t, ts, pool, email, "123456"))
+}
+
+// courtesyCategoryID devolve o id da categoria de cortesia (seedada) pelo slug.
+func courtesyCategoryID(t *testing.T, ctx context.Context, pool *pgxpool.Pool, pid uuid.UUID, slug string) string {
+	t.Helper()
+	var id uuid.UUID
+	inTenant(t, ctx, pool, pid, func(tx pgx.Tx) {
+		if err := tx.QueryRow(ctx, `SELECT id FROM courtesy_categories WHERE slug=$1`, slug).Scan(&id); err != nil {
+			t.Fatalf("categoria %s: %v", slug, err)
+		}
+	})
+	return id.String()
 }
 
 // seedAdmin cria um operador da plataforma (papel role) e devolve o header Bearer com o

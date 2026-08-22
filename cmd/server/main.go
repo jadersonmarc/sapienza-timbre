@@ -6,11 +6,14 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"log"
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -19,6 +22,7 @@ import (
 
 	"github.com/jadersonmarc/sapienza-timbre/db/migrations"
 	"github.com/jadersonmarc/sapienza-timbre/internal/api"
+	"github.com/jadersonmarc/sapienza-timbre/internal/attest"
 	"github.com/jadersonmarc/sapienza-timbre/internal/auth"
 	"github.com/jadersonmarc/sapienza-timbre/internal/chain"
 	"github.com/jadersonmarc/sapienza-timbre/internal/config"
@@ -31,7 +35,6 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/producer"
 	"github.com/jadersonmarc/sapienza-timbre/internal/store"
 	"github.com/jadersonmarc/sapienza-timbre/internal/ticketing"
-	"github.com/jadersonmarc/sapienza-timbre/internal/wallet"
 )
 
 func main() {
@@ -102,15 +105,12 @@ func main() {
 	seams := api.Seams{
 		Chain:   chainDriver,
 		Payment: pay,
-		Wallet:  wallet.NoopWalletProvider{},
 		Notify:  notifier,
 	}
-	slog.Info("seams", "chain", chainKind, "chain_enabled", chainDriver.Enabled(), "payment", payKind, "wallet", "noop", "notify", notifyKind)
+	slog.Info("seams", "chain", chainKind, "chain_enabled", chainDriver.Enabled(), "payment", payKind, "notify", notifyKind)
 
 	// Varredura de expiração de holds (motor de reserva) por produtor, em segundo plano.
 	go inventory.NewSweeper(pool).Run(ctx)
-	// Worker de emissão on-chain (fila chain_jobs), em segundo plano.
-	go chain.NewWorker(pool, chainDriver).Run(ctx)
 	// Fechamento de repasses (payouts) por produtor, em segundo plano.
 	go ledger.NewSettler(pool).Run(ctx)
 
@@ -127,19 +127,66 @@ func main() {
 	}
 	slog.Info("ticketing", "public_key", signer.PublicKeyB64())
 
+	// Chave de ATESTAÇÃO (Ed25519, propósito próprio, distinta da chave do QR). Assina o
+	// resumo do registro canônico no fechamento do evento.
+	var attestSigner *ticketing.Signer
+	if cfg.AttestationKey != "" {
+		if attestSigner, err = ticketing.NewSigner(cfg.AttestationKey); err != nil {
+			log.Fatalf("attestation key: %v", err)
+		}
+	} else {
+		attestSigner = ticketing.GenerateSigner()
+		slog.Warn("TIMBRE_ATTESTATION_KEY ausente — chave de atestação efêmera (dev)")
+	}
+	slog.Info("attestation", "public_key", attestSigner.PublicKeyB64())
+
+	// Identificador da chave de atestação: obrigatório quando a chave é definida (senão a
+	// rotação invalidaria atestados antigos — a verificação resolve pelo key_id, nunca pela
+	// chave corrente).
+	attestKeyID := strings.TrimSpace(cfg.AttestationKeyID)
+	if cfg.AttestationKey != "" && attestKeyID == "" {
+		log.Fatalf("TIMBRE_ATTESTATION_KEY definida sem TIMBRE_ATTESTATION_KEY_ID")
+	}
+	if attestKeyID == "" {
+		attestKeyID = "dev-" + base64.RawURLEncoding.EncodeToString(attestSigner.PublicKeyBytes())[:8]
+		slog.Warn("TIMBRE_ATTESTATION_KEY_ID ausente — key_id efêmero (dev): " + attestKeyID)
+	}
+	// Registro idempotente da chave corrente em attestation_keys.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO public.attestation_keys (key_id, public_key, algorithm)
+		VALUES ($1,$2,'ed25519') ON CONFLICT (key_id) DO NOTHING`,
+		attestKeyID, attestSigner.PublicKeyB64()); err != nil {
+		log.Fatalf("registrar chave de atestação: %v", err)
+	}
+
+	// Âncora do atestado: off (default) ou log. Modo desconhecido falha na inicialização.
+	if !chain.ValidAnchorMode(cfg.AnchorMode) {
+		log.Fatalf("TIMBRE_ANCHOR_MODE inválido: %q (use off ou log)", cfg.AnchorMode)
+	}
+	var anchorer chain.Anchorer = chain.NoopAnchorer{}
+	anchorKind := "off"
+	if cfg.AnchorMode == "log" {
+		anchorer = chain.LogAnchorer{} // registra a intenção; nada vira 'anchored'
+		anchorKind = "log"
+	}
+	slog.Info("anchor", "mode", cfg.AnchorMode, "kind", anchorKind)
+
+	// Fechamento automático: N horas após ends_at (configurável).
+	closeAfter := attest.DefaultCloseAfter
+	if v := os.Getenv("EVENT_CLOSE_AFTER_HOURS"); v != "" {
+		if h, err := strconv.Atoi(v); err == nil && h > 0 {
+			closeAfter = time.Duration(h) * time.Hour
+		}
+	}
+
+	// Fechamento automático de eventos (N horas após ends_at) e worker de âncora, em
+	// segundo plano.
+	go attest.NewCloser(pool, attestSigner, anchorer, chain.AnchorMode(cfg.AnchorMode), attestKeyID, closeAfter).Run(ctx)
+	go attest.NewAnchorWorker(pool, anchorer).Run(ctx)
+
 	authz := auth.New(cfg.JWTSecret)
 	prov := producer.New(pool, runner)
-	if !chain.ValidMintMode(cfg.ChainMintMode) {
-		log.Fatalf("CHAIN_MINT_MODE inválido: %q (use on_demand ou eager)", cfg.ChainMintMode)
-	}
-	// Derivação de endereço: CHAIN_HD_SEED_REF aponta para a semente no cofre. O fetch real
-	// do cofre é PROVISÓRIO (falha fechado até integrar); a semente nunca está em env/arquivo.
-	var deriver *wallet.Deriver
-	if cfg.ChainHDSeedRef != "" {
-		deriver = wallet.NewDeriver(wallet.VaultSeedProvider{Ref: cfg.ChainHDSeedRef}, nil)
-		slog.Warn("wallet: derivação de endereço ligada (CHAIN_HD_SEED_REF); provedor do cofre PROVISÓRIO")
-	}
-	srv := api.NewServer(pool, authz, prov, signer, cfg.AdminToken, os.Getenv("ASAAS_WEBHOOK_TOKEN"), chain.MintMode(cfg.ChainMintMode), deriver, seams)
+	srv := api.NewServer(pool, authz, prov, signer, attestSigner, attestKeyID, cfg.AdminToken, os.Getenv("ASAAS_WEBHOOK_TOKEN"), anchorer, chain.AnchorMode(cfg.AnchorMode), seams)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler(pool))
