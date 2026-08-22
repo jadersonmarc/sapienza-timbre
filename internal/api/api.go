@@ -189,6 +189,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/dash/events/{id}", s.requirePermission("relatorios", s.dashOverview))
 	mux.HandleFunc("GET /api/v1/dash/events/{id}/export.csv", s.requirePermission("relatorios", s.dashExportCSV))
 	mux.HandleFunc("GET /api/v1/dash/payouts", s.requirePermission("relatorios", s.dashPayouts))
+	mux.HandleFunc("GET /api/v1/dash/events/{id}/notifications", s.requirePermission("relatorios", s.dashNotifications))
+	mux.HandleFunc("POST /api/v1/dash/notifications/{id}/resend", s.requireOwner(s.resendNotification))
 	// Transferência restrita (Etapa 2.1) — por ora operada pelo owner.
 	mux.HandleFunc("POST /api/v1/tickets/{id}/transfer", s.requireOwner(s.transferTicket))
 	// Mercado secundário (Etapa 2.2): anúncio/cancelamento e procedência (owner);

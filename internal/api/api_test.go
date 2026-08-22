@@ -52,7 +52,7 @@ func setupCoreMode(t *testing.T, chainDriver chain.ChainDriver, mintMode chain.M
 	srv := api.NewServer(pool, auth.New("test-secret"), producer.New(pool, runner), signer, signer, "", adminToken, "", checkout.DefaultLimits(), chain.NoopAnchorer{}, chain.AnchorModeOff, api.Seams{
 		Chain:   chainDriver,
 		Payment: payment.NewFakeGateway(),
-		Notify:  notify.NewLogNotifier(),
+		Notify:  notify.NewService(pool, ""),
 	})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)

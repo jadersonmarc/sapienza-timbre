@@ -71,4 +71,12 @@ func clean(ctx context.Context, t *testing.T, pool *pgxpool.Pool) {
 	if _, err := pool.Exec(ctx, `TRUNCATE admins, artists, moderation_flags, audit_log CASCADE`); err != nil {
 		t.Fatalf("truncate admin: %v", err)
 	}
+	// Notificações (públicas, assíncronas) e índices de sessão de checkout.
+	if _, err := pool.Exec(ctx, `TRUNCATE notifications, checkout_session_index CASCADE`); err != nil {
+		t.Fatalf("truncate notifications: %v", err)
+	}
+	// OTP de comprador (sem FK; acumularia cooldown entre execuções).
+	if _, err := pool.Exec(ctx, `TRUNCATE buyer_otps`); err != nil {
+		t.Fatalf("truncate buyer_otps: %v", err)
+	}
 }

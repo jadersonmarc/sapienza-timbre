@@ -48,7 +48,7 @@ func setupAttest(t *testing.T, anchorer chain.Anchorer, anchorMode chain.AnchorM
 		t.Fatalf("registrar chave: %v", err)
 	}
 	srv := api.NewServer(pool, auth.New("test-secret"), producer.New(pool, runner), signer, attestSigner, keyID, adminToken, "", checkout.DefaultLimits(), anchorer, anchorMode, api.Seams{
-		Chain: chain.NoopChainDriver{}, Payment: payment.NewFakeGateway(), Notify: notify.NewLogNotifier(),
+		Chain: chain.NoopChainDriver{}, Payment: payment.NewFakeGateway(), Notify: notify.NewService(pool, ""),
 	})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)

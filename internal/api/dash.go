@@ -11,6 +11,7 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/auth"
 	"github.com/jadersonmarc/sapienza-timbre/internal/dash"
 	"github.com/jadersonmarc/sapienza-timbre/internal/ledger"
+	"github.com/jadersonmarc/sapienza-timbre/internal/notify"
 )
 
 // dashOverview devolve, em uma chamada, o que o painel do produtor mostra em tempo
@@ -103,6 +104,74 @@ func (s *Server) dashPayouts(w http.ResponseWriter, r *http.Request, claims *aut
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"net_due_cents": netDue, "payouts": payouts})
+}
+
+// dashNotifications mostra os envios de um evento (ingressos) — quantos foram, quantos
+// falharam e a lista para reenviar. É a primeira coisa que o produtor procura quando
+// alguém diz que não recebeu o ingresso.
+func (s *Server) dashNotifications(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
+	eventID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "id inválido")
+		return
+	}
+	rows, err := s.pool.Query(r.Context(), `
+		SELECT id, kind, to_email, status, created_at FROM public.notifications
+		 WHERE event_id=$1 AND kind IN ('ticket_issued','order_refunded')
+		 ORDER BY created_at DESC LIMIT 200`, eventID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+	type n struct {
+		ID        uuid.UUID `json:"id"`
+		Kind      string    `json:"kind"`
+		ToEmail   string    `json:"to_email"`
+		Status    string    `json:"status"`
+		CreatedAt time.Time `json:"created_at"`
+	}
+	var list []n
+	sent, failed := 0, 0
+	for rows.Next() {
+		var it n
+		if err := rows.Scan(&it.ID, &it.Kind, &it.ToEmail, &it.Status, &it.CreatedAt); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if it.Status == "sent" {
+			sent++
+		} else if it.Status == "failed" {
+			failed++
+		}
+		list = append(list, it)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sent": sent, "failed": failed, "notifications": list})
+}
+
+// resendNotification reenfileira um envio que falhou (painel). Não duplica ingresso — só a
+// mensagem. Verifica que a notificação pertence ao produtor.
+func (s *Server) resendNotification(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "id inválido")
+		return
+	}
+	var producerID uuid.UUID
+	if err := s.pool.QueryRow(r.Context(), `SELECT producer_id FROM public.notifications WHERE id=$1`, id).Scan(&producerID); err != nil {
+		writeErr(w, http.StatusNotFound, "notificação não encontrada")
+		return
+	}
+	if producerID != claims.ProducerID {
+		writeErr(w, http.StatusNotFound, "notificação não encontrada")
+		return
+	}
+	newID, err := notify.ResendNotification(r.Context(), s.pool, id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "notification_id": newID})
 }
 
 // dashExportCSV exporta os ingressos do evento em CSV.
