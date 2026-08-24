@@ -161,11 +161,11 @@ func writeCheckoutErr(w http.ResponseWriter, err error) {
 // ── lista de convidados / cortesias ──────────────────────────────────────────
 
 type createGuestReq struct {
-	Name                string  `json:"name"`
-	CPF                 string  `json:"cpf"`
-	LotID               *string `json:"lot_id"`
-	SeatID              *string `json:"seat_id"`
-	CourtesyCategoryID  string  `json:"courtesy_category_id"`
+	Name               string  `json:"name"`
+	CPF                string  `json:"cpf"`
+	LotID              *string `json:"lot_id"`
+	SeatID             *string `json:"seat_id"`
+	CourtesyCategoryID string  `json:"courtesy_category_id"`
 }
 
 // createGuest emite uma cortesia: registra o convidado e emite um ingresso (com

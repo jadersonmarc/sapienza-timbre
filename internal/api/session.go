@@ -141,7 +141,7 @@ func (s *Server) patchSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "corpo inválido")
 		return
 	}
-	attendees, problem := checkout.NormalizeAttendees(req.Attendees, req.Quantity)
+	attendees, problem := checkout.NormalizeAttendees(req.Attendees, req.Quantity, req.HalfPriceQty)
 	if problem != "" {
 		writeErr(w, http.StatusBadRequest, problem)
 		return
@@ -292,7 +292,7 @@ func (s *Server) paySession(w http.ResponseWriter, r *http.Request, subjectID uu
 		// anterior); sem ela, vale o que já foi preenchido na etapa dos participantes.
 		attendees := sess.Items.Attendees
 		if len(body.Attendees) > 0 {
-			normalized, problem := checkout.NormalizeAttendees(body.Attendees, sess.Items.Quantity)
+			normalized, problem := checkout.NormalizeAttendees(body.Attendees, sess.Items.Quantity, sess.Items.HalfPriceQty)
 			if problem != "" {
 				return fmt.Errorf("%w: %s", checkout.ErrBadRequest, problem)
 			}

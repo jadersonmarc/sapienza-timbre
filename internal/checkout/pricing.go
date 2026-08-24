@@ -59,18 +59,35 @@ func unitPrices(ctx context.Context, tx pgx.Tx, lot catalog.Lot, req Request) ([
 	return out, nil
 }
 
-// applyHalfPrice soma os preços, cobrando metade nos `halfQty` primeiros ingressos
-// (meia-entrada = 50%).
-func applyHalfPrice(prices []int64, halfQty int) int64 {
+// applyHalfPrice soma os preços cobrando metade nas posições marcadas como meia-entrada.
+// A posição importa: com assentos de preços diferentes, a meia do lugar caro não vale o
+// mesmo que a do lugar barato — cobrar "as primeiras N" acertaria o total só por acaso.
+func applyHalfPrice(prices []int64, half []bool) int64 {
 	var total int64
 	for i, p := range prices {
-		if i < halfQty {
+		if i < len(half) && half[i] {
 			total += p / 2
 		} else {
 			total += p
 		}
 	}
 	return total
+}
+
+// halfMask diz quais ingressos são meia. Com ficha nominal, quem é meia está declarado por
+// participante; sem ficha, valem as primeiras `halfQty` posições (comportamento anterior).
+func halfMask(req Request) []bool {
+	mask := make([]bool, req.Quantity)
+	if len(req.Attendees) == len(mask) {
+		for i, a := range req.Attendees {
+			mask[i] = a.HalfPrice
+		}
+		return mask
+	}
+	for i := range mask {
+		mask[i] = i < req.HalfPriceQty
+	}
+	return mask
 }
 
 // applyCoupon valida o cupom (janela e limite de uso) e devolve o desconto.
@@ -113,18 +130,39 @@ func applyCoupon(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, code string,
 
 // insertOrderItems grava os itens: um por assento (com mapa) ou um agregado (pista).
 func insertOrderItems(ctx context.Context, tx pgx.Tx, orderID uuid.UUID, lot catalog.Lot, req Request, prices []int64) error {
+	mask := halfMask(req)
 	if len(req.SeatIDs) == 0 {
-		_, err := tx.Exec(ctx, `
-			INSERT INTO order_items (order_id, lot_id, quantity, unit_price_cents, half_price)
-			VALUES ($1,$2,$3,$4,$5)`,
-			orderID, lot.ID, req.Quantity, lot.PriceCents, req.HalfPriceQty > 0)
-		return err
+		// Pista: inteiras e meias em linhas separadas. Um item só, marcado "half_price",
+		// perderia QUANTAS entradas são meia — e quem lesse depois trataria o pedido
+		// inteiro como meia.
+		half := 0
+		for _, h := range mask {
+			if h {
+				half++
+			}
+		}
+		full := req.Quantity - half
+		if full > 0 {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO order_items (order_id, lot_id, quantity, unit_price_cents, half_price)
+				VALUES ($1,$2,$3,$4,false)`, orderID, lot.ID, full, lot.PriceCents); err != nil {
+				return err
+			}
+		}
+		if half > 0 {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO order_items (order_id, lot_id, quantity, unit_price_cents, half_price)
+				VALUES ($1,$2,$3,$4,true)`, orderID, lot.ID, half, lot.PriceCents/2); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	for i, seat := range req.SeatIDs {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO order_items (order_id, lot_id, seat_id, quantity, unit_price_cents, half_price)
 			VALUES ($1,$2,$3,1,$4,$5)`,
-			orderID, lot.ID, seat, prices[i], i < req.HalfPriceQty); err != nil {
+			orderID, lot.ID, seat, prices[i], mask[i]); err != nil {
 			return err
 		}
 	}

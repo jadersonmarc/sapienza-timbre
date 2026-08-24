@@ -279,3 +279,52 @@ func (s *Server) buyerAccount(ctx context.Context, subjectID uuid.UUID) (account
 	}
 	return a, nil
 }
+
+type resetPasswordReq struct {
+	Email    string `json:"email"`
+	Code     string `json:"code"`
+	Password string `json:"password"`
+}
+
+// resetPassword troca a senha com o código enviado por e-mail. Entrar pelo código sem
+// trocar a senha deixava a pessoa presa num ciclo: toda volta dependia de outro e-mail.
+// Provar posse do endereço é o que autoriza a troca — a senha antiga não é pedida
+// justamente porque quem chega aqui não a tem.
+func (s *Server) resetPassword(w http.ResponseWriter, r *http.Request) {
+	var body resetPasswordReq
+	if err := decode(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, "corpo inválido")
+		return
+	}
+	if len(body.Password) < minPasswordLen {
+		writeErr(w, http.StatusBadRequest, "a senha precisa de ao menos 8 caracteres")
+		return
+	}
+	email := normalizeEmail(body.Email)
+	ctx := r.Context()
+	if !s.consumeOTP(ctx, email, strings.TrimSpace(body.Code)) {
+		writeErr(w, http.StatusUnauthorized, "código inválido ou expirado")
+		return
+	}
+	hash, err := auth.HashPassword(body.Password)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "erro ao salvar a senha")
+		return
+	}
+	// O código veio para este endereço, então a conta existe e o e-mail está provado.
+	var subjectID uuid.UUID
+	if err := s.pool.QueryRow(ctx, `
+		UPDATE subjects SET password_hash=$2, email_verified_at=COALESCE(email_verified_at, now()), updated_at=now()
+		 WHERE lower(email)=$1 RETURNING id`, email, hash).Scan(&subjectID); err != nil {
+		// Conta inexistente devolve o mesmo erro do código errado: dizer "não há conta"
+		// aqui entregaria quem é cadastrado a quem só tem o e-mail.
+		writeErr(w, http.StatusUnauthorized, "código inválido ou expirado")
+		return
+	}
+	tok, err := s.auth.IssueBuyer(subjectID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "erro ao emitir sessão")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"token": tok, "subject_id": subjectID})
+}

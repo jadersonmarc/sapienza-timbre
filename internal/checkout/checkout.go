@@ -148,7 +148,7 @@ func finalizeOrder(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, pr
 	if err != nil {
 		return Result{}, err
 	}
-	subtotal := applyHalfPrice(unitPrices, req.HalfPriceQty)
+	subtotal := applyHalfPrice(unitPrices, halfMask(req))
 
 	// Cupom (limite de uso e validade).
 	couponID, discount, err := applyCoupon(ctx, tx, req.EventID, req.CouponCode, subtotal)
@@ -265,7 +265,7 @@ func Quote(ctx context.Context, tx pgx.Tx, producerID uuid.UUID, req Request) (p
 	if err != nil {
 		return pricing.Breakdown{}, err
 	}
-	subtotal := applyHalfPrice(unit, req.HalfPriceQty)
+	subtotal := applyHalfPrice(unit, halfMask(req))
 	_, discount, err := applyCoupon(ctx, tx, req.EventID, req.CouponCode, subtotal)
 	if err != nil {
 		return pricing.Breakdown{}, err

@@ -183,33 +183,8 @@ func (s *Server) verifyCode(w http.ResponseWriter, r *http.Request) {
 	code := strings.TrimSpace(body.Code)
 	ctx := r.Context()
 
-	var otpID uuid.UUID
-	var hash string
-	var attempts int
-	err := s.pool.QueryRow(ctx, `
-		SELECT id, code_hash, attempts FROM buyer_otps
-		 WHERE lower(email) = $1 AND consumed_at IS NULL AND expires_at > now()
-		 ORDER BY created_at DESC LIMIT 1`, email).Scan(&otpID, &hash, &attempts)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if !s.consumeOTP(ctx, email, code) {
 		writeErr(w, http.StatusUnauthorized, "código inválido ou expirado")
-		return
-	}
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "erro ao verificar")
-		return
-	}
-	if attempts >= otpMaxAttempts {
-		writeErr(w, http.StatusTooManyRequests, "muitas tentativas; solicite um novo código")
-		return
-	}
-	if !auth.ComparePassword(hash, code) {
-		_, _ = s.pool.Exec(ctx, `UPDATE buyer_otps SET attempts = attempts + 1 WHERE id = $1`, otpID)
-		writeErr(w, http.StatusUnauthorized, "código inválido ou expirado")
-		return
-	}
-	// Sucesso: consome o código, resolve o subject e vincula ingressos legados.
-	if _, err := s.pool.Exec(ctx, `UPDATE buyer_otps SET consumed_at = now() WHERE id = $1`, otpID); err != nil {
-		writeErr(w, http.StatusInternalServerError, "erro ao verificar")
 		return
 	}
 	subjectID, err := s.resolveSubjectByEmail(ctx, email)
@@ -230,6 +205,33 @@ func (s *Server) verifyCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"token": tok, "subject_id": subjectID})
+}
+
+// consumeOTP confere o código vigente do e-mail e o consome no acerto. Uso único: o mesmo
+// código não serve para entrar e depois trocar a senha. Erro e ausência de código dão o
+// mesmo resultado — quem chama devolve a mesma resposta para os dois.
+func (s *Server) consumeOTP(ctx context.Context, email, code string) bool {
+	var otpID uuid.UUID
+	var hash string
+	var attempts int
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, code_hash, attempts FROM buyer_otps
+		 WHERE lower(email) = $1 AND consumed_at IS NULL AND expires_at > now()
+		 ORDER BY created_at DESC LIMIT 1`, email).Scan(&otpID, &hash, &attempts)
+	if err != nil {
+		return false
+	}
+	if attempts >= otpMaxAttempts {
+		return false
+	}
+	if !auth.ComparePassword(hash, code) {
+		_, _ = s.pool.Exec(ctx, `UPDATE buyer_otps SET attempts = attempts + 1 WHERE id = $1`, otpID)
+		return false
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE buyer_otps SET consumed_at = now() WHERE id = $1`, otpID); err != nil {
+		return false
+	}
+	return true
 }
 
 // resolveSubjectByEmail acha o subject por e-mail (case-insensitive) ou cria um. subjects

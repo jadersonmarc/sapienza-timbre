@@ -109,6 +109,9 @@ type Attendee struct {
 	Name  string `json:"name"`
 	CPF   string `json:"cpf"`
 	Email string `json:"email,omitempty"`
+	// HalfPrice marca quem tem direito à meia. É por pessoa porque é a pessoa que
+	// apresenta o comprovante na porta — a meia não é do pedido, é de quem entra.
+	HalfPrice bool `json:"half_price,omitempty"`
 }
 
 // selectionChanged diz se o pedido difere do que a sessão já reserva. Assentos são

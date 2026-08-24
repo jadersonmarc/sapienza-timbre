@@ -16,12 +16,23 @@ var nonDigits = regexp.MustCompile(`\D`)
 // NormalizeAttendees limpa e valida a ficha nominal. Devolve a primeira pendência em texto
 // que o comprador entenda. A ficha é opcional; informada, precisa estar completa — nome
 // pela metade não serve para conferir documento na portaria.
-func NormalizeAttendees(in []Attendee, quantity int) ([]Attendee, string) {
+func NormalizeAttendees(in []Attendee, quantity, halfPriceQty int) ([]Attendee, string) {
 	if len(in) == 0 {
 		return nil, ""
 	}
 	if len(in) != quantity {
 		return nil, fmt.Sprintf("informe os dados dos %d participantes", quantity)
+	}
+	half := 0
+	for _, a := range in {
+		if a.HalfPrice {
+			half++
+		}
+	}
+	// A ficha diz QUEM tem meia; a seleção diz QUANTAS. Divergir seria cobrar de um e
+	// liberar outro na porta, então o pedido é recusado em vez de escolher sozinho.
+	if half != halfPriceQty {
+		return nil, fmt.Sprintf("marque exatamente %d participante(s) com meia-entrada", halfPriceQty)
 	}
 	out := make([]Attendee, 0, len(in))
 	seen := make(map[string]bool, len(in))
@@ -40,7 +51,10 @@ func NormalizeAttendees(in []Attendee, quantity int) ([]Attendee, string) {
 			return nil, "há CPF repetido entre os participantes"
 		}
 		seen[cpf] = true
-		out = append(out, Attendee{Name: name, CPF: cpf, Email: strings.ToLower(strings.TrimSpace(a.Email))})
+		out = append(out, Attendee{
+			Name: name, CPF: cpf, Email: strings.ToLower(strings.TrimSpace(a.Email)),
+			HalfPrice: a.HalfPrice,
+		})
 	}
 	return out, ""
 }
@@ -97,16 +111,38 @@ func applyAttendees(ctx context.Context, tx pgx.Tx, orderID uuid.UUID, tickets [
 	}
 	var list []Attendee
 	if err := json.Unmarshal(raw, &list); err != nil || len(list) == 0 {
-		return nil
+		// Pedido sem ficha (cortesia, passe, compra antiga): a meia ainda tem de constar
+		// no ingresso, senão a portaria não sabe de quem cobrar comprovante.
+		return markHalfPriceFromItems(ctx, tx, orderID, tickets)
 	}
 	for i, tid := range tickets {
 		if i >= len(list) {
 			break
 		}
 		if _, err := tx.Exec(ctx, `
-			UPDATE tickets SET attendee_name=$2, attendee_cpf=$3, attendee_email=$4, updated_at=now()
-			 WHERE id=$1`, tid, list[i].Name, list[i].CPF, nilIfEmpty(list[i].Email)); err != nil {
+			UPDATE tickets SET attendee_name=$2, attendee_cpf=$3, attendee_email=$4, half_price=$5, updated_at=now()
+			 WHERE id=$1`, tid, list[i].Name, list[i].CPF, nilIfEmpty(list[i].Email), list[i].HalfPrice); err != nil {
 			return fmt.Errorf("nomear ingresso: %w", err)
+		}
+	}
+	return nil
+}
+
+// markHalfPriceFromItems marca a meia nos ingressos a partir dos itens da ordem, quando não
+// há ficha nominal. Preserva o critério de quem pagou meia — os itens já guardam isso.
+func markHalfPriceFromItems(ctx context.Context, tx pgx.Tx, orderID uuid.UUID, tickets []uuid.UUID) error {
+	var halfCount int
+	if err := tx.QueryRow(ctx, `
+		SELECT COALESCE(sum(CASE WHEN half_price THEN quantity ELSE 0 END), 0)
+		  FROM order_items WHERE order_id=$1`, orderID).Scan(&halfCount); err != nil {
+		return err
+	}
+	for i, tid := range tickets {
+		if i >= halfCount {
+			break
+		}
+		if _, err := tx.Exec(ctx, `UPDATE tickets SET half_price=true, updated_at=now() WHERE id=$1`, tid); err != nil {
+			return fmt.Errorf("marcar meia-entrada: %w", err)
 		}
 	}
 	return nil
