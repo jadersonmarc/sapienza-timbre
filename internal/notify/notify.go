@@ -90,6 +90,8 @@ func (s *Service) Send(ctx context.Context, msg Message) error {
 		slog.Warn("notify: falha ao enfileirar", "kind", msg.Kind, "to", msg.To, "err", err)
 		return err
 	}
-	slog.Debug("notify: enfileirado", "kind", msg.Kind, "to", msg.To)
+	// Info, não Debug: sem esta linha, "não chegou" não distingue mensagem que nunca foi
+	// criada de mensagem que o provedor recusou. É uma linha por e-mail — volume trivial.
+	slog.Info("notify: enfileirado", "kind", msg.Kind, "to", msg.To)
 	return nil
 }

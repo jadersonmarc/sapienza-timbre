@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -116,6 +117,12 @@ func (s *Server) requestCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if recent >= otpMaxPerHour || sinceLast > 0 {
+		// A resposta é neutra para quem chama (§4.1), mas o operador precisa distinguir
+		// "barrado pelo limite" de "provedor falhou" — os dois são silêncio na caixa de
+		// entrada, e sem esta linha o diagnóstico vira adivinhação.
+		slog.Info("otp: pedido barrado pelo limite (nenhum e-mail enfileirado)",
+			"to", email, "na_ultima_hora", recent, "teto_por_hora", otpMaxPerHour,
+			"em_cooldown", sinceLast > 0, "cooldown_s", int(otpResendCooldown.Seconds()))
 		neutral()
 		return
 	}
