@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -49,10 +50,10 @@ func DefaultLimits() Limits {
 func LimitsFromEnv() Limits {
 	l := DefaultLimits()
 	secs := map[string]*time.Duration{
-		"TIMBRE_CHECKOUT_ANON_TTL":       &l.AnonTTL,
-		"TIMBRE_CHECKOUT_AUTH_TTL":       &l.AuthedTTL,
-		"TIMBRE_CHECKOUT_AUTH_GRACE":     &l.AuthGrace,
-		"TIMBRE_CHECKOUT_IP_RETENTION":   &l.IPRetention,
+		"TIMBRE_CHECKOUT_ANON_TTL":     &l.AnonTTL,
+		"TIMBRE_CHECKOUT_AUTH_TTL":     &l.AuthedTTL,
+		"TIMBRE_CHECKOUT_AUTH_GRACE":   &l.AuthGrace,
+		"TIMBRE_CHECKOUT_IP_RETENTION": &l.IPRetention,
 	}
 	for k, d := range secs {
 		if v := os.Getenv(k); v != "" {
@@ -98,6 +99,40 @@ type SessionItems struct {
 	HalfPriceQty int         `json:"half_price_qty"`
 	CouponCode   string      `json:"coupon_code"`
 	CampaignID   *uuid.UUID  `json:"campaign_id,omitempty"`
+	// Attendees é a ficha por ingresso (nominal). Fica no jsonb da sessão porque é
+	// rascunho até o pagamento: só vira dado de ingresso quando a compra confirma.
+	Attendees []Attendee `json:"attendees,omitempty"`
+}
+
+// Attendee é quem vai usar um ingresso. Pode ser o próprio comprador ou outra pessoa.
+type Attendee struct {
+	Name  string `json:"name"`
+	CPF   string `json:"cpf"`
+	Email string `json:"email,omitempty"`
+}
+
+// selectionChanged diz se o pedido difere do que a sessão já reserva. Assentos são
+// comparados como conjunto: a ordem em que foram clicados não é escolha.
+func selectionChanged(items SessionItems, req Request) bool {
+	if items.Quantity != req.Quantity || items.HalfPriceQty != req.HalfPriceQty {
+		return true
+	}
+	if !strings.EqualFold(items.CouponCode, req.CouponCode) {
+		return true
+	}
+	if len(items.SeatIDs) != len(req.SeatIDs) {
+		return true
+	}
+	have := make(map[uuid.UUID]bool, len(items.SeatIDs))
+	for _, id := range items.SeatIDs {
+		have[id] = true
+	}
+	for _, id := range req.SeatIDs {
+		if !have[id] {
+			return true
+		}
+	}
+	return false
 }
 
 // Session é uma sessão de checkout.
@@ -129,6 +164,11 @@ func CreateSession(ctx context.Context, tx pgx.Tx, req Request, anonToken, clien
 		existing, err := loadSession(ctx, tx, sessionCols+` WHERE anon_token=$1 AND event_id=$2
 			AND status IN ('open','authenticated') AND expires_at > now() LIMIT 1`, anonToken, req.EventID)
 		if err == nil {
+			// Retomar não pode significar ignorar a escolha nova: quem voltou e trocou a
+			// quantidade, os assentos ou o cupom pagaria a seleção antiga.
+			if selectionChanged(existing.Items, req) {
+				return UpdateSession(ctx, tx, existing.ID, req, limits)
+			}
 			return existing, nil
 		} else if !errors.Is(err, ErrSessionNotFound) {
 			return Session{}, err
@@ -200,7 +240,9 @@ func UpdateSession(ctx context.Context, tx pgx.Tx, sessionID uuid.UUID, req Requ
 	if err := lockSession(ctx, tx, sessionID, &s); err != nil {
 		return Session{}, err
 	}
-	if s.Status != "open" {
+	// Vinculada ao comprador ainda não é paga: trocar a seleção depois de entrar na conta
+	// é normal e não pode obrigar a recomeçar.
+	if s.Status != "open" && s.Status != "authenticated" {
 		return Session{}, ErrSessionNotOpen
 	}
 	if err := releaseSessionReservation(ctx, tx, s); err != nil {
@@ -213,9 +255,20 @@ func UpdateSession(ctx context.Context, tx pgx.Tx, sessionID uuid.UUID, req Requ
 	items := SessionItems{
 		LotID: lot.ID, Quantity: req.Quantity, SeatIDs: req.SeatIDs,
 		HalfPriceQty: req.HalfPriceQty, CouponCode: req.CouponCode, CampaignID: req.CampaignID,
+		Attendees: req.Attendees,
+	}
+	// Mudar a quantidade invalida fichas sobrando; as que couberem seguem preenchidas.
+	if len(items.Attendees) > items.Quantity {
+		items.Attendees = items.Attendees[:items.Quantity]
 	}
 	raw, _ := json.Marshal(items)
-	exp := time.Now().Add(limits.AnonTTL)
+	// Sessão já vinculada mantém o TTL longo — rebaixá-la ao TTL anônimo puniria quem
+	// entrou na conta.
+	ttl := limits.AnonTTL
+	if s.Status == "authenticated" {
+		ttl = limits.AuthedTTL
+	}
+	exp := time.Now().Add(ttl)
 	if _, err := tx.Exec(ctx, `
 		UPDATE checkout_sessions SET items=$2, hold_id=$3, expires_at=$4, updated_at=now() WHERE id=$1`,
 		sessionID, raw, holdID, exp); err != nil {

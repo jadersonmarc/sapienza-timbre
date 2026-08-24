@@ -68,6 +68,8 @@ type Request struct {
 	BuyerEmail   string      `json:"buyer_email"`
 	BuyerCPF     string      `json:"buyer_cpf"`
 	BuyerPhone   string      `json:"buyer_phone"`
+	// Attendees é a ficha nominal por ingresso (len == Quantity quando informada).
+	Attendees []Attendee `json:"attendees,omitempty"`
 	// SubjectID identifica o comprador autenticado (preenchido pelo handler a partir do
 	// token de comprador; nunca vem do corpo).
 	SubjectID uuid.UUID `json:"-"`
@@ -178,10 +180,10 @@ func finalizeOrder(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, pr
 	}
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO orders (event_id, buyer_subject_id, buyer_email, buyer_cpf, coupon_id, campaign_id, total_cents,
-			face_cents, platform_fee_cents, processing_fee_cents, status)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending') RETURNING id`,
+			face_cents, platform_fee_cents, processing_fee_cents, status, attendees)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending',$11) RETURNING id`,
 		req.EventID, subjectID, nilIfEmpty(req.BuyerEmail), nilIfEmpty(req.BuyerCPF), couponID, req.CampaignID,
-		bd.TotalCents, bd.FaceCents, bd.PlatformFeeCents, bd.ProcessingCents,
+		bd.TotalCents, bd.FaceCents, bd.PlatformFeeCents, bd.ProcessingCents, attendeesJSON(req.Attendees),
 	).Scan(&orderID); err != nil {
 		return Result{}, fmt.Errorf("criar ordem: %w", err)
 	}
@@ -393,6 +395,13 @@ func ConfirmPayment(ctx context.Context, tx pgx.Tx, em Emitter, producerID uuid.
 		}
 	default:
 		return nil, holdErr
+	}
+
+	// Nomeia os ingressos com a ficha da ordem. A ficha é posicional (uma por ingresso, na
+	// ordem em que foram informados) e opcional: ingresso sem ficha segue válido, com o QR
+	// respondendo pelo acesso.
+	if err := applyAttendees(ctx, tx, orderID, tickets); err != nil {
+		return nil, err
 	}
 
 	// Confirma pagamento e ordem; consome o cupom.

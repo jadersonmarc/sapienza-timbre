@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/google/uuid"
@@ -22,6 +23,9 @@ func sessionPublic(s checkout.Session) map[string]any {
 			"lot_id": s.Items.LotID, "quantity": s.Items.Quantity,
 			"seat_ids": s.Items.SeatIDs, "half_price_qty": s.Items.HalfPriceQty,
 			"coupon_code": s.Items.CouponCode,
+			// A ficha volta para o cliente reidratar o formulário: quem recarregou a
+			// página no meio do preenchimento não redigita tudo.
+			"attendees": s.Items.Attendees,
 		},
 	}
 }
@@ -137,6 +141,12 @@ func (s *Server) patchSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "corpo inválido")
 		return
 	}
+	attendees, problem := checkout.NormalizeAttendees(req.Attendees, req.Quantity)
+	if problem != "" {
+		writeErr(w, http.StatusBadRequest, problem)
+		return
+	}
+	req.Attendees = attendees
 	producerID, err := s.producerOfSession(r.Context(), id)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "sessão não encontrada")
@@ -218,9 +228,10 @@ func (s *Server) authStarted(w http.ResponseWriter, r *http.Request) {
 }
 
 type paySessionReq struct {
-	Method       string `json:"method"`
-	Installments int    `json:"installments"`
-	BuyerCPF     string `json:"buyer_cpf"`
+	Method       string              `json:"method"`
+	Installments int                 `json:"installments"`
+	BuyerCPF     string              `json:"buyer_cpf"`
+	Attendees    []checkout.Attendee `json:"attendees"`
 }
 
 // paySession cria a ordem/pagamento a partir da reserva da sessão. Só paga sessão vinculada
@@ -277,10 +288,20 @@ func (s *Server) paySession(w http.ResponseWriter, r *http.Request, subjectID uu
 		if cpf == "" {
 			cpf = body.BuyerCPF
 		}
+		// A ficha do pagamento vence a que a sessão guardava (é a tela imediatamente
+		// anterior); sem ela, vale o que já foi preenchido na etapa dos participantes.
+		attendees := sess.Items.Attendees
+		if len(body.Attendees) > 0 {
+			normalized, problem := checkout.NormalizeAttendees(body.Attendees, sess.Items.Quantity)
+			if problem != "" {
+				return fmt.Errorf("%w: %s", checkout.ErrBadRequest, problem)
+			}
+			attendees = normalized
+		}
 		req := checkout.Request{
 			Method: body.Method, Installments: body.Installments,
 			SubjectID: subjectID, BuyerName: acc.name, BuyerEmail: email,
-			BuyerCPF: cpf, BuyerPhone: acc.phone,
+			BuyerCPF: cpf, BuyerPhone: acc.phone, Attendees: attendees,
 		}
 		if body.BuyerCPF != "" {
 			if _, e := tx.Exec(r.Context(), `UPDATE public.subjects SET cpf=$2 WHERE id=$1`, subjectID, body.BuyerCPF); e != nil {
