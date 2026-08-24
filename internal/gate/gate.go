@@ -51,6 +51,12 @@ type Result struct {
 	TicketID uuid.UUID `json:"ticket_id"`
 	Verdict  Verdict   `json:"verdict"`
 	Seat     SeatInfo  `json:"seat"`
+	// Attendee é o nome de quem deveria estar usando o ingresso — é o que a portaria
+	// confere com o documento. Vazio em ingresso emitido antes da ficha nominal, e nesse
+	// caso a entrada segue valendo pelo QR.
+	Attendee string `json:"attendee,omitempty"`
+	// HalfPrice avisa que essa entrada exige comprovação de meia na porta.
+	HalfPrice bool `json:"half_price,omitempty"`
 }
 
 // ValidateToken confere a assinatura (offline, sem banco) e devolve o payload.
@@ -71,7 +77,12 @@ func Checkin(ctx context.Context, tx pgx.Tx, v *ticketing.Verifier, producerID u
 	var status string
 	var eventID uuid.UUID
 	var seatID, ownerSubject, ownerWallet *uuid.UUID
-	err = tx.QueryRow(ctx, `SELECT status, event_id, seat_id, owner_subject_id, owner_wallet_id FROM tickets WHERE id=$1`, payload.TicketID).Scan(&status, &eventID, &seatID, &ownerSubject, &ownerWallet)
+	var attendee *string
+	var halfPrice bool
+	err = tx.QueryRow(ctx, `
+		SELECT status, event_id, seat_id, owner_subject_id, owner_wallet_id, attendee_name, half_price
+		  FROM tickets WHERE id=$1`, payload.TicketID).
+		Scan(&status, &eventID, &seatID, &ownerSubject, &ownerWallet, &attendee, &halfPrice)
 	if errors.Is(err, pgx.ErrNoRows) {
 		res.Verdict = Unknown
 		return res, nil
@@ -92,6 +103,10 @@ func Checkin(ctx context.Context, tx pgx.Tx, v *ticketing.Verifier, producerID u
 		res.Verdict = Invalid
 		return res, nil
 	}
+	if attendee != nil {
+		res.Attendee = *attendee
+	}
+	res.HalfPrice = halfPrice
 	if seatID != nil {
 		res.Seat, err = seatInfo(ctx, tx, *seatID)
 		if err != nil {
