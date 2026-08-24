@@ -67,6 +67,7 @@ type Request struct {
 	BuyerName    string      `json:"buyer_name"`
 	BuyerEmail   string      `json:"buyer_email"`
 	BuyerCPF     string      `json:"buyer_cpf"`
+	BuyerPhone   string      `json:"buyer_phone"`
 	// SubjectID identifica o comprador autenticado (preenchido pelo handler a partir do
 	// token de comprador; nunca vem do corpo).
 	SubjectID uuid.UUID `json:"-"`
@@ -83,6 +84,8 @@ type Result struct {
 	Method              string    `json:"method"`
 	AsaasRef            string    `json:"asaas_ref"`
 	PixCode             string    `json:"pix_code,omitempty"`
+	// InvoiceURL leva o comprador à página de pagamento do gateway (caminho do cartão).
+	InvoiceURL string `json:"invoice_url,omitempty"`
 }
 
 type splitInfo struct {
@@ -213,7 +216,8 @@ func finalizeOrder(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, pr
 	}
 	charge, err := gw.CreateCharge(ctx, payment.ChargeRequest{
 		OrderID: orderID.String(), Method: req.Method, AmountCents: bd.TotalCents, Installments: installments,
-		BuyerName: req.BuyerName, BuyerEmail: req.BuyerEmail, BuyerCPF: req.BuyerCPF, Split: splitItems,
+		BuyerName: req.BuyerName, BuyerEmail: req.BuyerEmail, BuyerCPF: req.BuyerCPF,
+		BuyerPhone: req.BuyerPhone, Split: splitItems,
 	})
 	if err != nil {
 		return Result{}, fmt.Errorf("criar cobrança: %w", err)
@@ -234,6 +238,7 @@ func finalizeOrder(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, pr
 		OrderID: orderID, PaymentID: paymentID, AmountCents: bd.TotalCents,
 		FaceCents: bd.FaceCents, ConvenienceFeeCents: bd.ConvenienceFeeCents,
 		Method: req.Method, AsaasRef: charge.AsaasRef, PixCode: charge.PixCode,
+		InvoiceURL: charge.InvoiceURL,
 	}, nil
 }
 

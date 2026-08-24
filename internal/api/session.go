@@ -218,9 +218,9 @@ func (s *Server) authStarted(w http.ResponseWriter, r *http.Request) {
 }
 
 type paySessionReq struct {
-	Method      string `json:"method"`
-	Installments int   `json:"installments"`
-	BuyerCPF    string `json:"buyer_cpf"`
+	Method       string `json:"method"`
+	Installments int    `json:"installments"`
+	BuyerCPF     string `json:"buyer_cpf"`
 }
 
 // paySession cria a ordem/pagamento a partir da reserva da sessão. Só paga sessão vinculada
@@ -241,11 +241,22 @@ func (s *Server) paySession(w http.ResponseWriter, r *http.Request, subjectID uu
 		writeErr(w, http.StatusNotFound, "sessão não encontrada")
 		return
 	}
-	email, err := s.buyerEmail(r.Context(), subjectID)
+	// Os dados da cobrança vêm da CONTA, não do corpo: quem paga é o cadastro autenticado,
+	// e é dele que saem nome, documento e telefone do cliente no gateway.
+	acc, err := s.buyerAccount(r.Context(), subjectID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if acc.email == "" {
+		writeErr(w, http.StatusBadRequest, "conta sem e-mail")
+		return
+	}
+	if acc.cpf == "" && body.BuyerCPF == "" {
+		writeErr(w, http.StatusBadRequest, "complete o cadastro (CPF) antes de pagar")
+		return
+	}
+	email := acc.email
 	var res checkout.Result
 	err = s.withTenant(r.Context(), producerID, func(tx pgx.Tx) error {
 		sess, e := checkout.GetSession(r.Context(), tx, id)
@@ -262,9 +273,14 @@ func (s *Server) paySession(w http.ResponseWriter, r *http.Request, subjectID uu
 		if e != nil {
 			return e
 		}
+		cpf := acc.cpf
+		if cpf == "" {
+			cpf = body.BuyerCPF
+		}
 		req := checkout.Request{
 			Method: body.Method, Installments: body.Installments,
-			SubjectID: subjectID, BuyerEmail: email, BuyerCPF: body.BuyerCPF,
+			SubjectID: subjectID, BuyerName: acc.name, BuyerEmail: email,
+			BuyerCPF: cpf, BuyerPhone: acc.phone,
 		}
 		if body.BuyerCPF != "" {
 			if _, e := tx.Exec(r.Context(), `UPDATE public.subjects SET cpf=$2 WHERE id=$1`, subjectID, body.BuyerCPF); e != nil {

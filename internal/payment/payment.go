@@ -30,6 +30,7 @@ type ChargeRequest struct {
 	BuyerName    string
 	BuyerEmail   string
 	BuyerCPF     string
+	BuyerPhone   string
 	DueDate      time.Time
 	Split        []SplitItem // divisão automática no ato da venda
 }
@@ -39,6 +40,10 @@ type Charge struct {
 	AsaasRef string
 	Status   string
 	PixCode  string // "copia e cola" do Pix (quando method = pix)
+	// InvoiceURL é a página de pagamento do gateway. É por ela que o cartão é pago: os
+	// dados do cartão nunca passam por aqui, então o comprador termina a compra no
+	// ambiente do gateway.
+	InvoiceURL string
 }
 
 // WebhookEvent é o evento decodificado do webhook do gateway. A idempotência é do

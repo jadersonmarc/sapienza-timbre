@@ -501,7 +501,7 @@ func TestNoMpcOrExportRoutes(t *testing.T) {
 	if code, _ := do(t, ts, "POST", "/api/v1/tickets/"+tid.String()+"/export", bearer(owner), nil); code != http.StatusNotFound {
 		t.Fatalf("export deveria ser 404, veio %d", code)
 	}
-	if code, _ := do(t, ts, "POST", "/api/v1/public/me/tickets/"+tid.String()+"/export", bearer(verifyOTP(t, ts, pool, "buy@attest.com", "123456")), nil); code != http.StatusNotFound {
+	if code, _ := do(t, ts, "POST", "/api/v1/public/me/tickets/"+tid.String()+"/export", bearer(buyerToken(t, ts, "buy@attest.com")), nil); code != http.StatusNotFound {
 		t.Fatalf("export comprador deveria ser 404, veio %d", code)
 	}
 }

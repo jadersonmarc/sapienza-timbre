@@ -607,6 +607,7 @@ func TestSessionFunnelInOverview(t *testing.T) {
 		t.Fatalf("funil inesperado: %v", funnel)
 	}
 }
+
 // TestSessionResponseNoClientIP: nenhuma resposta de API expõe client_ip.
 func TestSessionResponseNoClientIP(t *testing.T) {
 	ts, _ := setup(t)
@@ -692,7 +693,7 @@ func TestFullPurchaseWithNewAccount(t *testing.T) {
 	id, _ := createSession(t, ts, map[string]any{"event_id": eventID, "quantity": 1})
 
 	// Conta criada no meio do fluxo (OTP).
-	ana := bearer(verifyOTP(t, ts, pool, "mid@x.com", "123456"))
+	ana := bearer(buyerToken(t, ts, "mid@x.com"))
 
 	// Bind + pay.
 	body := bindAndPay(t, ts, id, ana, "pix")

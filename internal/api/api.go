@@ -141,7 +141,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/public/config", s.publicConfig)
 	mux.HandleFunc("GET /api/v1/public/checkout/orders/{orderId}/status", s.checkoutStatus)
 	mux.HandleFunc("GET /api/v1/public/me/tickets", s.buyerAuthed(s.myTickets))
+	mux.HandleFunc("POST /api/v1/public/auth/register", s.rateLimited("auth-register", s.register))
+	mux.HandleFunc("POST /api/v1/public/auth/login", s.rateLimited("auth-login", s.buyerLogin))
 	mux.HandleFunc("GET /api/v1/public/me", s.buyerAuthed(s.buyerMe))
+	mux.HandleFunc("PATCH /api/v1/public/me", s.buyerAuthed(s.updateMe))
 	mux.HandleFunc("DELETE /api/v1/public/me", s.buyerAuthed(s.deleteMe))
 	// Onda 2: posse do comprador (custódia de plataforma) — transferência e revenda.
 	mux.HandleFunc("POST /api/v1/public/me/tickets/{id}/transfer", s.buyerAuthed(s.buyerTransfer))

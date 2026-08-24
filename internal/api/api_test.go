@@ -93,9 +93,69 @@ func bearer(token string) map[string]string {
 
 // buyer autentica um comprador via OTP (código fixo) e devolve o header Bearer da sessão.
 // Compra agora exige cadastro — os testes passam esse header no checkout/buy.
+// buyer cria a conta do comprador pelo CADASTRO (nome, CPF, telefone, nascimento, senha) —
+// o caminho comercial. Compra exige cadastro completo, então este é o helper padrão.
 func buyer(t *testing.T, ts *httptest.Server, pool *pgxpool.Pool, email string) map[string]string {
 	t.Helper()
-	return bearer(verifyOTP(t, ts, pool, email, "123456"))
+	return bearer(buyerToken(t, ts, email))
+}
+
+// buyerToken devolve o token de um comprador cadastrado. Idempotente: o banco de teste é
+// compartilhado entre casos e uma conta por e-mail é regra agora, então e-mail repetido
+// entra pela senha em vez de falhar.
+func buyerToken(t *testing.T, ts *httptest.Server, email string) string {
+	t.Helper()
+	const pwd = "senha-forte-1"
+	code, body := do(t, ts, "POST", "/api/v1/public/auth/register", nil, map[string]any{
+		"name": "Fulano de Tal", "email": email, "cpf": testCPF(email),
+		"phone": "31988887777", "birth_date": "1990-05-20", "password": pwd,
+	})
+	if code == http.StatusConflict {
+		code, body = do(t, ts, "POST", "/api/v1/public/auth/login", nil, map[string]any{
+			"email": email, "password": pwd,
+		})
+		if code != http.StatusOK {
+			t.Fatalf("login: %d %v", code, body)
+		}
+	} else if code != http.StatusCreated {
+		t.Fatalf("register: %d %v", code, body)
+	}
+	tok, _ := body["token"].(string)
+	if tok == "" {
+		t.Fatalf("cadastro sem token: %v", body)
+	}
+	return tok
+}
+
+// testCPF gera um CPF válido (dígitos verificadores corretos) determinístico por e-mail:
+// cada comprador de teste precisa do seu, e um número fixo esconderia troca de identidade.
+func testCPF(seed string) string {
+	base := make([]byte, 9)
+	h := 7
+	for i, c := range []byte(seed) {
+		h = (h*31 + int(c)) % 1000000007
+		_ = i
+	}
+	for i := range base {
+		base[i] = byte('0' + (h/(i+1)+i*7)%10)
+	}
+	// Dígitos repetidos são inválidos; força variação no primeiro.
+	if base[0] == base[1] {
+		base[0] = '0' + (base[0]-'0'+3)%10
+	}
+	digits := string(base)
+	for _, pos := range []int{9, 10} {
+		sum := 0
+		for i := 0; i < pos; i++ {
+			sum += int(digits[i]-'0') * (pos + 1 - i)
+		}
+		d := (sum * 10) % 11
+		if d == 10 {
+			d = 0
+		}
+		digits += string(rune('0' + d))
+	}
+	return digits
 }
 
 // courtesyCategoryID devolve o id da categoria de cortesia (seedada) pelo slug.

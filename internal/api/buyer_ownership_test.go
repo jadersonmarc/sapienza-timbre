@@ -9,7 +9,7 @@ import (
 // e-mail; a posse migra no ticket_directory — o remetente deixa de ver, o destinatário
 // passa a ver após entrar com o e-mail de destino.
 func TestBuyerTransferMovesOwnership(t *testing.T) {
-	ts, pool := setup(t)
+	ts, _ := setup(t)
 	_, owner := createProducer(t, ts, "CasaTransf", "owner@transf.com", "senha1234")
 	eventID := createEvent(t, ts, owner, "Show Transf", "shows")
 	_ = createLot(t, ts, owner, eventID, "Lote 1", 5000, 100, 0)
@@ -17,7 +17,7 @@ func TestBuyerTransferMovesOwnership(t *testing.T) {
 		t.Fatalf("publish: %d", code)
 	}
 	// Ana entra ANTES de comprar (a conta é exigida no pagamento, pela sessão).
-	ana := verifyOTP(t, ts, pool, "ana@x.com", "111111")
+	ana := buyerToken(t, ts, "ana@x.com")
 	res := buyViaSession(t, ts, bearer(ana), map[string]any{"event_id": eventID, "quantity": 1}, "pix")
 	confirmWebhook(t, ts, res["asaas_ref"].(string))
 
@@ -40,7 +40,7 @@ func TestBuyerTransferMovesOwnership(t *testing.T) {
 	if len(asSlice(anaAfter["tickets"])) != 0 {
 		t.Fatalf("após transferir, Ana não deveria ver o ingresso: %v", anaAfter["tickets"])
 	}
-	bruno := verifyOTP(t, ts, pool, "bruno@x.com", "222222")
+	bruno := buyerToken(t, ts, "bruno@x.com")
 	_, brunoMine := do(t, ts, "GET", "/api/v1/public/me/tickets", bearer(bruno), nil)
 	if len(asSlice(brunoMine["tickets"])) != 1 {
 		t.Fatalf("Bruno deveria ver o ingresso transferido, veio %v", brunoMine["tickets"])
@@ -50,14 +50,14 @@ func TestBuyerTransferMovesOwnership(t *testing.T) {
 // TestBuyerReissue (§3.2): o comprador reemite o próprio ingresso; sai um ticket_id novo e
 // o anterior é queimado.
 func TestBuyerReissue(t *testing.T) {
-	ts, pool := setup(t)
+	ts, _ := setup(t)
 	_, owner := createProducer(t, ts, "CasaReissue", "owner@reissue.com", "senha1234")
 	eventID := createEvent(t, ts, owner, "Show Reissue", "shows")
 	_ = createLot(t, ts, owner, eventID, "Lote 1", 5000, 100, 0)
 	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
 		t.Fatalf("publish: %d", code)
 	}
-	clara := verifyOTP(t, ts, pool, "clara@x.com", "555555")
+	clara := buyerToken(t, ts, "clara@x.com")
 	res := buyViaSession(t, ts, bearer(clara), map[string]any{"event_id": eventID, "quantity": 1}, "pix")
 	confirmWebhook(t, ts, res["asaas_ref"].(string))
 	_, mine := do(t, ts, "GET", "/api/v1/public/me/tickets", bearer(clara), nil)
@@ -81,21 +81,21 @@ func TestBuyerReissue(t *testing.T) {
 
 // TestBuyerTransferRejectsNonOwner: não-dono não transfere ingresso alheio (403).
 func TestBuyerTransferRejectsNonOwner(t *testing.T) {
-	ts, pool := setup(t)
+	ts, _ := setup(t)
 	_, owner := createProducer(t, ts, "CasaTransf2", "owner@transf2.com", "senha1234")
 	eventID := createEvent(t, ts, owner, "Show Transf2", "shows")
 	_ = createLot(t, ts, owner, eventID, "Lote 1", 5000, 100, 0)
 	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
 		t.Fatalf("publish: %d", code)
 	}
-	dona := verifyOTP(t, ts, pool, "dona@x.com", "333333")
+	dona := buyerToken(t, ts, "dona@x.com")
 	res := buyViaSession(t, ts, bearer(dona), map[string]any{"event_id": eventID, "quantity": 1}, "pix")
 	confirmWebhook(t, ts, res["asaas_ref"].(string))
 	_, mine := do(t, ts, "GET", "/api/v1/public/me/tickets", bearer(dona), nil)
 	ticketID := asSlice(mine["tickets"])[0].(map[string]any)["ticket_id"].(string)
 
 	// Estranho (outro subject) tenta transferir o ingresso da Dona.
-	estranho := verifyOTP(t, ts, pool, "estranho@x.com", "444444")
+	estranho := buyerToken(t, ts, "estranho@x.com")
 	if code, _ := do(t, ts, "POST", "/api/v1/public/me/tickets/"+ticketID+"/transfer", bearer(estranho),
 		map[string]any{"to_email": "ladrao@x.com"}); code != http.StatusForbidden {
 		t.Fatalf("não-dono transferindo: esperava 403, veio %d", code)

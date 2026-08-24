@@ -85,9 +85,13 @@ func (g *AsaasGateway) CreateCharge(ctx context.Context, req ChargeRequest) (Cha
 	var cust struct {
 		ID string `json:"id"`
 	}
-	if err := g.do(ctx, http.MethodPost, "/v3/customers", map[string]any{
+	customer := map[string]any{
 		"name": nonEmpty(req.BuyerName, "Comprador"), "email": req.BuyerEmail, "cpfCnpj": req.BuyerCPF,
-	}, &cust); err != nil {
+	}
+	if req.BuyerPhone != "" {
+		customer["mobilePhone"] = req.BuyerPhone
+	}
+	if err := g.do(ctx, http.MethodPost, "/v3/customers", customer, &cust); err != nil {
 		return Charge{}, fmt.Errorf("criar cliente asaas: %w", err)
 	}
 
@@ -120,14 +124,15 @@ func (g *AsaasGateway) CreateCharge(ctx context.Context, req ChargeRequest) (Cha
 	}
 
 	var pay struct {
-		ID     string `json:"id"`
-		Status string `json:"status"`
+		ID         string `json:"id"`
+		Status     string `json:"status"`
+		InvoiceURL string `json:"invoiceUrl"`
 	}
 	if err := g.do(ctx, http.MethodPost, "/v3/payments", payload, &pay); err != nil {
 		return Charge{}, fmt.Errorf("criar cobrança asaas: %w", err)
 	}
 
-	c := Charge{AsaasRef: pay.ID, Status: pay.Status}
+	c := Charge{AsaasRef: pay.ID, Status: pay.Status, InvoiceURL: pay.InvoiceURL}
 	if req.Method == MethodPix {
 		var qr struct {
 			Payload string `json:"payload"`

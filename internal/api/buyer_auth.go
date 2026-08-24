@@ -64,15 +64,25 @@ func (s *Server) buyerEmail(ctx context.Context, subjectID uuid.UUID) (string, e
 // buyerMe devolve a sessão do comprador (subject + e-mail + dados da conta). O web usa para
 // decidir entre "entre para comprar" e o formulário de compra — compra exige cadastro.
 func (s *Server) buyerMe(w http.ResponseWriter, r *http.Request, subjectID uuid.UUID) {
-	var email, name, cpf *string
-	if err := s.pool.QueryRow(r.Context(), `SELECT email, display_name, cpf FROM subjects WHERE id=$1`, subjectID).
-		Scan(&email, &name, &cpf); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	var email, name, cpf, phone *string
+	var birth *time.Time
+	var verifiedAt *time.Time
+	if err := s.pool.QueryRow(r.Context(), `
+		SELECT email, display_name, cpf, phone, birth_date, email_verified_at
+		  FROM subjects WHERE id=$1`, subjectID).
+		Scan(&email, &name, &cpf, &phone, &birth, &verifiedAt); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	birthStr := ""
+	if birth != nil {
+		birthStr = birth.Format("2006-01-02")
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"subject_id": subjectID,
 		"email":      ptrOrEmpty(email), "name": ptrOrEmpty(name), "cpf": ptrOrEmpty(cpf),
+		"phone": ptrOrEmpty(phone), "birth_date": birthStr,
+		"email_verified": verifiedAt != nil,
 	})
 }
 
@@ -233,7 +243,10 @@ func (s *Server) resolveSubjectByEmail(ctx context.Context, email string) (uuid.
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return uuid.Nil, err
 	}
-	if err := s.pool.QueryRow(ctx, `INSERT INTO subjects (email) VALUES ($1) RETURNING id`, email).Scan(&id); err != nil {
+	if err := s.pool.QueryRow(ctx, `INSERT INTO subjects (email) VALUES ($1)
+		 ON CONFLICT (lower(email)) WHERE email IS NOT NULL
+		 DO UPDATE SET updated_at = now()
+		 RETURNING id`, email).Scan(&id); err != nil {
 		return uuid.Nil, err
 	}
 	return id, nil

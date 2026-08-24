@@ -121,7 +121,11 @@ func BuyListing(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, produ
 
 	// Carteira invisível do comprador (MPC real vem com a identidade; aqui um registro).
 	var subjectID, walletID uuid.UUID
-	if err := tx.QueryRow(ctx, `INSERT INTO subjects (email) VALUES ($1) RETURNING id`, nilStr(buyerEmail)).Scan(&subjectID); err != nil {
+	// Uma conta por e-mail: quem já comprou antes reusa a conta em vez de ganhar outra.
+	if err := tx.QueryRow(ctx, `INSERT INTO subjects (email) VALUES ($1)
+		 ON CONFLICT (lower(email)) WHERE email IS NOT NULL
+		 DO UPDATE SET updated_at = now()
+		 RETURNING id`, nilStr(buyerEmail)).Scan(&subjectID); err != nil {
 		return BuyResult{}, err
 	}
 	if err := tx.QueryRow(ctx, `INSERT INTO wallets (subject_id, address) VALUES ($1,$2) RETURNING id`, subjectID, "mpc:"+subjectID.String()).Scan(&walletID); err != nil {

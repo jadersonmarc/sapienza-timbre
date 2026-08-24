@@ -54,7 +54,10 @@ func resolveSubjectByEmailTx(ctx context.Context, tx pgx.Tx, email string) (uuid
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return uuid.Nil, err
 	}
-	err = tx.QueryRow(ctx, `INSERT INTO subjects (email) VALUES ($1) RETURNING id`, email).Scan(&id)
+	err = tx.QueryRow(ctx, `INSERT INTO subjects (email) VALUES ($1)
+		 ON CONFLICT (lower(email)) WHERE email IS NOT NULL
+		 DO UPDATE SET updated_at = now()
+		 RETURNING id`, email).Scan(&id)
 	return id, err
 }
 

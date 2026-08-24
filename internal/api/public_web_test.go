@@ -129,7 +129,7 @@ func TestBuyerMustBeAuthedToBuy(t *testing.T) {
 		t.Fatalf("convidado não deve existir: esperava 404, veio %d", code)
 	}
 
-	token := verifyOTP(t, ts, pool, "convidada@x.com", "123456")
+	token := buyerToken(t, ts, "convidada@x.com")
 	res := buyViaSession(t, ts, bearer(token), map[string]any{
 		"event_id": eventID, "quantity": 1,
 	}, "pix")
