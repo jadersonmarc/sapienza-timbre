@@ -70,6 +70,10 @@ type Request struct {
 	BuyerPhone   string      `json:"buyer_phone"`
 	// Attendees é a ficha nominal por ingresso (len == Quantity quando informada).
 	Attendees []Attendee `json:"attendees,omitempty"`
+	// Card/Holder/RemoteIP: cartão transparente. Só trafegam; nada é gravado.
+	Card     *payment.CardData   `json:"-"`
+	Holder   *payment.HolderData `json:"-"`
+	RemoteIP string              `json:"-"`
 	// SubjectID identifica o comprador autenticado (preenchido pelo handler a partir do
 	// token de comprador; nunca vem do corpo).
 	SubjectID uuid.UUID `json:"-"`
@@ -220,6 +224,7 @@ func finalizeOrder(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, pr
 		OrderID: orderID.String(), Method: req.Method, AmountCents: bd.TotalCents, Installments: installments,
 		BuyerName: req.BuyerName, BuyerEmail: req.BuyerEmail, BuyerCPF: req.BuyerCPF,
 		BuyerPhone: req.BuyerPhone, Split: splitItems,
+		Card: req.Card, Holder: req.Holder, RemoteIP: req.RemoteIP,
 	})
 	if err != nil {
 		return Result{}, fmt.Errorf("criar cobrança: %w", err)

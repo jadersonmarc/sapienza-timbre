@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/jadersonmarc/sapienza-timbre/internal/checkout"
+	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
 	"github.com/jadersonmarc/sapienza-timbre/internal/store"
 )
 
@@ -232,6 +234,21 @@ type paySessionReq struct {
 	Installments int                 `json:"installments"`
 	BuyerCPF     string              `json:"buyer_cpf"`
 	Attendees    []checkout.Attendee `json:"attendees"`
+	// Card é o cartão digitado na nossa tela (checkout transparente). Segue para o
+	// gateway nesta requisição e não é gravado nem registrado em log.
+	Card *cardReq `json:"card"`
+}
+
+// cardReq são os dados do cartão e do titular. O gateway exige CEP e número do endereço
+// para antifraude — por isso eles aparecem aqui e não no cadastro.
+type cardReq struct {
+	HolderName    string `json:"holder_name"`
+	Number        string `json:"number"`
+	ExpiryMonth   string `json:"expiry_month"`
+	ExpiryYear    string `json:"expiry_year"`
+	CCV           string `json:"ccv"`
+	PostalCode    string `json:"postal_code"`
+	AddressNumber string `json:"address_number"`
 }
 
 // paySession cria a ordem/pagamento a partir da reserva da sessão. Só paga sessão vinculada
@@ -311,6 +328,13 @@ func (s *Server) paySession(w http.ResponseWriter, r *http.Request, subjectID uu
 			SubjectID: subjectID, BuyerName: acc.name, BuyerEmail: email,
 			BuyerCPF: cpf, BuyerPhone: acc.phone, Attendees: attendees,
 		}
+		if body.Method == payment.MethodCard && body.Card != nil {
+			card, holder, problem := buildCard(*body.Card, acc, cpf)
+			if problem != "" {
+				return fmt.Errorf("%w: %s", checkout.ErrBadRequest, problem)
+			}
+			req.Card, req.Holder, req.RemoteIP = card, holder, clientIP(r)
+		}
 		if bodyCPF != "" {
 			if _, e := tx.Exec(r.Context(), `UPDATE public.subjects SET cpf=$2 WHERE id=$1`, subjectID, bodyCPF); e != nil {
 				return e
@@ -338,4 +362,68 @@ func (s *Server) producerOfSession(ctx context.Context, sessionID uuid.UUID) (uu
 	var pid uuid.UUID
 	err := s.pool.QueryRow(ctx, `SELECT producer_id FROM public.checkout_session_index WHERE session_id=$1`, sessionID).Scan(&pid)
 	return pid, err
+}
+
+// buildCard valida o cartão digitado e monta o titular com o que a conta já sabe. A
+// validação é a mínima que evita ida inútil ao gateway (e a recusa dele custa tentativa
+// antifraude ao comprador); o resto é o gateway que julga.
+func buildCard(c cardReq, acc account, cpf string) (*payment.CardData, *payment.HolderData, string) {
+	number := onlyDigits(c.Number)
+	if len(number) < 13 || len(number) > 19 {
+		return nil, nil, "número do cartão inválido"
+	}
+	if !luhn(number) {
+		return nil, nil, "número do cartão inválido"
+	}
+	month, year := onlyDigits(c.ExpiryMonth), onlyDigits(c.ExpiryYear)
+	if len(month) != 2 || month < "01" || month > "12" {
+		return nil, nil, "mês de validade inválido"
+	}
+	if len(year) == 2 {
+		year = "20" + year
+	}
+	if len(year) != 4 {
+		return nil, nil, "ano de validade inválido"
+	}
+	ccv := onlyDigits(c.CCV)
+	if len(ccv) < 3 || len(ccv) > 4 {
+		return nil, nil, "código de segurança inválido"
+	}
+	if len(strings.Fields(c.HolderName)) < 2 {
+		return nil, nil, "informe o nome como está no cartão"
+	}
+	postal := onlyDigits(c.PostalCode)
+	if len(postal) != 8 {
+		return nil, nil, "CEP inválido"
+	}
+	if strings.TrimSpace(c.AddressNumber) == "" {
+		return nil, nil, "informe o número do endereço"
+	}
+	card := &payment.CardData{
+		HolderName: strings.Join(strings.Fields(c.HolderName), " "), Number: number,
+		ExpiryMonth: month, ExpiryYear: year, CCV: ccv,
+	}
+	holder := &payment.HolderData{
+		Name: card.HolderName, Email: acc.email, TaxID: cpf,
+		PostalCode: postal, AddressNumber: strings.TrimSpace(c.AddressNumber), Phone: acc.phone,
+	}
+	return card, holder, ""
+}
+
+// luhn confere o dígito verificador do cartão: pega erro de digitação antes de gastar uma
+// tentativa no antifraude do gateway.
+func luhn(number string) bool {
+	sum, double := 0, false
+	for i := len(number) - 1; i >= 0; i-- {
+		d := int(number[i] - '0')
+		if double {
+			d *= 2
+			if d > 9 {
+				d -= 9
+			}
+		}
+		sum += d
+		double = !double
+	}
+	return sum%10 == 0
 }

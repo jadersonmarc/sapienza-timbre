@@ -339,3 +339,71 @@ func TestMaskedCPFAccepted(t *testing.T) {
 		t.Fatalf("CPF inválido deveria ser recusado, veio %d", code)
 	}
 }
+
+// TestCardValidation: o cartão digitado na nossa tela é conferido antes de ir ao gateway.
+// Número que falha no dígito verificador, validade impossível ou titular sem CEP são erro
+// de digitação — mandá-los adiante gastaria tentativa no antifraude do comprador.
+func TestCardValidation(t *testing.T) {
+	ts, pool := setup(t)
+	_, owner := createProducer(t, ts, "Casa Card", "owner@card.com", "senha1234")
+	eventID := createEvent(t, ts, owner, "Show Card", "shows")
+	_ = createLot(t, ts, owner, eventID, "Lote 1", 5000, 100, 0)
+	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
+		t.Fatalf("publicar: %d", code)
+	}
+	hdr := buyer(t, ts, pool, "card@card.com")
+
+	// 4111111111111111 é o número de teste clássico (passa no dígito verificador).
+	base := map[string]any{
+		"holder_name": "Marc Silva", "number": "4111 1111 1111 1111",
+		"expiry_month": "12", "expiry_year": "2030", "ccv": "123",
+		"postal_code": "30140-071", "address_number": "100",
+	}
+	bad := map[string]map[string]any{
+		"número com erro de digitação": {"number": "4111 1111 1111 1112"},
+		"mês impossível":               {"expiry_month": "13"},
+		"código de segurança curto":    {"ccv": "1"},
+		"titular sem sobrenome":        {"holder_name": "Marc"},
+		"CEP incompleto":               {"postal_code": "3014"},
+		"endereço sem número":          {"address_number": ""},
+	}
+	for nome, patch := range bad {
+		card := map[string]any{}
+		for k, v := range base {
+			card[k] = v
+		}
+		for k, v := range patch {
+			card[k] = v
+		}
+		code, sess := do(t, ts, "POST", "/api/v1/public/checkout/sessions", nil,
+			map[string]any{"event_id": eventID, "quantity": 1, "anon_token": uuid.NewString()})
+		if code != http.StatusCreated {
+			t.Fatalf("%s: sessão %d", nome, code)
+		}
+		sid := sess["id"].(string)
+		if code, _ := do(t, ts, "POST", "/api/v1/public/checkout/sessions/"+sid+"/bind", hdr, nil); code != http.StatusOK {
+			t.Fatalf("%s: bind %d", nome, code)
+		}
+		code, body := do(t, ts, "POST", "/api/v1/public/checkout/sessions/"+sid+"/pay", hdr,
+			map[string]any{"method": "credit_card", "card": card})
+		if code != http.StatusBadRequest {
+			t.Fatalf("%s: esperava 400, veio %d %v", nome, code, body)
+		}
+	}
+
+	// Cartão coerente passa (o gateway de teste não recusa) e a compra é criada.
+	code, sess := do(t, ts, "POST", "/api/v1/public/checkout/sessions", nil,
+		map[string]any{"event_id": eventID, "quantity": 1, "anon_token": uuid.NewString()})
+	if code != http.StatusCreated {
+		t.Fatalf("sessão: %d", code)
+	}
+	sid := sess["id"].(string)
+	if code, _ := do(t, ts, "POST", "/api/v1/public/checkout/sessions/"+sid+"/bind", hdr, nil); code != http.StatusOK {
+		t.Fatalf("bind: %d", code)
+	}
+	code, body := do(t, ts, "POST", "/api/v1/public/checkout/sessions/"+sid+"/pay", hdr,
+		map[string]any{"method": "credit_card", "card": base})
+	if code != http.StatusCreated {
+		t.Fatalf("cartão válido deveria ser aceito, veio %d %v", code, body)
+	}
+}

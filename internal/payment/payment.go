@@ -33,6 +33,31 @@ type ChargeRequest struct {
 	BuyerPhone   string
 	DueDate      time.Time
 	Split        []SplitItem // divisão automática no ato da venda
+	// Card e Holder existem no cartão transparente: o comprador digita na NOSSA tela e os
+	// dados seguem para o gateway nesta requisição. Não são persistidos em lugar nenhum e
+	// nunca entram em log.
+	Card     *CardData
+	Holder   *HolderData
+	RemoteIP string // exigido pelo gateway para antifraude no cartão
+}
+
+// CardData são os dados do cartão. Vivem apenas durante a requisição.
+type CardData struct {
+	HolderName  string
+	Number      string
+	ExpiryMonth string
+	ExpiryYear  string
+	CCV         string
+}
+
+// HolderData é o titular do cartão, como o gateway exige para antifraude.
+type HolderData struct {
+	Name          string
+	Email         string
+	TaxID         string
+	PostalCode    string
+	AddressNumber string
+	Phone         string
 }
 
 // Charge é a cobrança criada.

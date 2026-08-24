@@ -109,6 +109,30 @@ func (g *AsaasGateway) CreateCharge(ctx context.Context, req ChargeRequest) (Cha
 		payload["installmentCount"] = req.Installments
 		payload["installmentValue"] = reais(req.AmountCents / int64(req.Installments))
 	}
+	// Cartão transparente: os dados vão nesta chamada e o gateway captura na hora. Cartão
+	// recusado falha aqui, com o motivo vindo do gateway.
+	if req.Method == MethodCard && req.Card != nil {
+		payload["creditCard"] = map[string]any{
+			"holderName":  req.Card.HolderName,
+			"number":      req.Card.Number,
+			"expiryMonth": req.Card.ExpiryMonth,
+			"expiryYear":  req.Card.ExpiryYear,
+			"ccv":         req.Card.CCV,
+		}
+		if req.Holder != nil {
+			payload["creditCardHolderInfo"] = map[string]any{
+				"name":          req.Holder.Name,
+				"email":         req.Holder.Email,
+				"cpfCnpj":       req.Holder.TaxID,
+				"postalCode":    req.Holder.PostalCode,
+				"addressNumber": req.Holder.AddressNumber,
+				"phone":         req.Holder.Phone,
+			}
+		}
+		if req.RemoteIP != "" {
+			payload["remoteIp"] = req.RemoteIP
+		}
+	}
 	if len(req.Split) > 0 {
 		split := make([]map[string]any, 0, len(req.Split))
 		for _, s := range req.Split {
