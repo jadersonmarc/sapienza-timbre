@@ -3,11 +3,14 @@ package api_test
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/jadersonmarc/sapienza-timbre/internal/config"
+	"github.com/jadersonmarc/sapienza-timbre/internal/notify"
 )
 
 // TestNotifierConfigValidation: resend sem chave falha; log passa; valor desconhecido falha.
@@ -105,4 +108,70 @@ func TestResendCreatesNewRecord(t *testing.T) {
 	if tc := scanInt(t, ctx, pool, pid, `SELECT count(*) FROM tickets`); tc != 1 {
 		t.Fatalf("reenvio não deveria duplicar ingresso, veio %d", tc)
 	}
+}
+
+// TestPurchaseEmailDelivered fecha o caminho inteiro do e-mail de compra: pagamento
+// confirmado → mensagem enfileirada → worker drena → provedor recebe o e-mail com o QR
+// anexado → registro vira 'sent' com o id do provedor. É a prova de que o disparo
+// acontece, não só de que a fila enche.
+func TestPurchaseEmailDelivered(t *testing.T) {
+	ts, pool := setup(t)
+	_, owner := createProducer(t, ts, "Casa Dl", "owner@dl.com", "senha1234")
+	ctx := context.Background()
+	eventID := createEvent(t, ts, owner, "Show Dl", "shows")
+	_ = createLot(t, ts, owner, eventID, "Lote 1", 5000, 100, 0)
+	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
+		t.Fatalf("publicar: %d", code)
+	}
+	body := buyViaSession(t, ts, buyer(t, ts, pool, "entrega@dl.com"), map[string]any{"event_id": eventID, "quantity": 1}, "pix")
+	confirmWebhook(t, ts, body["asaas_ref"].(string))
+
+	var got []notify.RenderedMessage
+	provider := captureProvider{fn: func(m notify.RenderedMessage) (string, error) {
+		got = append(got, m)
+		return "re_entrega", nil
+	}}
+	w := notify.NewWorker(pool, provider)
+	w.Backoff = func(int) time.Duration { return 0 }
+	if err := w.Process(ctx); err != nil {
+		t.Fatalf("worker: %v", err)
+	}
+
+	var ticketMsg *notify.RenderedMessage
+	for i := range got {
+		if got[i].To == "entrega@dl.com" && got[i].Attachment != nil {
+			ticketMsg = &got[i]
+		}
+	}
+	if ticketMsg == nil {
+		t.Fatalf("o comprador não recebeu o e-mail do ingresso (mensagens entregues: %d)", len(got))
+	}
+	if ticketMsg.Subject != "Show Dl" {
+		t.Fatalf("assunto deveria ser o nome do evento, veio %q", ticketMsg.Subject)
+	}
+	if ticketMsg.Attachment.Filename != "ingresso.png" || ticketMsg.Attachment.Content == "" {
+		t.Fatalf("o QR deveria vir anexado, veio %+v", ticketMsg.Attachment)
+	}
+	if !strings.Contains(ticketMsg.Text, "/ingressos") {
+		t.Fatalf("o corpo deveria linkar meus ingressos, veio %q", ticketMsg.Text)
+	}
+
+	var status, providerID string
+	if err := pool.QueryRow(ctx, `
+		SELECT status, provider_message_id FROM public.notifications
+		 WHERE kind='ticket_issued' AND to_email='entrega@dl.com'`).Scan(&status, &providerID); err != nil {
+		t.Fatalf("ler notificação: %v", err)
+	}
+	if status != "sent" || providerID != "re_entrega" {
+		t.Fatalf("esperava sent/re_entrega, veio %s/%s", status, providerID)
+	}
+}
+
+// captureProvider registra o e-mail pronto que iria ao provedor real.
+type captureProvider struct {
+	fn func(notify.RenderedMessage) (string, error)
+}
+
+func (c captureProvider) Send(_ context.Context, m notify.RenderedMessage) (string, error) {
+	return c.fn(m)
 }
