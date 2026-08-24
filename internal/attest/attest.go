@@ -47,8 +47,8 @@ type RecordEvent struct {
 }
 
 type RecordSales struct {
-	TicketsSold int               `json:"tickets_sold"`
-	ByLot       []RecordLotSales  `json:"by_lot"`
+	TicketsSold int                 `json:"tickets_sold"`
+	ByLot       []RecordLotSales    `json:"by_lot"`
 	BySector    []RecordSectorSales `json:"by_sector"`
 }
 
@@ -75,9 +75,9 @@ type RecordCategoryCount struct {
 }
 
 type RecordAttendance struct {
-	Present  int `json:"present"`
-	Absent   int `json:"absent"`
-	RatePct  int `json:"rate_pct"`
+	Present   int `json:"present"`
+	Absent    int `json:"absent"`
+	RatePct   int `json:"rate_pct"`
 	Reentries int `json:"reentries"`
 }
 

@@ -12,8 +12,8 @@ import (
 
 // Parâmetros PROVISÓRIOS do worker de envio: backoff exponencial com teto.
 const (
-	backoffBase       = 15 * time.Second
-	backoffCap        = 10 * time.Minute
+	backoffBase        = 15 * time.Second
+	backoffCap         = 10 * time.Minute
 	DefaultMaxAttempts = 5
 )
 

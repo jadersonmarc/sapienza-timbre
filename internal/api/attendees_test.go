@@ -407,3 +407,61 @@ func TestCardValidation(t *testing.T) {
 		t.Fatalf("cartão válido deveria ser aceito, veio %d %v", code, body)
 	}
 }
+
+// TestInstallments: parcelamento respeita o piso por parcela e não existe no Pix. Recusar
+// aqui evita que o gateway rejeite com a reserva já consumida.
+func TestInstallments(t *testing.T) {
+	ts, pool := setup(t)
+	_, owner := createProducer(t, ts, "Casa Parc", "owner@parc.com", "senha1234")
+	pid := producerID(t, ts, owner)
+	ctx := context.Background()
+	eventID := createEvent(t, ts, owner, "Show Parc", "shows")
+	// R$ 60,00: com piso de R$ 5,00 por parcela, cabem 12×.
+	_ = createLot(t, ts, owner, eventID, "Lote 1", 6000, 100, 0)
+	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
+		t.Fatalf("publicar: %d", code)
+	}
+	hdr := buyer(t, ts, pool, "parc@parc.com")
+	card := map[string]any{
+		"holder_name": "Marc Silva", "number": "4111111111111111",
+		"expiry_month": "12", "expiry_year": "2030", "ccv": "123",
+		"postal_code": "30140071", "address_number": "100",
+	}
+	pay := func(body map[string]any) (int, map[string]any) {
+		code, sess := do(t, ts, "POST", "/api/v1/public/checkout/sessions", nil,
+			map[string]any{"event_id": eventID, "quantity": 1, "anon_token": uuid.NewString()})
+		if code != http.StatusCreated {
+			t.Fatalf("sessão: %d", code)
+		}
+		sid := sess["id"].(string)
+		if code, _ := do(t, ts, "POST", "/api/v1/public/checkout/sessions/"+sid+"/bind", hdr, nil); code != http.StatusOK {
+			t.Fatalf("bind: %d", code)
+		}
+		return do(t, ts, "POST", "/api/v1/public/checkout/sessions/"+sid+"/pay", hdr, body)
+	}
+
+	// 3× cabe e é registrado no pagamento.
+	code, body := pay(map[string]any{"method": "credit_card", "installments": 3, "card": card})
+	if code != http.StatusCreated {
+		t.Fatalf("3x deveria ser aceito, veio %d %v", code, body)
+	}
+	if n := scanInt(t, ctx, pool, pid, `SELECT installments FROM payments WHERE order_id=$1`,
+		uuid.MustParse(body["order_id"].(string))); n != 3 {
+		t.Fatalf("esperava 3 parcelas gravadas, veio %d", n)
+	}
+
+	// Acima do teto de parcelas, recusa.
+	if code, body := pay(map[string]any{"method": "credit_card", "installments": 24, "card": card}); code != http.StatusBadRequest {
+		t.Fatalf("24x deveria ser recusado, veio %d %v", code, body)
+	}
+
+	// Pix não parcela: o pedido é aceito, mas registrado como parcela única.
+	code, body = pay(map[string]any{"method": "pix", "installments": 6})
+	if code != http.StatusCreated {
+		t.Fatalf("pix: %d %v", code, body)
+	}
+	if n := scanInt(t, ctx, pool, pid, `SELECT installments FROM payments WHERE order_id=$1`,
+		uuid.MustParse(body["order_id"].(string))); n != 1 {
+		t.Fatalf("Pix deveria ficar em 1 parcela, veio %d", n)
+	}
+}

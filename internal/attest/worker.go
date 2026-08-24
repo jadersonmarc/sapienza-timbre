@@ -20,8 +20,8 @@ const DefaultCloseAfter = 24 * time.Hour
 
 // Parâmetros PROVISÓRIOS do worker de âncora: backoff exponencial com teto.
 const (
-	anchorBackoffBase     = 15 * time.Second
-	anchorBackoffCap      = 10 * time.Minute
+	anchorBackoffBase        = 15 * time.Second
+	anchorBackoffCap         = 10 * time.Minute
 	DefaultAnchorMaxAttempts = 10
 )
 

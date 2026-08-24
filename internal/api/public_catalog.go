@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/jadersonmarc/sapienza-timbre/internal/catalog"
+	"github.com/jadersonmarc/sapienza-timbre/internal/checkout"
 	"github.com/jadersonmarc/sapienza-timbre/internal/inventory"
 	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
 )
@@ -290,6 +291,10 @@ func (s *Server) publicConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"payment_methods":  []string{payment.MethodPix, payment.MethodCard},
 		"hold_ttl_seconds": int(inventory.DefaultTTL.Seconds()),
+		// Regras do parcelamento vêm do servidor para a tela não repetir o critério (e
+		// divergir dele quando mudar).
+		"max_installments":      checkout.MaxInstallments,
+		"min_installment_cents": checkout.MinInstallmentCents,
 	})
 }
 

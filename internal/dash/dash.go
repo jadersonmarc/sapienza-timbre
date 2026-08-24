@@ -137,7 +137,7 @@ func EventFinance(ctx context.Context, tx pgx.Tx, eventID uuid.UUID) (Finance, e
 // SessionFunnel é o funil da sessão de checkout por evento: quem chegou a 'authenticated'
 // (vinculado) contra quem pagou. Sessão vinculada e não paga vira 'abandoned' na expiração.
 type SessionFunnel struct {
-	Bound     int `json:"bound"`     // chegou a authenticated (paid + abandoned)
+	Bound     int `json:"bound"` // chegou a authenticated (paid + abandoned)
 	Paid      int `json:"paid"`
 	Abandoned int `json:"abandoned"` // vinculada e não paga (expirou após o bind)
 }

@@ -106,8 +106,10 @@ func (g *AsaasGateway) CreateCharge(ctx context.Context, req ChargeRequest) (Cha
 		"dueDate":     dueDate(req.DueDate),
 	}
 	if req.Method == MethodCard && req.Installments > 1 {
+		// Manda a contagem e o TOTAL: dividir aqui perderia centavos na divisão inteira
+		// (3× de 100,00 viraria 99,99) e o gateway sabe distribuir a sobra.
 		payload["installmentCount"] = req.Installments
-		payload["installmentValue"] = reais(req.AmountCents / int64(req.Installments))
+		payload["totalValue"] = reais(req.AmountCents)
 	}
 	// Cartão transparente: os dados vão nesta chamada e o gateway captura na hora. Cartão
 	// recusado falha aqui, com o motivo vindo do gateway.

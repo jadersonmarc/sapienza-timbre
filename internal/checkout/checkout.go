@@ -207,6 +207,14 @@ func finalizeOrder(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, pr
 	// Pagamento (pending).
 	var paymentID uuid.UUID
 	installments := max(req.Installments, 1)
+	if req.Method != payment.MethodCard {
+		installments = 1 // Pix não parcela
+	}
+	// O piso por parcela depende do total, que só existe aqui. Recusar agora é melhor que
+	// levar um "parcelamento inválido" do gateway com a reserva já consumida.
+	if !ValidInstallments(installments, bd.TotalCents) {
+		return Result{}, fmt.Errorf("%w: parcelamento indisponível para este valor", ErrBadRequest)
+	}
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO payments (order_id, method, installments, amount_cents, status, split)
 		VALUES ($1,$2,$3,$4,'pending',$5::jsonb) RETURNING id`,

@@ -74,10 +74,10 @@ func tenantEvents(ctx context.Context, pool *pgxpool.Pool, tid uuid.UUID, produc
 
 // PlatformSales consolida vendas da plataforma inteira (relatório financeiro).
 type PlatformSales struct {
-	TicketsSold   int   `json:"tickets_sold"`
-	GrossCents    int64 `json:"gross_cents"`
-	FaceCents     int64 `json:"face_cents"`
-	PlatformFee   int64 `json:"platform_fee_cents"`
+	TicketsSold int   `json:"tickets_sold"`
+	GrossCents  int64 `json:"gross_cents"`
+	FaceCents   int64 `json:"face_cents"`
+	PlatformFee int64 `json:"platform_fee_cents"`
 }
 
 // SalesPlatform agrega as vendas por produtor e soma (read-only).
