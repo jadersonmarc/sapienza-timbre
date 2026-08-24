@@ -86,5 +86,10 @@ func (s *Service) Send(ctx context.Context, msg Message) error {
 		    (producer_id, event_id, kind, to_email, subject_id, ticket_id, order_id, payload)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
 		msg.ProducerID, msg.EventID, msg.Kind, msg.To, msg.SubjectID, msg.TicketID, msg.OrderID, payload)
-	return err
+	if err != nil {
+		slog.Warn("notify: falha ao enfileirar", "kind", msg.Kind, "to", msg.To, "err", err)
+		return err
+	}
+	slog.Debug("notify: enfileirado", "kind", msg.Kind, "to", msg.To)
+	return nil
 }

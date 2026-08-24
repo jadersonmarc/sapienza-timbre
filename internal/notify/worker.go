@@ -102,15 +102,20 @@ func (w *Worker) processOne(ctx context.Context, it struct {
 		_, uerr := w.pool.Exec(ctx, `
 			UPDATE public.notifications SET status='sent', provider_message_id=$2, attempts=attempts+1, sent_at=now(), updated_at=now()
 			 WHERE id=$1`, it.id, providerID)
+		if uerr == nil {
+			slog.Info("notify: enviado", "id", it.id, "to", it.to, "provider_message_id", providerID)
+		}
 		return uerr
 	}
 	attempts := it.attempts + 1
 	if isRetryable(err) && attempts < w.MaxAttempts {
+		slog.Warn("notify: erro retryable, reenfileirado", "id", it.id, "to", it.to, "attempts", attempts, "err", err.Error())
 		_, uerr := w.pool.Exec(ctx, `
 			UPDATE public.notifications SET status='queued', attempts=$2, last_error=$3, updated_at=now() + make_interval(secs => $4)
 			 WHERE id=$1`, it.id, attempts, err.Error(), w.Backoff(attempts).Seconds())
 		return uerr
 	}
+	slog.Warn("notify: falhou", "id", it.id, "to", it.to, "attempts", attempts, "err", err.Error())
 	_, uerr := w.pool.Exec(ctx, `
 		UPDATE public.notifications SET status='failed', attempts=$2, last_error=$3, updated_at=now()
 		 WHERE id=$1`, it.id, attempts, err.Error())
