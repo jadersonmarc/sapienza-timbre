@@ -99,6 +99,12 @@ func main() {
 	if cfg.Notifier == "resend" {
 		provider = notify.NewResendProvider(cfg.ResendAPIKey, cfg.MailFrom, cfg.MailReplyTo)
 		notifyKind = "resend"
+		slog.Info("notify: envio real ligado", "provider", "resend", "from", cfg.MailFrom)
+	} else {
+		// Modo log entrega NADA. É um default legítimo em dev e um defeito em produção —
+		// o aviso diz o que falta, porque a fila fica igual (status 'sent') nos dois casos.
+		slog.Warn("notify: modo log — nenhum e-mail sai; defina RESEND_API_KEY e MAIL_FROM para enviar de verdade",
+			"resend_api_key_set", cfg.ResendAPIKey != "", "mail_from_set", cfg.MailFrom != "")
 	}
 	go notify.NewWorker(pool, provider).Run(ctx)
 

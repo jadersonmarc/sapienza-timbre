@@ -17,6 +17,8 @@ import (
 func TestNotifierConfigValidation(t *testing.T) {
 	t.Setenv("DATABASE_URL", "x")
 	t.Setenv("TIMBRE_JWT_SECRET", "y")
+	t.Setenv("RESEND_API_KEY", "")
+	t.Setenv("MAIL_FROM", "")
 
 	t.Setenv("TIMBRE_NOTIFIER", "resend")
 	t.Setenv("TIMBRE_RESEND_API_KEY", "")
@@ -33,6 +35,75 @@ func TestNotifierConfigValidation(t *testing.T) {
 	if _, err := config.Load(); err == nil {
 		t.Fatalf("valor desconhecido deveria falhar (nada de default silencioso)")
 	}
+}
+
+// TestNotifierInferredFromCredentials: configurar a chave BASTA. Sem TIMBRE_NOTIFIER, ter
+// chave + remetente liga o envio real (inclusive pelos nomes do console); sem eles, log.
+// E um TIMBRE_NOTIFIER explícito continua mandando — desligar tem que ser possível.
+func TestNotifierInferredFromCredentials(t *testing.T) {
+	base := func(t *testing.T) {
+		t.Setenv("DATABASE_URL", "x")
+		t.Setenv("TIMBRE_JWT_SECRET", "y")
+		t.Setenv("TIMBRE_NOTIFIER", "")
+		t.Setenv("TIMBRE_RESEND_API_KEY", "")
+		t.Setenv("TIMBRE_MAIL_FROM", "")
+		t.Setenv("RESEND_API_KEY", "")
+		t.Setenv("MAIL_FROM", "")
+	}
+
+	t.Run("sem credencial nenhuma cai em log", func(t *testing.T) {
+		base(t)
+		cfg, err := config.Load()
+		if err != nil || cfg.Notifier != "log" {
+			t.Fatalf("esperava log, veio %q (%v)", cfg.Notifier, err)
+		}
+	})
+
+	t.Run("nomes do Timbre ligam o resend", func(t *testing.T) {
+		base(t)
+		t.Setenv("TIMBRE_RESEND_API_KEY", "re_chave")
+		t.Setenv("TIMBRE_MAIL_FROM", "Timbre <nao-responda@exemplo.com>")
+		cfg, err := config.Load()
+		if err != nil || cfg.Notifier != "resend" {
+			t.Fatalf("esperava resend, veio %q (%v)", cfg.Notifier, err)
+		}
+	})
+
+	t.Run("nomes do console ligam o resend", func(t *testing.T) {
+		base(t)
+		t.Setenv("RESEND_API_KEY", "re_chave_console")
+		t.Setenv("MAIL_FROM", "Timbre <nao-responda@exemplo.com>")
+		cfg, err := config.Load()
+		if err != nil || cfg.Notifier != "resend" {
+			t.Fatalf("esperava resend pelos nomes do console, veio %q (%v)", cfg.Notifier, err)
+		}
+		if cfg.ResendAPIKey != "re_chave_console" {
+			t.Fatalf("deveria ler a chave do console, veio %q", cfg.ResendAPIKey)
+		}
+	})
+
+	t.Run("prefixo TIMBRE_ tem prioridade", func(t *testing.T) {
+		base(t)
+		t.Setenv("RESEND_API_KEY", "re_console")
+		t.Setenv("MAIL_FROM", "console@exemplo.com")
+		t.Setenv("TIMBRE_RESEND_API_KEY", "re_timbre")
+		t.Setenv("TIMBRE_MAIL_FROM", "timbre@exemplo.com")
+		cfg, _ := config.Load()
+		if cfg.ResendAPIKey != "re_timbre" || cfg.MailFrom != "timbre@exemplo.com" {
+			t.Fatalf("o nome específico deveria vencer, veio %q/%q", cfg.ResendAPIKey, cfg.MailFrom)
+		}
+	})
+
+	t.Run("log explícito desliga mesmo com chave", func(t *testing.T) {
+		base(t)
+		t.Setenv("RESEND_API_KEY", "re_chave")
+		t.Setenv("MAIL_FROM", "x@y.com")
+		t.Setenv("TIMBRE_NOTIFIER", "log")
+		cfg, _ := config.Load()
+		if cfg.Notifier != "log" {
+			t.Fatalf("escolha explícita deveria mandar, veio %q", cfg.Notifier)
+		}
+	})
 }
 
 // TestTicketNotificationsCount: compra de quatro entradas gera quatro mensagens de ingresso.
@@ -174,4 +245,54 @@ type captureProvider struct {
 
 func (c captureProvider) Send(_ context.Context, m notify.RenderedMessage) (string, error) {
 	return c.fn(m)
+}
+
+// TestDashNotificationsDistinguishesLogFromDelivered: o painel precisa separar "saiu de
+// verdade" de "só foi registrado". No modo log o status também é 'sent' — se o painel
+// contar os dois juntos, o produtor jura que enviou e ninguém recebeu.
+func TestDashNotificationsDistinguishesLogFromDelivered(t *testing.T) {
+	ts, pool := setup(t)
+	_, owner := createProducer(t, ts, "Casa Dg", "owner@dg.com", "senha1234")
+	ctx := context.Background()
+	eventID := createEvent(t, ts, owner, "Show Dg", "shows")
+	_ = createLot(t, ts, owner, eventID, "Lote 1", 5000, 100, 0)
+	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
+		t.Fatalf("publicar: %d", code)
+	}
+	body := buyViaSession(t, ts, buyer(t, ts, pool, "diag@dg.com"), map[string]any{"event_id": eventID, "quantity": 1}, "pix")
+	confirmWebhook(t, ts, body["asaas_ref"].(string))
+
+	// Modo log: o worker marca 'sent' com id "log" — nada saiu.
+	wLog := notify.NewWorker(pool, notify.LogProvider{})
+	wLog.Backoff = func(int) time.Duration { return 0 }
+	if err := wLog.Process(ctx); err != nil {
+		t.Fatalf("worker log: %v", err)
+	}
+	code, resp := do(t, ts, "GET", "/api/v1/dash/events/"+eventID+"/notifications", bearer(owner), nil)
+	if code != http.StatusOK {
+		t.Fatalf("notifications: %d", code)
+	}
+	if resp["sent"].(float64) != 0 || resp["logged_only"].(float64) != 1 {
+		t.Fatalf("modo log não deveria contar como enviado: sent=%v logged_only=%v", resp["sent"], resp["logged_only"])
+	}
+
+	// Falha do provedor: o motivo tem que chegar ao painel (é o que responde "por que não
+	// recebi?" sem abrir log de servidor).
+	if _, err := pool.Exec(ctx, `
+		UPDATE public.notifications SET status='failed', last_error='resend status 403: domínio não verificado'
+		 WHERE kind='ticket_issued' AND to_email='diag@dg.com'`); err != nil {
+		t.Fatalf("simular falha: %v", err)
+	}
+	_, resp = do(t, ts, "GET", "/api/v1/dash/events/"+eventID+"/notifications", bearer(owner), nil)
+	if resp["failed"].(float64) != 1 {
+		t.Fatalf("esperava 1 falha, veio %v", resp["failed"])
+	}
+	list := resp["notifications"].([]any)
+	first := list[0].(map[string]any)
+	if !strings.Contains(first["last_error"].(string), "domínio não verificado") {
+		t.Fatalf("o motivo da falha deveria aparecer no painel, veio %v", first["last_error"])
+	}
+	if first["delivered"].(bool) {
+		t.Fatalf("falha não pode aparecer como entregue")
+	}
 }

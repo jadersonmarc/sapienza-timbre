@@ -23,10 +23,10 @@ func (s *Server) dashOverview(w http.ResponseWriter, r *http.Request, claims *au
 		return
 	}
 	var (
-		sales []dash.LotSales
-		occ   dash.Occupancy
-		chk   dash.Checkin
-		fin   dash.Finance
+		sales  []dash.LotSales
+		occ    dash.Occupancy
+		chk    dash.Checkin
+		fin    dash.Finance
 		funnel dash.SessionFunnel
 	)
 	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
@@ -116,7 +116,9 @@ func (s *Server) dashNotifications(w http.ResponseWriter, r *http.Request, claim
 		return
 	}
 	rows, err := s.pool.Query(r.Context(), `
-		SELECT id, kind, to_email, status, created_at FROM public.notifications
+		SELECT id, kind, to_email, status, created_at,
+		       COALESCE(provider_message_id,''), COALESCE(last_error,'')
+		  FROM public.notifications
 		 WHERE event_id=$1 AND kind IN ('ticket_issued','order_refunded')
 		 ORDER BY created_at DESC LIMIT 200`, eventID)
 	if err != nil {
@@ -130,23 +132,33 @@ func (s *Server) dashNotifications(w http.ResponseWriter, r *http.Request, claim
 		ToEmail   string    `json:"to_email"`
 		Status    string    `json:"status"`
 		CreatedAt time.Time `json:"created_at"`
+		// Delivered separa "saiu de verdade" de "só foi registrado": no modo log o id do
+		// provedor é a string "log" e o status também é 'sent'.
+		Delivered bool   `json:"delivered"`
+		LastError string `json:"last_error,omitempty"`
 	}
 	var list []n
-	sent, failed := 0, 0
+	sent, failed, logged := 0, 0, 0
 	for rows.Next() {
 		var it n
-		if err := rows.Scan(&it.ID, &it.Kind, &it.ToEmail, &it.Status, &it.CreatedAt); err != nil {
+		var providerID string
+		if err := rows.Scan(&it.ID, &it.Kind, &it.ToEmail, &it.Status, &it.CreatedAt, &providerID, &it.LastError); err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		if it.Status == "sent" {
+		it.Delivered = it.Status == "sent" && providerID != "" && providerID != "log"
+		switch {
+		case it.Delivered:
 			sent++
-		} else if it.Status == "failed" {
+		case it.Status == "sent":
+			logged++
+		case it.Status == "failed":
 			failed++
 		}
 		list = append(list, it)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"sent": sent, "failed": failed, "notifications": list})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"sent": sent, "failed": failed, "logged_only": logged, "notifications": list})
 }
 
 // resendNotification reenfileira um envio que falhou (painel). Não duplica ingresso — só a

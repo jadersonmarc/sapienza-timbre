@@ -44,11 +44,14 @@ func Load() (Config, error) {
 		AnchorMode:       getenv("TIMBRE_ANCHOR_MODE", "off"),
 		AttestationKey:   os.Getenv("TIMBRE_ATTESTATION_KEY"),
 		AttestationKeyID: os.Getenv("TIMBRE_ATTESTATION_KEY_ID"),
-		Notifier:         getenv("TIMBRE_NOTIFIER", "log"),
-		ResendAPIKey:     os.Getenv("TIMBRE_RESEND_API_KEY"),
-		MailFrom:         os.Getenv("TIMBRE_MAIL_FROM"),
-		MailReplyTo:      os.Getenv("TIMBRE_MAIL_REPLY_TO"),
-		PublicBaseURL:    os.Getenv("TIMBRE_PUBLIC_BASE_URL"),
+		// Aceita também os nomes usados pelo console (RESEND_API_KEY/MAIL_FROM): é o mesmo
+		// provedor e a mesma conta, e nome divergente já custou um envio silenciosamente
+		// desligado em produção. O nome com prefixo TIMBRE_ tem prioridade.
+		Notifier:      os.Getenv("TIMBRE_NOTIFIER"),
+		ResendAPIKey:  firstSet("TIMBRE_RESEND_API_KEY", "RESEND_API_KEY"),
+		MailFrom:      firstSet("TIMBRE_MAIL_FROM", "MAIL_FROM"),
+		MailReplyTo:   firstSet("TIMBRE_MAIL_REPLY_TO", "MAIL_REPLY_TO"),
+		PublicBaseURL: os.Getenv("TIMBRE_PUBLIC_BASE_URL"),
 	}
 
 	var missing []string
@@ -66,7 +69,17 @@ func Load() (Config, error) {
 	if c.AnchorMode != "off" && c.AnchorMode != "log" {
 		return Config{}, fmt.Errorf("TIMBRE_ANCHOR_MODE inválido: %q (use off ou log)", c.AnchorMode)
 	}
-	// Notifier: log (default) | resend. Valor desconhecido falha — nada de default silencioso.
+	// Sem TIMBRE_NOTIFIER explícito, o provedor é DEDUZIDO: havendo chave e remetente,
+	// envia de verdade (é o comportamento do mailer do console). Só cai em 'log' quando
+	// não há como enviar — assim configurar a chave basta, sem um switch para esquecer.
+	if c.Notifier == "" {
+		if c.ResendAPIKey != "" && c.MailFrom != "" {
+			c.Notifier = "resend"
+		} else {
+			c.Notifier = "log"
+		}
+	}
+	// Notifier: log | resend. Valor desconhecido falha — nada de default silencioso.
 	switch c.Notifier {
 	case "log":
 	case "resend":
@@ -83,6 +96,16 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("faltam variáveis obrigatórias: %s", strings.Join(missing, ", "))
 	}
 	return c, nil
+}
+
+// firstSet devolve o valor da primeira variável definida, na ordem dada.
+func firstSet(keys ...string) string {
+	for _, k := range keys {
+		if v := os.Getenv(k); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func getenv(key, fallback string) string {
