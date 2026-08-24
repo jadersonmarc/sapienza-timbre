@@ -263,7 +263,15 @@ func (s *Server) paySession(w http.ResponseWriter, r *http.Request, subjectID uu
 		writeErr(w, http.StatusBadRequest, "conta sem e-mail")
 		return
 	}
-	if acc.cpf == "" && body.BuyerCPF == "" {
+	// O CPF do corpo chega como a tela digitou — com pontos e traço. Usá-lo cru mandava a
+	// pontuação para o gateway (que recusa) e para a conta, e o erro voltava como "CPF
+	// inválido" para um documento que estava certo.
+	bodyCPF := onlyDigits(body.BuyerCPF)
+	if bodyCPF != "" && !checkout.ValidCPF(bodyCPF) {
+		writeErr(w, http.StatusBadRequest, "CPF inválido")
+		return
+	}
+	if acc.cpf == "" && bodyCPF == "" {
 		writeErr(w, http.StatusBadRequest, "complete o cadastro (CPF) antes de pagar")
 		return
 	}
@@ -286,7 +294,7 @@ func (s *Server) paySession(w http.ResponseWriter, r *http.Request, subjectID uu
 		}
 		cpf := acc.cpf
 		if cpf == "" {
-			cpf = body.BuyerCPF
+			cpf = bodyCPF
 		}
 		// A ficha do pagamento vence a que a sessão guardava (é a tela imediatamente
 		// anterior); sem ela, vale o que já foi preenchido na etapa dos participantes.
@@ -303,8 +311,8 @@ func (s *Server) paySession(w http.ResponseWriter, r *http.Request, subjectID uu
 			SubjectID: subjectID, BuyerName: acc.name, BuyerEmail: email,
 			BuyerCPF: cpf, BuyerPhone: acc.phone, Attendees: attendees,
 		}
-		if body.BuyerCPF != "" {
-			if _, e := tx.Exec(r.Context(), `UPDATE public.subjects SET cpf=$2 WHERE id=$1`, subjectID, body.BuyerCPF); e != nil {
+		if bodyCPF != "" {
+			if _, e := tx.Exec(r.Context(), `UPDATE public.subjects SET cpf=$2 WHERE id=$1`, subjectID, bodyCPF); e != nil {
 				return e
 			}
 		}

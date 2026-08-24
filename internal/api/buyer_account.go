@@ -328,3 +328,6 @@ func (s *Server) resetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"token": tok, "subject_id": subjectID})
 }
+
+// onlyDigits limpa máscara de formulário (pontos, traços, parênteses).
+func onlyDigits(s string) string { return digitsOnly.ReplaceAllString(s, "") }

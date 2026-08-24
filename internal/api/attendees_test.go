@@ -286,3 +286,56 @@ func TestResetPassword(t *testing.T) {
 		t.Fatalf("código reusado deveria falhar, veio %d", code)
 	}
 }
+
+// TestMaskedCPFAccepted: o documento chega da tela como foi digitado — com pontos e traço.
+// Usá-lo cru mandava a pontuação ao gateway e à conta, e o erro voltava como "CPF inválido"
+// para um documento correto.
+func TestMaskedCPFAccepted(t *testing.T) {
+	ts, pool := setup(t)
+	_, owner := createProducer(t, ts, "Casa Masc", "owner@masc.com", "senha1234")
+	ctx := context.Background()
+	eventID := createEvent(t, ts, owner, "Show Masc", "shows")
+	_ = createLot(t, ts, owner, eventID, "Lote 1", 4000, 100, 0)
+	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
+		t.Fatalf("publicar: %d", code)
+	}
+	// Conta sem CPF (criada pelo código, como as antigas): o documento vem no pagamento.
+	hdr := bearer(verifyOTP(t, ts, pool, "mascara@masc.com", "246810"))
+
+	code, sess := do(t, ts, "POST", "/api/v1/public/checkout/sessions", nil,
+		map[string]any{"event_id": eventID, "quantity": 1, "anon_token": uuid.NewString()})
+	if code != http.StatusCreated {
+		t.Fatalf("sessão: %d %v", code, sess)
+	}
+	sid := sess["id"].(string)
+	if code, _ := do(t, ts, "POST", "/api/v1/public/checkout/sessions/"+sid+"/bind", hdr, nil); code != http.StatusOK {
+		t.Fatalf("bind: %d", code)
+	}
+	code, body := do(t, ts, "POST", "/api/v1/public/checkout/sessions/"+sid+"/pay", hdr,
+		map[string]any{"method": "pix", "buyer_cpf": "111.444.777-35"})
+	if code != http.StatusCreated {
+		t.Fatalf("CPF mascarado deveria ser aceito, veio %d %v", code, body)
+	}
+	var saved string
+	if err := pool.QueryRow(ctx, `SELECT COALESCE(cpf,'') FROM subjects WHERE lower(email)='mascara@masc.com'`).Scan(&saved); err != nil {
+		t.Fatalf("ler conta: %v", err)
+	}
+	if saved != "11144477735" {
+		t.Fatalf("a conta deveria guardar só os dígitos, veio %q", saved)
+	}
+
+	// E documento realmente inválido continua sendo recusado, com mensagem clara.
+	code, sess = do(t, ts, "POST", "/api/v1/public/checkout/sessions", nil,
+		map[string]any{"event_id": eventID, "quantity": 1, "anon_token": uuid.NewString()})
+	if code != http.StatusCreated {
+		t.Fatalf("sessão 2: %d", code)
+	}
+	sid = sess["id"].(string)
+	if code, _ := do(t, ts, "POST", "/api/v1/public/checkout/sessions/"+sid+"/bind", hdr, nil); code != http.StatusOK {
+		t.Fatalf("bind 2: %d", code)
+	}
+	if code, _ := do(t, ts, "POST", "/api/v1/public/checkout/sessions/"+sid+"/pay", hdr,
+		map[string]any{"method": "pix", "buyer_cpf": "111.444.777-34"}); code != http.StatusBadRequest {
+		t.Fatalf("CPF inválido deveria ser recusado, veio %d", code)
+	}
+}
