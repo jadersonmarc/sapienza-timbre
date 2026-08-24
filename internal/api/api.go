@@ -42,19 +42,19 @@ type Seams struct {
 
 // Server guarda as dependências da API.
 type Server struct {
-	pool         *pgxpool.Pool
-	auth         *auth.Authenticator
-	prov         *producer.Provisioner
-	signer       *ticketing.Signer // assina ingressos (Ed25519) na emissão
-	attest       *ticketing.Signer // assina atestados (chave própria, propósito distinto)
-	attestKeyID     string          // identificador estável da chave de atestação
-	checkoutLimits  checkout.Limits // limites/TTLs da sessão de checkout (env)
-	adminToken      string          // gate do bootstrap de produtor (vazio = criação desligada)
-	webhookToken string            // valida o header do webhook do Asaas (vazio = sem checagem)
-	anchorer     chain.Anchorer    // envia a âncora do atestado (off = noop)
-	anchorMode   chain.AnchorMode  // off | log — âncora do atestado
-	seams        Seams             // drivers de rede/pagamento/notificação
-	limiter      *rateLimiter      // contenção de abuso na superfície pública (§4.1)
+	pool           *pgxpool.Pool
+	auth           *auth.Authenticator
+	prov           *producer.Provisioner
+	signer         *ticketing.Signer // assina ingressos (Ed25519) na emissão
+	attest         *ticketing.Signer // assina atestados (chave própria, propósito distinto)
+	attestKeyID    string            // identificador estável da chave de atestação
+	checkoutLimits checkout.Limits   // limites/TTLs da sessão de checkout (env)
+	adminToken     string            // gate do bootstrap de produtor (vazio = criação desligada)
+	webhookToken   string            // valida o header do webhook do Asaas (vazio = sem checagem)
+	anchorer       chain.Anchorer    // envia a âncora do atestado (off = noop)
+	anchorMode     chain.AnchorMode  // off | log — âncora do atestado
+	seams          Seams             // drivers de rede/pagamento/notificação
+	limiter        *rateLimiter      // contenção de abuso na superfície pública (§4.1)
 }
 
 // publicRateLimit é o teto por IP+rota na superfície pública. PROVISÓRIO — janela e limite
@@ -570,6 +570,13 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func writeErr(w http.ResponseWriter, status int, msg string) {
+	// Falha nossa (5xx): o detalhe vai para o log e o cliente recebe uma mensagem
+	// genérica. Antes acontecia o contrário — o comprador via o erro cru (inclusive
+	// resposta de gateway) e o operador não via nada.
+	if status >= 500 {
+		slog.Error("erro interno", "status", status, "detail", msg)
+		msg = "erro interno ao processar a requisição"
+	}
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 

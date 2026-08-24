@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -54,7 +55,11 @@ func (g *AsaasGateway) do(ctx context.Context, method, path string, body any, ou
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("asaas %s %s: status %d", method, path, resp.StatusCode)
+		// O corpo é onde o Asaas diz a causa ("carteira inválida", "cpfCnpj obrigatório"…).
+		// Sem ele sobra um número, e o 500 vira adivinhação. Limitado para não despejar
+		// resposta inteira em log.
+		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 500))
+		return fmt.Errorf("asaas %s %s: status %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(detail)))
 	}
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)
