@@ -100,6 +100,14 @@ func main() {
 		provider = notify.NewResendProvider(cfg.ResendAPIKey, cfg.MailFrom, cfg.MailReplyTo)
 		notifyKind = "resend"
 		slog.Info("notify: envio real ligado", "provider", "resend", "from", cfg.MailFrom)
+		// Remetente sem endereço é recusado pelo provedor e TODA mensagem falha. O caso
+		// real: MAIL_FROM="Nome <caixa@dominio>" sem aspas — o shell corta no '<' e sobra
+		// só o nome. O aviso nomeia o defeito; o serviço segue de pé (venda não depende
+		// de e-mail).
+		if !strings.Contains(cfg.MailFrom, "@") {
+			slog.Error("notify: remetente inválido — nenhum e-mail será aceito pelo provedor; use MAIL_FROM=caixa@dominio ou MAIL_FROM=\"Nome <caixa@dominio>\" (com aspas)",
+				"from", cfg.MailFrom)
+		}
 	} else {
 		// Modo log entrega NADA. É um default legítimo em dev e um defeito em produção —
 		// o aviso diz o que falta, porque a fila fica igual (status 'sent') nos dois casos.
