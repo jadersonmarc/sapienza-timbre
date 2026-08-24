@@ -79,8 +79,12 @@ func main() {
 	var pay payment.PaymentGateway = payment.NewFakeGateway()
 	payKind := "fake"
 	if key := os.Getenv("ASAAS_API_KEY"); key != "" {
-		pay = payment.NewAsaas(key, os.Getenv("ASAAS_BASE_URL"))
+		asaas := payment.NewAsaas(key, os.Getenv("ASAAS_BASE_URL"))
+		pay = asaas
 		payKind = "asaas"
+		// A base efetiva no log: uma base errada autentica e devolve 404 na cobrança, e sem
+		// esta linha não há como ver para onde as chamadas foram.
+		slog.Info("payment: asaas", "base_url", asaas.BaseURL())
 	}
 	// Rede: Base se configurada (RPC + contrato), senão Noop (chain desligada — a venda
 	// nunca depende de rede). A emissão on-chain roda numa fila em segundo plano.

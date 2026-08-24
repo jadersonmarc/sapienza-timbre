@@ -28,10 +28,22 @@ func NewAsaas(apiKey, baseURL string) *AsaasGateway {
 	}
 	return &AsaasGateway{
 		apiKey:  apiKey,
-		baseURL: strings.TrimRight(baseURL, "/"),
+		baseURL: normalizeBase(baseURL),
 		http:    &http.Client{Timeout: 20 * time.Second},
 	}
 }
+
+// normalizeBase tolera a base copiada da documentação com a versão junto. Todo path daqui
+// já começa em "/v3", então uma base terminada em "/v3" produziria "/v3/v3/..." — que
+// autentica e devolve 404, um erro que não se parece nada com o que é. Um "/api" final é
+// preservado: é o formato do host legado (…/api/v3).
+func normalizeBase(baseURL string) string {
+	b := strings.TrimRight(baseURL, "/")
+	return strings.TrimSuffix(b, "/v3")
+}
+
+// BaseURL é a base efetiva usada nas chamadas (registrada no boot para diagnóstico).
+func (g *AsaasGateway) BaseURL() string { return g.baseURL }
 
 // Configured diz se há credencial para operar.
 func (g *AsaasGateway) Configured() bool { return g.apiKey != "" }
