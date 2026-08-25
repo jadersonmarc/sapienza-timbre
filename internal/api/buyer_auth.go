@@ -192,6 +192,14 @@ func (s *Server) verifyCode(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "erro ao verificar")
 		return
 	}
+	// Digitar o código prova a posse do endereço: é a verificação em si, e sem marcá-la a
+	// conta ficaria eternamente "e-mail não verificado" mesmo tendo acabado de provar.
+	if _, err := s.pool.Exec(ctx, `
+		UPDATE subjects SET email_verified_at = COALESCE(email_verified_at, now()), updated_at = now()
+		 WHERE id = $1`, subjectID); err != nil {
+		writeErr(w, http.StatusInternalServerError, "erro ao verificar")
+		return
+	}
 	// Vínculo retroativo SÓ por e-mail verificado (§3.4).
 	if _, err := s.pool.Exec(ctx, `
 		UPDATE ticket_directory SET subject_id = $1
