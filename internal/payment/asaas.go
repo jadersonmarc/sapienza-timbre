@@ -206,7 +206,8 @@ func nonEmpty(s, fallback string) string {
 	return s
 }
 
-// CreateAccount abre a subconta do produtor no Asaas (white label). Devolve só o walletId:
+// CreateAccount abre a subconta do produtor no Asaas (o serviço hoje se chama BaaS —
+// antigo "white label"; o endpoint segue /v3/accounts). Devolve só o walletId:
 // é o destinatário do split. A resposta traz também a chave de API da subconta — ela NÃO é
 // guardada, porque operar em nome do produtor não é necessário para dividir a venda, e
 // custodiar credencial de terceiro é responsabilidade que não vale assumir de graça.

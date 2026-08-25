@@ -116,19 +116,26 @@ func (s *Server) publishEvent(w http.ResponseWriter, r *http.Request, claims *au
 		writeErr(w, http.StatusBadRequest, "id inválido")
 		return
 	}
-	// Publicar é abrir a venda: sem conta de recebimento, o dinheiro do produtor não teria
-	// para onde ir e a cobrança sairia sem divisão — a compra funcionaria e o repasse
-	// simplesmente não aconteceria, em silêncio. Melhor barrar aqui, com o que falta dito.
+	// Publicar é abrir a venda: sem destino para o dinheiro do produtor, a venda acontece e
+	// o repasse simplesmente não — em silêncio, sem erro nem log. Dois destinos servem: a
+	// subconta no gateway (divisão automática na venda) ou a chave Pix (transferência
+	// nossa depois). Basta um.
 	prod, err := store.GetProducer(r.Context(), s.pool, claims.ProducerID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if prod.AsaasWalletID == nil || *prod.AsaasWalletID == "" {
+	payout, err := store.GetPayoutAccount(r.Context(), s.pool, claims.ProducerID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	hasSplit := prod.AsaasWalletID != nil && *prod.AsaasWalletID != ""
+	if !hasSplit && payout.PixKey == "" {
 		writeJSON(w, http.StatusConflict, map[string]any{
 			"error":         "informe os dados de recebimento antes de publicar",
 			"needs_wallet":  true,
-			"error_message": "Para vender ingressos precisamos saber para onde enviar o seu dinheiro. Preencha os dados de recebimento no painel — leva um minuto e vale para todos os seus eventos.",
+			"error_message": "Para vender ingressos precisamos saber para onde enviar o seu dinheiro. Informe sua chave Pix no painel — leva um minuto e vale para todos os seus eventos.",
 		})
 		return
 	}

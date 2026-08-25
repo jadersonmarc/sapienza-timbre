@@ -90,8 +90,16 @@ func (s *Server) receivingAccountStatus(w http.ResponseWriter, r *http.Request, 
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	configured := prod.AsaasWalletID != nil && *prod.AsaasWalletID != ""
-	writeJSON(w, http.StatusOK, map[string]any{"configured": configured})
+	payout, err := store.GetPayoutAccount(r.Context(), s.pool, claims.ProducerID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	split := prod.AsaasWalletID != nil && *prod.AsaasWalletID != ""
+	writeJSON(w, http.StatusOK, map[string]any{
+		"configured": split || payout.PixKey != "",
+		"mode":       payoutMode(split, payout.PixKey != ""),
+	})
 }
 
 // parseReceivingAccount valida o que o gateway exige, em português e um problema por vez.

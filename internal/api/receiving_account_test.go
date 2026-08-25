@@ -112,3 +112,112 @@ func TestReceivingAccountIsPerProducer(t *testing.T) {
 		t.Fatalf("a casa dois não deveria herdar a conta da casa um: %v", status)
 	}
 }
+
+// TestPayoutByPix: o caminho de lançamento. Sem subconta no gateway, a chave Pix é o que
+// libera a publicação — a plataforma recebe e transfere depois.
+func TestPayoutByPix(t *testing.T) {
+	ts, _ := setup(t)
+	_, owner := createProducerWithoutWallet(t, ts, "Casa Pix", "owner@pix.com", "senha1234")
+	eventID := createEvent(t, ts, owner, "Show Pix", "shows")
+	_ = createLot(t, ts, owner, eventID, "Lote 1", 5000, 100, 0)
+
+	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusConflict {
+		t.Fatalf("sem destino do dinheiro não deveria publicar")
+	}
+
+	cpf := testCPF("titular@pix.com")
+	// A chave precisa ser do titular informado: repassar para chave de terceiro embaralha
+	// de quem é o dinheiro recebido.
+	if code, body := do(t, ts, "POST", "/api/v1/producer/payout-account", bearer(owner), map[string]any{
+		"pix_key": testCPF("outro@pix.com"), "pix_key_type": "cpf",
+		"holder_name": "Marc Silva", "holder_tax_id": cpf,
+	}); code != http.StatusBadRequest {
+		t.Fatalf("chave de outro titular deveria ser recusada, veio %d %v", code, body)
+	}
+	// Tipo de chave errado para o formato também.
+	if code, _ := do(t, ts, "POST", "/api/v1/producer/payout-account", bearer(owner), map[string]any{
+		"pix_key": "não-é-email", "pix_key_type": "email",
+		"holder_name": "Marc Silva", "holder_tax_id": cpf,
+	}); code != http.StatusBadRequest {
+		t.Fatalf("chave de e-mail inválida deveria ser recusada")
+	}
+
+	if code, body := do(t, ts, "POST", "/api/v1/producer/payout-account", bearer(owner), map[string]any{
+		"pix_key": cpf, "pix_key_type": "cpf",
+		"holder_name": "Marc Silva", "holder_tax_id": cpf,
+	}); code != http.StatusOK {
+		t.Fatalf("chave válida: %d %v", code, body)
+	}
+	if code, body := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
+		t.Fatalf("com chave Pix deveria publicar, veio %d %v", code, body)
+	}
+
+	// O painel sabe COMO o produtor recebe, e a chave volta mascarada.
+	code, status := do(t, ts, "GET", "/api/v1/producer/payout-account", bearer(owner), nil)
+	if code != http.StatusOK || status["mode"] != "payout" {
+		t.Fatalf("modo deveria ser payout, veio %d %v", code, status)
+	}
+	if key, _ := status["pix_key"].(string); key == cpf || key == "" {
+		t.Fatalf("a chave deveria voltar mascarada, veio %q", key)
+	}
+}
+
+// TestAdminPayoutQueue: com o dinheiro centralizado, a plataforma precisa saber quanto deve
+// a quem e para onde mandar. Quem tem venda mas não cadastrou destino aparece marcado —
+// esse é o caso que precisa de cobrança, não de transferência.
+func TestAdminPayoutQueue(t *testing.T) {
+	ts, pool := setup(t)
+	admin := seedAdmin(t, ts, pool, "pagador@timbre.com", "super_admin")
+	_, owner := createProducerWithoutWallet(t, ts, "Casa Fila", "owner@fila.com", "senha1234")
+
+	cpf := testCPF("fila@fila.com")
+	if code, _ := do(t, ts, "POST", "/api/v1/producer/payout-account", bearer(owner), map[string]any{
+		"pix_key": cpf, "pix_key_type": "cpf", "holder_name": "Marc Silva", "holder_tax_id": cpf,
+	}); code != http.StatusOK {
+		t.Fatalf("configurar repasse")
+	}
+	eventID := createEvent(t, ts, owner, "Show Fila", "shows")
+	_ = createLot(t, ts, owner, eventID, "Lote 1", 10000, 100, 0)
+	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
+		t.Fatalf("publicar")
+	}
+	body := buyViaSession(t, ts, buyer(t, ts, pool, "compra@fila.com"),
+		map[string]any{"event_id": eventID, "quantity": 1}, "pix")
+	confirmWebhook(t, ts, body["asaas_ref"].(string))
+
+	code, queue := do(t, ts, "GET", "/api/v1/admin/payouts", admin, nil)
+	if code != http.StatusOK {
+		t.Fatalf("fila: %d %v", code, queue)
+	}
+	producers, _ := queue["producers"].([]any)
+	var found map[string]any
+	for _, p := range producers {
+		row := p.(map[string]any)
+		if row["producer_name"] == "Casa Fila" {
+			found = row
+		}
+	}
+	if found == nil {
+		t.Fatalf("produtor com venda deveria aparecer na fila: %v", queue)
+	}
+	// O repasse libera D+2 depois do evento, então logo após a venda o valor aparece como
+	// "a liberar" — e é isso que a fila precisa mostrar para o trabalho não sumir.
+	if found["upcoming_cents"].(float64) <= 0 {
+		t.Fatalf("deveria haver valor a liberar: %v", found)
+	}
+	if found["net_due_cents"].(float64) != 0 {
+		t.Fatalf("nada deveria estar liberado ainda: %v", found)
+	}
+	if found["pix_key"] != cpf {
+		t.Fatalf("a fila precisa trazer a chave para transferir, veio %v", found["pix_key"])
+	}
+	if found["blocked"] == true {
+		t.Fatalf("com chave cadastrada não deveria estar bloqueado")
+	}
+
+	// Marcar pago exige comprovante.
+	if code, _ := do(t, ts, "POST", "/api/v1/admin/producers/"+found["producer_id"].(string)+"/payouts/mark-paid",
+		admin, map[string]any{"payout_id": uuid.NewString()}); code != http.StatusBadRequest {
+		t.Fatalf("sem referência deveria recusar")
+	}
+}

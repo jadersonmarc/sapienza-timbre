@@ -81,6 +81,47 @@ func CreateProducerFull(ctx context.Context, tx DBTX, name, status, asaasWalletI
 	return p, err
 }
 
+// PayoutAccount são os dados de repasse do produtor: para onde a plataforma transfere a
+// parte dele depois da venda, enquanto a divisão automática não estiver em uso.
+type PayoutAccount struct {
+	PixKey      string `json:"pix_key"`
+	PixKeyType  string `json:"pix_key_type"`
+	HolderName  string `json:"holder_name"`
+	HolderTaxID string `json:"holder_tax_id"`
+}
+
+// SetPayoutAccount grava os dados de repasse do produtor.
+func SetPayoutAccount(ctx context.Context, tx DBTX, producerID uuid.UUID, p PayoutAccount) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE producers
+		   SET payout_pix_key=$2, payout_pix_key_type=$3, payout_holder_name=$4, payout_holder_tax_id=$5,
+		       updated_at=now()
+		 WHERE id=$1`, producerID, p.PixKey, p.PixKeyType, p.HolderName, p.HolderTaxID)
+	return err
+}
+
+// GetPayoutAccount lê os dados de repasse. Chave vazia significa "não configurado".
+func GetPayoutAccount(ctx context.Context, tx DBTX, producerID uuid.UUID) (PayoutAccount, error) {
+	var p PayoutAccount
+	var key, keyType, holder, taxID *string
+	err := tx.QueryRow(ctx, `
+		SELECT payout_pix_key, payout_pix_key_type, payout_holder_name, payout_holder_tax_id
+		  FROM producers WHERE id=$1`, producerID).Scan(&key, &keyType, &holder, &taxID)
+	if err != nil {
+		return p, err
+	}
+	p.PixKey, p.PixKeyType = deref(key), deref(keyType)
+	p.HolderName, p.HolderTaxID = deref(holder), deref(taxID)
+	return p, nil
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
 // SetAsaasWallet grava a carteira de recebimento do produtor (painel). Vazio limpa —
 // desligar o recebimento é uma escolha possível, e o guarda de publicação avisa.
 func SetAsaasWallet(ctx context.Context, tx DBTX, producerID uuid.UUID, walletID string) error {
