@@ -80,9 +80,34 @@ type WebhookEvent struct {
 	Refunded  bool // estorno/contestação (queima os ingressos)
 }
 
+// AccountInput são os dados que o gateway exige para abrir a conta de recebimento do
+// produtor (subconta). É KYC: o gateway precisa saber de quem é o dinheiro.
+type AccountInput struct {
+	Name          string // nome/razão social
+	Email         string
+	TaxID         string // CPF ou CNPJ (só dígitos)
+	BirthDate     string // AAAA-MM-DD (pessoa física)
+	CompanyType   string // vazio = pessoa física; MEI|LIMITED|INDIVIDUAL|ASSOCIATION
+	MobilePhone   string
+	IncomeCents   int64  // renda/faturamento mensal declarado
+	PostalCode    string // CEP (só dígitos)
+	Address       string
+	AddressNumber string
+	Province      string // bairro
+}
+
+// Account é a conta de recebimento criada no gateway. Guardamos só o WalletID: é o que o
+// split precisa. A chave de API da subconta é devolvida pelo gateway e descartada de
+// propósito — guardar credencial de terceiro exigiria custódia que não temos.
+type Account struct {
+	WalletID string
+}
+
 // PaymentGateway é a interface com o gateway.
 type PaymentGateway interface {
 	CreateCharge(ctx context.Context, req ChargeRequest) (Charge, error)
 	HandleWebhook(ctx context.Context, payload []byte) (WebhookEvent, error)
+	// CreateAccount abre a conta de recebimento do produtor (subconta da plataforma).
+	CreateAccount(ctx context.Context, in AccountInput) (Account, error)
 	Configured() bool
 }

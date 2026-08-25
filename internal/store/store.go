@@ -60,14 +60,36 @@ func CreateProducer(ctx context.Context, tx DBTX, name string) (Producer, error)
 // CreateProducerWithStatus insere um produtor com status explícito. O cadastro público
 // (landing B2B) usa 'pending' — entra na fila de aprovação do admin.
 func CreateProducerWithStatus(ctx context.Context, tx DBTX, name, status string) (Producer, error) {
+	return CreateProducerFull(ctx, tx, name, status, "")
+}
+
+// CreateProducerFull insere o produtor já com a carteira de recebimento, quando informada
+// no cadastro. Sem ela o produtor existe e monta eventos, mas não publica: é para essa
+// carteira que o gateway manda a parte dele em cada venda.
+func CreateProducerFull(ctx context.Context, tx DBTX, name, status, asaasWalletID string) (Producer, error) {
 	var p Producer
+	var wallet *string
+	if asaasWalletID != "" {
+		wallet = &asaasWalletID
+	}
 	err := tx.QueryRow(ctx, `
-		INSERT INTO producers (name, status)
-		VALUES ($1, $2)
-		RETURNING id, name, tier, retention_pct, status, created_at`,
-		name, status,
-	).Scan(&p.ID, &p.Name, &p.Tier, &p.RetentionPct, &p.Status, &p.CreatedAt)
+		INSERT INTO producers (name, status, asaas_wallet_id)
+		VALUES ($1, $2, $3)
+		RETURNING id, name, tier, retention_pct, status, asaas_wallet_id, created_at`,
+		name, status, wallet,
+	).Scan(&p.ID, &p.Name, &p.Tier, &p.RetentionPct, &p.Status, &p.AsaasWalletID, &p.CreatedAt)
 	return p, err
+}
+
+// SetAsaasWallet grava a carteira de recebimento do produtor (painel). Vazio limpa —
+// desligar o recebimento é uma escolha possível, e o guarda de publicação avisa.
+func SetAsaasWallet(ctx context.Context, tx DBTX, producerID uuid.UUID, walletID string) error {
+	var wallet *string
+	if walletID != "" {
+		wallet = &walletID
+	}
+	_, err := tx.Exec(ctx, `UPDATE producers SET asaas_wallet_id=$2, updated_at=now() WHERE id=$1`, producerID, wallet)
+	return err
 }
 
 // CreateCollaborator insere um colaborador de um produtor.

@@ -205,3 +205,37 @@ func nonEmpty(s, fallback string) string {
 	}
 	return s
 }
+
+// CreateAccount abre a subconta do produtor no Asaas (white label). Devolve só o walletId:
+// é o destinatário do split. A resposta traz também a chave de API da subconta — ela NÃO é
+// guardada, porque operar em nome do produtor não é necessário para dividir a venda, e
+// custodiar credencial de terceiro é responsabilidade que não vale assumir de graça.
+func (g *AsaasGateway) CreateAccount(ctx context.Context, in AccountInput) (Account, error) {
+	payload := map[string]any{
+		"name":          in.Name,
+		"email":         in.Email,
+		"cpfCnpj":       in.TaxID,
+		"mobilePhone":   in.MobilePhone,
+		"incomeValue":   reais(in.IncomeCents),
+		"address":       in.Address,
+		"addressNumber": in.AddressNumber,
+		"province":      in.Province,
+		"postalCode":    in.PostalCode,
+	}
+	if in.CompanyType != "" {
+		payload["companyType"] = in.CompanyType
+	} else if in.BirthDate != "" {
+		payload["birthDate"] = in.BirthDate
+	}
+	var out struct {
+		WalletID string `json:"walletId"`
+		ID       string `json:"id"`
+	}
+	if err := g.do(ctx, http.MethodPost, "/v3/accounts", payload, &out); err != nil {
+		return Account{}, fmt.Errorf("criar conta de recebimento: %w", err)
+	}
+	if out.WalletID == "" {
+		return Account{}, fmt.Errorf("gateway não devolveu a carteira da conta criada")
+	}
+	return Account{WalletID: out.WalletID}, nil
+}

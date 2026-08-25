@@ -10,6 +10,7 @@ import (
 
 	"github.com/jadersonmarc/sapienza-timbre/internal/auth"
 	"github.com/jadersonmarc/sapienza-timbre/internal/catalog"
+	"github.com/jadersonmarc/sapienza-timbre/internal/store"
 )
 
 // ── eventos ──────────────────────────────────────────────────────────────────
@@ -113,6 +114,22 @@ func (s *Server) publishEvent(w http.ResponseWriter, r *http.Request, claims *au
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "id inválido")
+		return
+	}
+	// Publicar é abrir a venda: sem conta de recebimento, o dinheiro do produtor não teria
+	// para onde ir e a cobrança sairia sem divisão — a compra funcionaria e o repasse
+	// simplesmente não aconteceria, em silêncio. Melhor barrar aqui, com o que falta dito.
+	prod, err := store.GetProducer(r.Context(), s.pool, claims.ProducerID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if prod.AsaasWalletID == nil || *prod.AsaasWalletID == "" {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":         "informe os dados de recebimento antes de publicar",
+			"needs_wallet":  true,
+			"error_message": "Para vender ingressos precisamos saber para onde enviar o seu dinheiro. Preencha os dados de recebimento no painel — leva um minuto e vale para todos os seus eventos.",
+		})
 		return
 	}
 	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {

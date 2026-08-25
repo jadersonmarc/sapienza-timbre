@@ -2,7 +2,11 @@ package payment
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
+
+	"github.com/google/uuid"
 )
 
 // FakeGateway é o gateway determinístico usado por default (sem ASAAS_API_KEY) e nos
@@ -40,4 +44,14 @@ func (*FakeGateway) HandleWebhook(_ context.Context, payload []byte) (WebhookEve
 		return WebhookEvent{}, err
 	}
 	return WebhookEvent{AsaasRef: e.AsaasRef, Type: e.Type, Confirmed: e.Confirmed, Refunded: e.Refunded}, nil
+}
+
+// CreateAccount devolve uma carteira determinística a partir do documento — sem rede, e
+// estável entre execuções, para o teste poder afirmar qual carteira ficou no produtor.
+func (*FakeGateway) CreateAccount(_ context.Context, in AccountInput) (Account, error) {
+	if in.TaxID == "" {
+		return Account{}, fmt.Errorf("documento obrigatório para abrir a conta de recebimento")
+	}
+	sum := sha256.Sum256([]byte("wallet:" + in.TaxID))
+	return Account{WalletID: uuid.NewSHA1(uuid.Nil, sum[:]).String()}, nil
 }

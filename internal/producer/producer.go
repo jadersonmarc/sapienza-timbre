@@ -38,16 +38,22 @@ type Result struct {
 // O owner tem todas as permissões implicitamente (is_owner), então não gravamos
 // linhas em collaborator_permissions para ele.
 func (p *Provisioner) Create(ctx context.Context, name, ownerEmail, ownerPassword string) (Result, error) {
-	return p.create(ctx, name, ownerEmail, ownerPassword, "active")
+	return p.create(ctx, name, ownerEmail, ownerPassword, "active", "")
+}
+
+// CreateWithWallet cria o produtor ativo já com a carteira de recebimento informada no
+// cadastro — é o caminho do cadastro público.
+func (p *Provisioner) CreateWithWallet(ctx context.Context, name, ownerEmail, ownerPassword, asaasWalletID string) (Result, error) {
+	return p.create(ctx, name, ownerEmail, ownerPassword, "active", asaasWalletID)
 }
 
 // CreatePending cria o produtor PENDENTE de aprovação (cadastro público da landing B2B).
 // O owner já existe e pode logar, mas o produtor entra na fila de aprovação do admin.
 func (p *Provisioner) CreatePending(ctx context.Context, name, ownerEmail, ownerPassword string) (Result, error) {
-	return p.create(ctx, name, ownerEmail, ownerPassword, "pending")
+	return p.create(ctx, name, ownerEmail, ownerPassword, "pending", "")
 }
 
-func (p *Provisioner) create(ctx context.Context, name, ownerEmail, ownerPassword, status string) (Result, error) {
+func (p *Provisioner) create(ctx context.Context, name, ownerEmail, ownerPassword, status, asaasWalletID string) (Result, error) {
 	hash, err := auth.HashPassword(ownerPassword)
 	if err != nil {
 		return Result{}, fmt.Errorf("hash de senha: %w", err)
@@ -60,7 +66,7 @@ func (p *Provisioner) create(ctx context.Context, name, ownerEmail, ownerPasswor
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	prod, err := store.CreateProducerWithStatus(ctx, tx, name, status)
+	prod, err := store.CreateProducerFull(ctx, tx, name, status, asaasWalletID)
 	if err != nil {
 		return Result{}, fmt.Errorf("criar produtor: %w", err)
 	}

@@ -228,6 +228,29 @@ func createProducer(t *testing.T, ts *httptest.Server, name, email, pass string)
 	if pid == "" {
 		t.Fatalf("producer id vazio: %v", body)
 	}
+	token := login(t, ts, email, pass)
+	// Publicar exige conta de recebimento (sem ela o repasse não teria destino). Os testes
+	// que vendem precisam de um produtor pronto para vender, então o helper configura a
+	// carteira — quem testa o guarda usa createProducerWithoutWallet.
+	if code, body := do(t, ts, "POST", "/api/v1/producer/receiving-account", bearer(token),
+		map[string]any{"wallet_id": uuid.NewString()}); code != http.StatusOK {
+		t.Fatalf("configurar recebimento: %d %v", code, body)
+	}
+	return pid, token
+}
+
+// createProducerWithoutWallet cria o produtor sem conta de recebimento — o estado de quem
+// acabou de se cadastrar.
+func createProducerWithoutWallet(t *testing.T, ts *httptest.Server, name, email, pass string) (string, string) {
+	t.Helper()
+	code, body := do(t, ts, "POST", "/api/v1/producers",
+		map[string]string{"X-Admin-Token": adminToken},
+		map[string]any{"name": name, "owner_email": email, "owner_password": pass})
+	if code != http.StatusCreated {
+		t.Fatalf("create producer: status %d, body %v", code, body)
+	}
+	prod, _ := body["producer"].(map[string]any)
+	pid, _ := prod["id"].(string)
 	return pid, login(t, ts, email, pass)
 }
 

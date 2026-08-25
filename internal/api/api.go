@@ -110,6 +110,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/events/{id}", s.authed(s.getEvent))
 	mux.HandleFunc("PATCH /api/v1/events/{id}", s.requireOwner(s.patchEvent))
 	mux.HandleFunc("POST /api/v1/events/{id}/publish", s.requireOwner(s.publishEvent))
+	mux.HandleFunc("GET /api/v1/producer/receiving-account", s.requireOwner(s.receivingAccountStatus))
+	mux.HandleFunc("POST /api/v1/producer/receiving-account", s.requireOwner(s.receivingAccount))
 	mux.HandleFunc("POST /api/v1/events/{id}/submit-review", s.requireOwner(s.transitionEvent("pending_review")))
 	mux.HandleFunc("POST /api/v1/events/{id}/suspend", s.requireOwner(s.transitionEvent("suspended")))
 	mux.HandleFunc("POST /api/v1/events/{id}/cancel", s.requireOwner(s.transitionEvent("cancelled")))
