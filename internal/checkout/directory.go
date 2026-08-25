@@ -61,3 +61,51 @@ func writeTicketDirectory(ctx context.Context, tx pgx.Tx, producerID, eventID uu
 	}
 	return nil
 }
+
+// writeOrderDirectory alimenta o índice público de pedidos (public.order_directory) — o que
+// "meus pedidos" lê sem varrer schemas. Chamado na criação da ordem; o status acompanha a
+// vida dela pelos updates abaixo.
+func writeOrderDirectory(ctx context.Context, tx pgx.Tx, producerID, eventID, orderID uuid.UUID, subjectID *uuid.UUID, buyerEmail string, bd orderMoney) error {
+	var title string
+	var startsAt *time.Time
+	if err := tx.QueryRow(ctx, `SELECT title, starts_at FROM events WHERE id=$1`, eventID).Scan(&title, &startsAt); err != nil {
+		return err
+	}
+	// Sem subject na compra (fluxos legados), tenta pelo e-mail — o vínculo definitivo vem
+	// da verificação do endereço.
+	if subjectID == nil && buyerEmail != "" {
+		var id uuid.UUID
+		if err := tx.QueryRow(ctx, `SELECT id FROM subjects WHERE lower(email)=lower($1) ORDER BY created_at LIMIT 1`, buyerEmail).Scan(&id); err == nil {
+			subjectID = &id
+		}
+	}
+	_, err := tx.Exec(ctx, `
+		INSERT INTO order_directory
+		    (producer_id, order_id, subject_id, buyer_email, event_id, event_title, event_starts_at,
+		     ticket_count, face_cents, fee_cents, total_cents, method, installments, status)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'pending')
+		ON CONFLICT (producer_id, order_id) DO NOTHING`,
+		producerID, orderID, subjectID, nilIfEmpty(buyerEmail), eventID, title, startsAt,
+		bd.tickets, bd.face, bd.fee, bd.total, bd.method, bd.installments)
+	return err
+}
+
+// orderMoney é a decomposição do pedido como foi cobrada, congelada no índice.
+type orderMoney struct {
+	tickets      int
+	face         int64
+	fee          int64
+	total        int64
+	method       string
+	installments int
+}
+
+// markOrderDirectoryPaid registra a confirmação no índice público (idempotente: o webhook
+// pode repetir).
+func markOrderDirectoryPaid(ctx context.Context, tx pgx.Tx, producerID, orderID uuid.UUID, asaasRef string) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE order_directory
+		   SET status='paid', paid_at=COALESCE(paid_at, now()), asaas_ref=COALESCE(NULLIF($3,''), asaas_ref)
+		 WHERE producer_id=$1 AND order_id=$2`, producerID, orderID, asaasRef)
+	return err
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -216,4 +217,55 @@ func writeTransferErr(w http.ResponseWriter, err error) {
 	default:
 		writeErr(w, http.StatusInternalServerError, err.Error())
 	}
+}
+
+// myOrders lista o histórico de compras do comprador, de todos os produtores. Lê o índice
+// público (order_directory) — varrer schemas de produtor a cada abertura de tela não
+// escalaria, e o histórico precisa abrir rápido justamente quando algo deu errado.
+func (s *Server) myOrders(w http.ResponseWriter, r *http.Request, subjectID uuid.UUID) {
+	rows, err := s.pool.Query(r.Context(), `
+		SELECT order_id, event_id, event_title, event_starts_at, ticket_count,
+		       face_cents, fee_cents, total_cents, COALESCE(method,''), installments,
+		       status, created_at, paid_at, refunded_at
+		  FROM order_directory
+		 WHERE subject_id = $1
+		 ORDER BY created_at DESC
+		 LIMIT 100`, subjectID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+	type order struct {
+		OrderID     uuid.UUID  `json:"order_id"`
+		EventID     uuid.UUID  `json:"event_id"`
+		EventTitle  string     `json:"event_title"`
+		EventStarts *time.Time `json:"event_starts_at"`
+		TicketCount int        `json:"ticket_count"`
+		FaceCents   int64      `json:"face_cents"`
+		FeeCents    int64      `json:"fee_cents"`
+		TotalCents  int64      `json:"total_cents"`
+		Method      string     `json:"method"`
+		Installment int        `json:"installments"`
+		Status      string     `json:"status"`
+		CreatedAt   time.Time  `json:"created_at"`
+		PaidAt      *time.Time `json:"paid_at"`
+		RefundedAt  *time.Time `json:"refunded_at"`
+	}
+	list := []order{}
+	for rows.Next() {
+		var o order
+		if err := rows.Scan(&o.OrderID, &o.EventID, &o.EventTitle, &o.EventStarts, &o.TicketCount,
+			&o.FaceCents, &o.FeeCents, &o.TotalCents, &o.Method, &o.Installment,
+			&o.Status, &o.CreatedAt, &o.PaidAt, &o.RefundedAt); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		list = append(list, o)
+	}
+	if err := rows.Err(); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"orders": list})
 }

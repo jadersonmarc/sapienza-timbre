@@ -75,10 +75,16 @@ func RefundPayment(ctx context.Context, tx pgx.Tx, asaasRef string) error {
 		 WHERE order_id = $1 AND status = 'active'`, orderID); err != nil {
 		return err
 	}
-	// Ponto de escrita do índice público (§3.10): o estorno reflete no ticket_directory.
+	// Ponto de escrita do índice público (§3.10): o estorno reflete no ticket_directory e
+	// no pedido — quem procura "por que meu ingresso sumiu" acha a resposta no histórico.
 	if _, err := tx.Exec(ctx, `
 		UPDATE ticket_directory SET status = 'refunded'
 		 WHERE ticket_id IN (SELECT id FROM tickets WHERE order_id = $1)`, orderID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE order_directory SET status='refunded', refunded_at=COALESCE(refunded_at, now())
+		 WHERE order_id = $1`, orderID); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE payments SET status='refunded', updated_at=now() WHERE asaas_ref=$1`, asaasRef); err != nil {

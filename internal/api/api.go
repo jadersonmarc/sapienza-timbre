@@ -145,6 +145,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/public/config", s.publicConfig)
 	mux.HandleFunc("GET /api/v1/public/checkout/orders/{orderId}/status", s.checkoutStatus)
 	mux.HandleFunc("GET /api/v1/public/me/tickets", s.buyerAuthed(s.myTickets))
+	mux.HandleFunc("GET /api/v1/public/me/orders", s.buyerAuthed(s.myOrders))
 	mux.HandleFunc("POST /api/v1/public/auth/register", s.rateLimited("auth-register", s.register))
 	mux.HandleFunc("POST /api/v1/public/auth/login", s.rateLimited("auth-login", s.buyerLogin))
 	mux.HandleFunc("POST /api/v1/public/auth/reset-password", s.rateLimited("auth-reset", s.resetPassword))

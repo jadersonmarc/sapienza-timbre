@@ -191,7 +191,6 @@ func finalizeOrder(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, pr
 	).Scan(&orderID); err != nil {
 		return Result{}, fmt.Errorf("criar ordem: %w", err)
 	}
-
 	// Itens: um por assento (seated) ou um agregado (pista).
 	if err := insertOrderItems(ctx, tx, orderID, lot, req, unitPrices); err != nil {
 		return Result{}, err
@@ -221,6 +220,16 @@ func finalizeOrder(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, pr
 		orderID, req.Method, installments, bd.TotalCents, string(splitJSON),
 	).Scan(&paymentID); err != nil {
 		return Result{}, fmt.Errorf("criar pagamento: %w", err)
+	}
+
+	// Índice público do pedido: é o que o comprador vê em "meus pedidos", sem varrer os
+	// schemas de produtor. Nasce 'pending' — Pix abandonado também é informação para quem
+	// procura o que aconteceu com uma compra.
+	if err := writeOrderDirectory(ctx, tx, prod.ID, req.EventID, orderID, subjectID, req.BuyerEmail, orderMoney{
+		tickets: req.Quantity, face: bd.FaceCents, fee: bd.ConvenienceFeeCents, total: bd.TotalCents,
+		method: req.Method, installments: installments,
+	}); err != nil {
+		return Result{}, fmt.Errorf("indexar pedido: %w", err)
 	}
 
 	// Cobrança no gateway pelo TOTAL; o split entrega o FACE ao produtor.
@@ -443,6 +452,9 @@ func ConfirmPayment(ctx context.Context, tx pgx.Tx, em Emitter, producerID uuid.
 	}
 
 	// Índice público de ingressos do comprador ("meus ingressos", sem varrer schemas).
+	if err := markOrderDirectoryPaid(ctx, tx, producerID, orderID, asaasRef); err != nil {
+		return nil, err
+	}
 	if err := writeTicketDirectory(ctx, tx, em.ProducerID, eventID, deliverTo, tickets); err != nil {
 		return nil, err
 	}

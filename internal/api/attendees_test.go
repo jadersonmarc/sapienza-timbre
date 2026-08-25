@@ -465,3 +465,71 @@ func TestInstallments(t *testing.T) {
 		t.Fatalf("Pix deveria ficar em 1 parcela, veio %d", n)
 	}
 }
+
+// TestMyOrders: o histórico de compras existe e conta a história certa — pedido criado
+// aparece como pendente, confirmado vira pago, e a decomposição do valor fica congelada
+// (é a resposta para "por que paguei isso?" numa contestação, meses depois).
+func TestMyOrders(t *testing.T) {
+	ts, pool := setup(t)
+	_, owner := createProducer(t, ts, "Casa Hist", "owner@hist.com", "senha1234")
+	eventID := createEvent(t, ts, owner, "Show Hist", "shows")
+	_ = createLot(t, ts, owner, eventID, "Lote 1", 8000, 100, 0)
+	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
+		t.Fatalf("publicar: %d", code)
+	}
+	hdr := buyer(t, ts, pool, "historico@hist.com")
+
+	code, sess := do(t, ts, "POST", "/api/v1/public/checkout/sessions", nil,
+		map[string]any{"event_id": eventID, "quantity": 2, "anon_token": uuid.NewString()})
+	if code != http.StatusCreated {
+		t.Fatalf("sessão: %d", code)
+	}
+	sid := sess["id"].(string)
+	if code, _ := do(t, ts, "POST", "/api/v1/public/checkout/sessions/"+sid+"/bind", hdr, nil); code != http.StatusOK {
+		t.Fatalf("bind: %d", code)
+	}
+	code, pay := do(t, ts, "POST", "/api/v1/public/checkout/sessions/"+sid+"/pay", hdr, map[string]any{"method": "pix"})
+	if code != http.StatusCreated {
+		t.Fatalf("pay: %d %v", code, pay)
+	}
+
+	// Antes de pagar, o pedido já está no histórico — Pix abandonado também é informação.
+	code, body := do(t, ts, "GET", "/api/v1/public/me/orders", hdr, nil)
+	if code != http.StatusOK {
+		t.Fatalf("orders: %d %v", code, body)
+	}
+	orders := body["orders"].([]any)
+	if len(orders) != 1 {
+		t.Fatalf("esperava 1 pedido, veio %d", len(orders))
+	}
+	first := orders[0].(map[string]any)
+	if first["status"] != "pending" {
+		t.Fatalf("pedido não pago deveria estar pendente, veio %v", first["status"])
+	}
+	if int(first["ticket_count"].(float64)) != 2 {
+		t.Fatalf("esperava 2 ingressos no pedido, veio %v", first["ticket_count"])
+	}
+	if first["event_title"] != "Show Hist" {
+		t.Fatalf("o histórico precisa dizer de que evento é: %v", first)
+	}
+	face := int64(first["face_cents"].(float64))
+	fee := int64(first["fee_cents"].(float64))
+	total := int64(first["total_cents"].(float64))
+	if face != 16000 || total != face+fee {
+		t.Fatalf("decomposição inconsistente: face=%d fee=%d total=%d", face, fee, total)
+	}
+
+	confirmWebhook(t, ts, pay["asaas_ref"].(string))
+	_, body = do(t, ts, "GET", "/api/v1/public/me/orders", hdr, nil)
+	first = body["orders"].([]any)[0].(map[string]any)
+	if first["status"] != "paid" || first["paid_at"] == nil {
+		t.Fatalf("depois do pagamento o pedido deveria constar pago: %v", first)
+	}
+
+	// Histórico é por conta: outro comprador não vê o pedido alheio.
+	outro := buyer(t, ts, pool, "outro@hist.com")
+	_, body = do(t, ts, "GET", "/api/v1/public/me/orders", outro, nil)
+	if len(body["orders"].([]any)) != 0 {
+		t.Fatalf("o histórico não pode vazar entre contas: %v", body)
+	}
+}
