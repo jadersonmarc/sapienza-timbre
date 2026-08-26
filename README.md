@@ -63,6 +63,71 @@ curl -sX POST localhost:8082/api/v1/collaborators -H "Authorization: Bearer $TOK
 | `TIMBRE_ENC_KEY` | não | reservado (AES por-tenant), não usado na 1.1 |
 | `ASAAS_API_KEY` | não | gateway (Etapa 1.4); vazio = stub |
 
+## Split de pagamento (repasse ao produtor)
+
+O comprador paga **face + conveniência**. O produtor recebe o **face limpo**, dividido na
+própria cobrança pelo gateway. A margem do Timbre é a conveniência menos a tarifa do
+gateway — 10% do face, para todo produtor.
+
+O preço sai de uma fórmula fechada, porque a tarifa percentual do gateway incide sobre o
+valor cobrado, que já contém a conveniência:
+
+    V = (F × (1 + p) + b) / (1 − a)
+
+`F` face · `p` taxa de plataforma (10%) · `a` e `b` a tarifa do gateway para o método e a
+faixa de parcelamento. `V` arredonda **para cima**: um centavo a menos deixaria o líquido
+abaixo do face e o gateway recusaria o split. As tarifas vêm de `GET /v3/myAccount/fees`,
+com cache e a última tabela persistida como contingência — nenhum valor de tarifa é
+chumbado no código.
+
+### Conta do produtor
+
+A conta de recebimento (subconta padrão — **não é BaaS, não é conta escrow**) pertence ao
+produtor e é reusada em todos os eventos dele. Estados:
+
+    sem_conta → criada_aguardando_docs → em_analise → aprovada | reprovada
+
+Evento pode ser criado, editado e configurado em qualquer estado. **Só abrir venda exige
+`aprovada`** — o produtor monta o evento enquanto a análise corre. A `apiKey` da subconta é
+descartada na criação: o split não precisa dela e não há coluna para guardá-la.
+
+### Antes da primeira subconta em PRODUÇÃO
+
+A criação de subcontas via API abre um **período de avaliação regulatória**: no máximo
+**10 subcontas de titulares distintos** e **60 dias corridos** contados da primeira. Ao
+estourar, criação e emissão são bloqueadas.
+
+> **Não crie a primeira subconta em produção antes de a documentação da avaliação
+> regulatória estar pronta para envio.** O relógio começa na primeira criação, não quando
+> você estiver pronto. Em Sandbox o limite é de 20 por dia e não atrapalha os testes.
+
+O código alerta ao chegar em 7 subcontas e recusa a criação no teto.
+
+### Confirmação anual de dados comerciais
+
+Exigência regulatória: sem confirmar, a subconta perde o uso da API. A data vem do gateway
+(`commercialInfoExpiration`) e é atualizada por **webhook**
+(`ACCOUNT_STATUS_COMMERCIAL_INFO_EXPIRING_SOON`) — não por polling, porque o campo só muda
+uma vez por ano e consulta proativa gasta rate limit à toa.
+
+### Divergência na liquidação
+
+A cobrança é criada semanas antes de ser paga. Se a tabela de tarifas mudar nesse intervalo,
+um valor de split que passou na criação pode divergir na liquidação: o gateway bloqueia o
+valor e dá **2 dias úteis** para ajustar. É cenário esperado, não defeito — vira alerta
+operacional, e o repasse fica `BLOCKED`. Passado o prazo, `CANCELLED` e resolução manual.
+
+### Antecipação de recebíveis
+
+Se a conta do Timbre passar a usar antecipação de recebíveis, o split é recusado com
+`RECEIVABLE_UNIT_AFFECTED_BY_EXTERNAL_CONTRACTUAL_EFFECT`. O motivo da recusa fica gravado
+em `split_transfers.refusal_reason`.
+
+### Line-up
+
+O rateio entre artistas é **informativo**: alimenta o painel do produtor e não movimenta
+dinheiro. Artista não é recebedor no gateway — quem paga o artista é o produtor.
+
 ## Testes
 
 ```bash
