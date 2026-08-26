@@ -62,7 +62,8 @@ func TestDashboardReflectsSale(t *testing.T) {
 		t.Fatalf("curva do lote: esperava sold_count 2 / revenue 10000, veio %v", lot0)
 	}
 	fin, _ := body["finance"].(map[string]any)
-	if fin["gross_cents"].(float64) != 10000 || fin["taxa_cents"].(float64) != 900 || fin["repasse_cents"].(float64) != 10000 {
+	// Taxa de plataforma = 10% do face, igual para todo produtor (não há mais nível/rebate).
+	if fin["gross_cents"].(float64) != 10000 || fin["taxa_cents"].(float64) != 1000 || fin["repasse_cents"].(float64) != 10000 {
 		t.Fatalf("financeiro: %v", fin)
 	}
 	chk, _ := body["checkin"].(map[string]any)

@@ -10,8 +10,10 @@ import (
 
 // Method de pagamento.
 const (
-	MethodPix  = "pix"
-	MethodCard = "credit_card"
+	MethodPix    = "pix"
+	MethodCard   = "credit_card"
+	MethodBoleto = "boleto"
+	MethodDebit  = "debit_card"
 )
 
 // SplitItem é uma fatia do split (destinatário Asaas + valor/percentual).
@@ -97,10 +99,29 @@ type AccountInput struct {
 }
 
 // Account é a conta de recebimento criada no gateway. Guardamos só o WalletID: é o que o
-// split precisa. A chave de API da subconta é devolvida pelo gateway e descartada de
-// propósito — guardar credencial de terceiro exigiria custódia que não temos.
+// split precisa. A chave de API da subconta é devolvida pelo gateway UMA ÚNICA VEZ e é
+// descartada de propósito — não é necessária neste desenho, e custodiar credencial de
+// terceiro é responsabilidade sem contrapartida.
 type Account struct {
 	WalletID string
+	// CommercialInfoExpired e CommercialInfoExpiresAt vêm de commercialInfoExpiration: a
+	// confirmação anual de dados comerciais é exigência regulatória, e sem ela a subconta
+	// perde o uso da API.
+	CommercialInfoExpired   bool
+	CommercialInfoExpiresAt *time.Time
+}
+
+// AccountDocuments são as pendências de documentação de uma subconta e por onde resolvê-las.
+type AccountDocuments struct {
+	Items []AccountDocument
+}
+
+// AccountDocument é uma pendência: o tipo e o link para o titular resolver.
+type AccountDocument struct {
+	ID            string `json:"id"`
+	Type          string `json:"type"`
+	Status        string `json:"status"`
+	OnboardingURL string `json:"onboarding_url"`
 }
 
 // PaymentGateway é a interface com o gateway.
@@ -109,5 +130,11 @@ type PaymentGateway interface {
 	HandleWebhook(ctx context.Context, payload []byte) (WebhookEvent, error)
 	// CreateAccount abre a conta de recebimento do produtor (subconta da plataforma).
 	CreateAccount(ctx context.Context, in AccountInput) (Account, error)
+	// Fees devolve a tabela de tarifas vigente da conta. O preço do ingresso depende
+	// dela, então quem chama precisa tratar falha com o último valor conhecido.
+	Fees(ctx context.Context) (Fees, error)
+	// AccountDocuments lista as pendências de documentação da subconta recém-criada e o
+	// link de onboarding de cada uma.
+	AccountDocuments(ctx context.Context, walletID string) (AccountDocuments, error)
 	Configured() bool
 }

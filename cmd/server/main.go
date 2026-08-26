@@ -28,6 +28,7 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/checkout"
 	"github.com/jadersonmarc/sapienza-timbre/internal/config"
 	"github.com/jadersonmarc/sapienza-timbre/internal/db"
+	"github.com/jadersonmarc/sapienza-timbre/internal/fees"
 	"github.com/jadersonmarc/sapienza-timbre/internal/gateweb"
 	"github.com/jadersonmarc/sapienza-timbre/internal/inventory"
 	"github.com/jadersonmarc/sapienza-timbre/internal/ledger"
@@ -120,10 +121,21 @@ func main() {
 	}
 	go notify.NewWorker(pool, provider).Run(ctx)
 
+	// Tabela de tarifas do gateway: alimenta o cálculo de preço. Uma leitura no boot deixa
+	// a primeira venda rápida e denuncia cedo credencial/plano errados; falha aqui não
+	// impede subir, porque o serviço cai para a última tabela persistida.
+	feeSvc := fees.New(pool, pay)
+	if f, err := feeSvc.Refresh(ctx); err != nil {
+		slog.Warn("fees: não foi possível ler a tabela de tarifas no boot", "err", err)
+	} else {
+		slog.Info("fees: tabela de tarifas carregada", "faixas_credito", len(f.CreditCard))
+	}
+
 	seams := api.Seams{
 		Chain:   chainDriver,
 		Payment: pay,
 		Notify:  notifier,
+		Fees:    feeSvc,
 	}
 	slog.Info("seams", "chain", chainKind, "chain_enabled", chainDriver.Enabled(), "payment", payKind, "notify", notifyKind)
 

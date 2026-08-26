@@ -46,10 +46,11 @@ func TestProducerProgram(t *testing.T) {
 		t.Fatalf("após transição: %v", body)
 	}
 
-	// Venda de face 10000 como sênior (modelo Sympla §4): taxa = 10% (1000) − rebate 20% (200) = 800.
+	// O nível não mexe mais no preço: a taxa de plataforma é 10% do face para todo
+	// produtor. O programa de produtores foi extinto; o nível fica só como registro.
 	sellAt(t, ts, pool, owner, 10000)
-	if taxa := scanInt(t, ctx, pool, pid, `SELECT amount_cents FROM ledger_entries WHERE kind='taxa'`); taxa != 800 {
-		t.Fatalf("taxa sênior: esperava 800, veio %d", taxa)
+	if taxa := scanInt(t, ctx, pool, pid, `SELECT amount_cents FROM ledger_entries WHERE kind='taxa'`); taxa != 1000 {
+		t.Fatalf("taxa: esperava 10%% do face (1000), veio %d", taxa)
 	}
 
 	// Originação inerte: participação default 0 → nenhuma apuração de originador.

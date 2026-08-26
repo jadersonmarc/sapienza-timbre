@@ -293,6 +293,10 @@ func (s *Server) paySession(w http.ResponseWriter, r *http.Request, subjectID uu
 		return
 	}
 	email := acc.email
+	feeTable, ok := s.currentFees(w, r)
+	if !ok {
+		return
+	}
 	var res checkout.Result
 	err = s.withTenant(r.Context(), producerID, func(tx pgx.Tx) error {
 		sess, e := checkout.GetSession(r.Context(), tx, id)
@@ -327,6 +331,7 @@ func (s *Server) paySession(w http.ResponseWriter, r *http.Request, subjectID uu
 			Method: body.Method, Installments: body.Installments,
 			SubjectID: subjectID, BuyerName: acc.name, BuyerEmail: email,
 			BuyerCPF: cpf, BuyerPhone: acc.phone, Attendees: attendees,
+			Fees: feeTable,
 		}
 		if body.Method == payment.MethodCard && body.Card != nil {
 			card, holder, problem := buildCard(*body.Card, acc, cpf)

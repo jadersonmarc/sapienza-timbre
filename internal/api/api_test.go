@@ -22,6 +22,7 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/auth"
 	"github.com/jadersonmarc/sapienza-timbre/internal/chain"
 	"github.com/jadersonmarc/sapienza-timbre/internal/checkout"
+	"github.com/jadersonmarc/sapienza-timbre/internal/fees"
 	"github.com/jadersonmarc/sapienza-timbre/internal/notify"
 	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
 	"github.com/jadersonmarc/sapienza-timbre/internal/producer"
@@ -49,10 +50,14 @@ func setupCoreMode(t *testing.T, chainDriver chain.ChainDriver, mintMode chain.M
 	pool := testutil.Pool(t)
 	runner := tenancy.NewMigrationRunner(pool, migrations.Tenant)
 	signer := ticketing.GenerateSigner()
+	gw := payment.NewFakeGateway()
 	srv := api.NewServer(pool, auth.New("test-secret"), producer.New(pool, runner), signer, signer, "", adminToken, "", checkout.DefaultLimits(), chain.NoopAnchorer{}, chain.AnchorModeOff, api.Seams{
 		Chain:   chainDriver,
-		Payment: payment.NewFakeGateway(),
+		Payment: gw,
 		Notify:  notify.NewService(pool, ""),
+		// O preço depende da tabela de tarifas do gateway; sem ela a venda é recusada
+		// (503) em vez de calcular com tarifa arbitrada.
+		Fees: fees.New(pool, gw),
 	})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)

@@ -25,6 +25,7 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/chain"
 	"github.com/jadersonmarc/sapienza-timbre/internal/checkout"
 	"github.com/jadersonmarc/sapienza-timbre/internal/config"
+	"github.com/jadersonmarc/sapienza-timbre/internal/fees"
 	"github.com/jadersonmarc/sapienza-timbre/internal/notify"
 	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
 	"github.com/jadersonmarc/sapienza-timbre/internal/producer"
@@ -47,8 +48,10 @@ func setupAttest(t *testing.T, anchorer chain.Anchorer, anchorMode chain.AnchorM
 		VALUES ($1,$2,'ed25519') ON CONFLICT (key_id) DO NOTHING`, keyID, attestSigner.PublicKeyB64()); err != nil {
 		t.Fatalf("registrar chave: %v", err)
 	}
+	gw := payment.NewFakeGateway()
 	srv := api.NewServer(pool, auth.New("test-secret"), producer.New(pool, runner), signer, attestSigner, keyID, adminToken, "", checkout.DefaultLimits(), anchorer, anchorMode, api.Seams{
-		Chain: chain.NoopChainDriver{}, Payment: payment.NewFakeGateway(), Notify: notify.NewService(pool, ""),
+		Chain: chain.NoopChainDriver{}, Payment: gw, Notify: notify.NewService(pool, ""),
+		Fees: fees.New(pool, gw),
 	})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)

@@ -216,8 +216,13 @@ func TestPublicQuoteDecomposition(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("quote: %d %v", code, bd)
 	}
-	if bd["face_cents"].(float64) != 10000 || bd["convenience_fee_cents"].(float64) != 900 || bd["total_cents"].(float64) != 10900 {
+	// face 10000; plataforma 10% = 1000; a tarifa do gateway entra no total porque incide
+	// sobre o valor cobrado (cálculo circular), não sobre o face.
+	if bd["face_cents"].(float64) != 10000 || bd["platform_fee_cents"].(float64) != 1000 {
 		t.Fatalf("decomposição inesperada: %v", bd)
+	}
+	if bd["total_cents"].(float64) != bd["face_cents"].(float64)+bd["convenience_fee_cents"].(float64) {
+		t.Fatalf("total deveria ser face + conveniência: %v", bd)
 	}
 }
 

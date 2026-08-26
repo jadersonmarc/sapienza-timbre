@@ -1,74 +1,84 @@
-// Package pricing calcula a decomposição de preço do modelo "Sympla" (§4): o produtor
-// recebe o VALOR DE FACE limpo; o comprador paga face + taxa de conveniência. A taxa de
-// conveniência = taxa de plataforma (10% do face, menos o rebate do nível) + custo de
-// processamento repassado à adquirência (varia por método).
+// Package pricing calcula o preço do ingresso no modelo de face limpo: o produtor recebe
+// exatamente o VALOR DE FACE, e o comprador paga face + conveniência. A margem do Timbre é
+// a conveniência menos a tarifa do gateway.
 //
-// VALOR DEFINIDO: taxa de plataforma = 10% (§4.1).
-// PROVISÓRIOS (não inventados — constantes isoladas, inertes até definição comercial):
-//   - Custo de processamento por método (§4.4): sem número definido → 0 (inerte). Trocar
-//     quando a adquirência (Asaas) informar o custo real por Pix e por cartão.
-//   - Direção do rebate de nível (§4.4): interpretação de trabalho = o rebate REDUZ a taxa
-//     de plataforma cobrada do comprador (barateia para o público do produtor). A alternativa
-//     (produtor recebe a diferença como crédito) fica parametrizada em RebateReducesBuyerFee.
+// O cálculo é circular: a tarifa percentual do gateway incide sobre o valor cobrado, que já
+// contém a conveniência. Resolvendo para V:
+//
+//	V = (F * (1 + p) + b) / (1 - a)
+//
+//	F = face          p = taxa de plataforma (10%)
+//	a = % do gateway  b = fixo do gateway (ambos dependem do método e do parcelamento)
+//
+// Por isso o preço final só existe DEPOIS que o comprador escolhe como vai pagar.
 package pricing
 
-import "math"
+import (
+	"fmt"
+	"math"
 
-// PlatformFeePct é a taxa de plataforma sobre o valor de face. DEFINIDO (§4.1): 10%.
+	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
+)
+
+// PlatformFeePct é a taxa de plataforma sobre o face, igual para todo produtor. É
+// configuração (um único ponto de mudança), não tabela de níveis: não há desconto por
+// produtor.
 const PlatformFeePct = 10.0
 
-// Custo de processamento por método — PROVISÓRIO (§4.4). Inerte (0) até a adquirência
-// definir. Isolados para trocar num único lugar.
-const (
-	pixProcessingCents = int64(0)
-	cardProcessingPct  = 0.0
-)
-
-// RebateReducesBuyerFee — PROVISÓRIO (§4.4). true = o rebate do nível reduz a taxa de
-// plataforma cobrada do comprador. false = a plataforma cobra a taxa cheia do comprador e o
-// produtor recebe a diferença como crédito (não implementado aqui; ver ledger quando definido).
-const RebateReducesBuyerFee = true
-
-// Method espelha os métodos do gateway.
-const (
-	MethodPix  = "pix"
-	MethodCard = "credit_card"
-)
-
-// Breakdown é a decomposição do preço mostrada ao comprador e usada no razão.
+// Breakdown é a decomposição do preço, mostrada ao comprador e guardada na venda.
 type Breakdown struct {
-	FaceCents           int64 `json:"face_cents"`            // repasse ao produtor (limpo)
-	PlatformFeeCents    int64 `json:"platform_fee_cents"`    // receita da plataforma (líq. do rebate)
-	ProcessingCents     int64 `json:"processing_cents"`      // repasse à adquirência
-	ConvenienceFeeCents int64 `json:"convenience_fee_cents"` // = platform + processing
-	TotalCents          int64 `json:"total_cents"`           // = face + conveniência (o que o comprador paga)
+	FaceCents           int64 `json:"face_cents"`            // repasse ao produtor (limpo, é o split)
+	PlatformFeeCents    int64 `json:"platform_fee_cents"`    // margem do Timbre (face × p)
+	ProcessingCents     int64 `json:"processing_cents"`      // tarifa estimada do gateway
+	ConvenienceFeeCents int64 `json:"convenience_fee_cents"` // = platform + processing (V − F)
+	TotalCents          int64 `json:"total_cents"`           // = V, o que o comprador paga
 }
 
-// Compute decompõe o preço para um dado valor de face, método e rebate do nível (em %).
-// Cortesia / valor zero não geram taxa (§4.3).
-func Compute(faceCents int64, method string, tierRebatePct float64) Breakdown {
+// Compute resolve V para um face, método e parcelamento, usando a tabela de tarifas
+// vigente. Erra em vez de arbitrar quando a tarifa do método não existe na tabela.
+func Compute(faceCents int64, method string, installments int, fees payment.Fees) (Breakdown, error) {
 	if faceCents <= 0 {
-		return Breakdown{}
+		return Breakdown{}, nil // cortesia não gera cobrança nem taxa
 	}
-	platform := int64(math.Round(float64(faceCents) * PlatformFeePct / 100))
-	if RebateReducesBuyerFee && tierRebatePct > 0 {
-		platform -= int64(math.Round(float64(platform) * tierRebatePct / 100))
+	fee, err := fees.For(method, installments)
+	if err != nil {
+		return Breakdown{}, err
 	}
-	if platform < 0 {
-		platform = 0
+	a := fee.Pct / 100
+	if a >= 1 {
+		return Breakdown{}, fmt.Errorf("tarifa percentual inválida (%.2f%%)", fee.Pct)
 	}
-	var processing int64
-	if method == MethodCard {
-		processing = int64(math.Round(float64(faceCents) * cardProcessingPct / 100))
-	} else {
-		processing = pixProcessingCents
+	p := PlatformFeePct / 100
+
+	// Arredonda o total SEMPRE para cima: um centavo a menos deixaria o líquido abaixo do
+	// face e o gateway recusaria o split por divergência.
+	numerador := float64(faceCents)*(1+p) + float64(fee.FixedCents)
+	total := int64(math.Ceil(numerador / (1 - a)))
+
+	platform := int64(math.Round(float64(faceCents) * p))
+	conv := total - faceCents
+	processing := conv - platform
+	if processing < 0 {
+		// Só acontece se a tarifa do gateway for maior que a conveniência inteira, o que
+		// significaria vender no prejuízo. Melhor deixar explícito no número que esconder.
+		processing = 0
 	}
-	conv := platform + processing
 	return Breakdown{
 		FaceCents:           faceCents,
 		PlatformFeeCents:    platform,
 		ProcessingCents:     processing,
 		ConvenienceFeeCents: conv,
-		TotalCents:          faceCents + conv,
+		TotalCents:          total,
+	}, nil
+}
+
+// GatewayFeeCents estima a tarifa que o gateway vai reter de um valor cobrado. Serve para a
+// asserção antes de criar a cobrança: o líquido precisa cobrir o face, senão o split é
+// recusado na liquidação — semanas depois, com o dinheiro em jogo.
+func GatewayFeeCents(totalCents int64, method string, installments int, fees payment.Fees) (int64, error) {
+	fee, err := fees.For(method, installments)
+	if err != nil {
+		return 0, err
 	}
+	return int64(math.Ceil(float64(totalCents)*fee.Pct/100)) + fee.FixedCents, nil
 }

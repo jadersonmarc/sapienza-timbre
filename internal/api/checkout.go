@@ -14,6 +14,7 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/inventory"
 	"github.com/jadersonmarc/sapienza-timbre/internal/market"
 	"github.com/jadersonmarc/sapienza-timbre/internal/notify"
+	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
 	"github.com/jadersonmarc/sapienza-timbre/internal/pricing"
 	"github.com/jadersonmarc/sapienza-timbre/internal/season"
 )
@@ -36,6 +37,11 @@ func (s *Server) publicQuote(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	feeTable, ok := s.currentFees(w, r)
+	if !ok {
+		return
+	}
+	req.Fees = feeTable
 	var bd pricing.Breakdown
 	err = s.withTenant(r.Context(), producerID, func(tx pgx.Tx) error {
 		var e error
@@ -263,4 +269,19 @@ func parseUUIDPtr(s *string) (*uuid.UUID, error) {
 		return nil, err
 	}
 	return &id, nil
+}
+
+// currentFees devolve a tabela de tarifas para o cálculo de preço. Erro aqui é 503, não
+// 500: é indisponibilidade externa, e o comprador pode tentar de novo em instantes.
+func (s *Server) currentFees(w http.ResponseWriter, r *http.Request) (payment.Fees, bool) {
+	if s.seams.Fees == nil {
+		writeErr(w, http.StatusServiceUnavailable, "tabela de tarifas indisponível")
+		return payment.Fees{}, false
+	}
+	f, err := s.seams.Fees.Current(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusServiceUnavailable, "não foi possível calcular o preço agora")
+		return payment.Fees{}, false
+	}
+	return f, true
 }

@@ -67,9 +67,11 @@ func TestCheckoutPixStandingCycle(t *testing.T) {
 	if body["pix_code"] == nil || body["pix_code"] == "" {
 		t.Fatalf("esperava pix_code no checkout, veio %v", body)
 	}
-	// Modelo Sympla (§4): comprador paga face 10000 + conveniência (10% − rebate 10% = 900) = 10900.
-	if amt := body["amount_cents"].(float64); amt != 10900 {
-		t.Fatalf("esperava amount 10900 (face 10000 + conveniência 900), veio %v", amt)
+	// Face limpo ao produtor: o comprador paga V = (face × 1,10 + b) / (1 − a), com a/b da
+	// tabela de tarifas do gateway. Pix da tabela de teste: a = 0,99%, b = 0 →
+	// (10000 × 1,10) / 0,9901 = 11110 (arredondado para cima).
+	if amt := body["amount_cents"].(float64); amt != 11110 {
+		t.Fatalf("esperava amount 11110 (face 10000 + conveniência 1110), veio %v", amt)
 	}
 	asaasRef, _ := body["asaas_ref"].(string)
 
@@ -92,15 +94,16 @@ func TestCheckoutPixStandingCycle(t *testing.T) {
 		t.Fatalf("esperava sold_count=2, veio %d", sold)
 	}
 
-	// Razão (§4.3): repasse = FACE (10000, limpo ao produtor); taxa = plataforma (900).
-	if taxa := scanInt(t, ctx, pool, pid, `SELECT amount_cents FROM ledger_entries WHERE kind='taxa'`); taxa != 900 {
-		t.Fatalf("esperava taxa 900 (10%% de 10000 − rebate 10%%), veio %d", taxa)
+	// Razão: repasse = FACE (10000, limpo ao produtor); taxa = 10% do face, igual para
+	// todo produtor.
+	if taxa := scanInt(t, ctx, pool, pid, `SELECT amount_cents FROM ledger_entries WHERE kind='taxa'`); taxa != 1000 {
+		t.Fatalf("esperava taxa 1000 (10%% de 10000), veio %d", taxa)
 	}
 	if repasse := scanInt(t, ctx, pool, pid, `SELECT amount_cents FROM ledger_entries WHERE kind='repasse'`); repasse != 10000 {
 		t.Fatalf("esperava repasse 10000 (face limpo), veio %d", repasse)
 	}
-	if pc := scanInt(t, ctx, pool, pid, `SELECT (split->>'platform_cents')::int FROM payments LIMIT 1`); pc != 900 {
-		t.Fatalf("esperava split platform_cents 900, veio %d", pc)
+	if pc := scanInt(t, ctx, pool, pid, `SELECT (split->>'platform_cents')::int FROM payments LIMIT 1`); pc != 1110 {
+		t.Fatalf("esperava split platform_cents 1110 (conveniência), veio %d", pc)
 	}
 
 	// Idempotência: reenviar o webhook não duplica ingressos.

@@ -240,3 +240,116 @@ func (g *AsaasGateway) CreateAccount(ctx context.Context, in AccountInput) (Acco
 	}
 	return Account{WalletID: out.WalletID}, nil
 }
+
+// Fees busca a tabela de tarifas vigente da conta. Guarda a resposta crua junto: é ela que
+// vai para o snapshot de auditoria da venda.
+func (g *AsaasGateway) Fees(ctx context.Context) (Fees, error) {
+	raw, err := g.raw(ctx, http.MethodGet, "/v3/myAccount/fees")
+	if err != nil {
+		return Fees{}, err
+	}
+	return parseAsaasFees(raw)
+}
+
+// AccountDocuments lista as pendências de documentação de uma subconta e o link de
+// onboarding de cada uma. A consulta usa a chave da PLATAFORMA com o cabeçalho da subconta
+// alvo — a chave da subconta é descartada na criação de propósito.
+func (g *AsaasGateway) AccountDocuments(ctx context.Context, walletID string) (AccountDocuments, error) {
+	var out struct {
+		Data []struct {
+			ID            string `json:"id"`
+			Type          string `json:"type"`
+			Status        string `json:"status"`
+			OnboardingURL string `json:"onboardingUrl"`
+		} `json:"data"`
+	}
+	if err := g.doAs(ctx, walletID, http.MethodGet, "/v3/myAccount/documents", nil, &out); err != nil {
+		return AccountDocuments{}, err
+	}
+	docs := AccountDocuments{}
+	for _, d := range out.Data {
+		docs.Items = append(docs.Items, AccountDocument{
+			ID: d.ID, Type: d.Type, Status: d.Status, OnboardingURL: d.OnboardingURL,
+		})
+	}
+	return docs, nil
+}
+
+// ConfirmCommercialInfo submete a confirmação anual de dados comerciais da subconta.
+func (g *AsaasGateway) ConfirmCommercialInfo(ctx context.Context, walletID string, in AccountInput) error {
+	payload := map[string]any{
+		"name": in.Name, "email": in.Email, "cpfCnpj": in.TaxID, "mobilePhone": in.MobilePhone,
+		"incomeValue": reais(in.IncomeCents), "address": in.Address, "addressNumber": in.AddressNumber,
+		"province": in.Province, "postalCode": in.PostalCode,
+	}
+	if in.CompanyType != "" {
+		payload["companyType"] = in.CompanyType
+	} else if in.BirthDate != "" {
+		payload["birthDate"] = in.BirthDate
+	}
+	return g.doAs(ctx, walletID, http.MethodPost, "/v3/myAccount/commercialInfo", payload, nil)
+}
+
+// raw faz a chamada e devolve o corpo sem decodificar (para guardar o original).
+func (g *AsaasGateway) raw(ctx context.Context, method, path string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, method, g.baseURL+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("access_token", g.apiKey)
+	resp, err := g.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("asaas %s %s: status %d: %s", method, path, resp.StatusCode, clip(string(body)))
+	}
+	return body, nil
+}
+
+// doAs chama a API no contexto de uma SUBCONTA, identificada pelo walletId. É assim que a
+// plataforma consulta documentos e confirma dados comerciais sem guardar a chave dela.
+func (g *AsaasGateway) doAs(ctx context.Context, walletID, method, path string, body, out any) error {
+	var buf bytes.Buffer
+	if body != nil {
+		if err := json.NewEncoder(&buf).Encode(body); err != nil {
+			return err
+		}
+	}
+	req, err := http.NewRequestWithContext(ctx, method, g.baseURL+path, &buf)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("access_token", g.apiKey)
+	if walletID != "" {
+		req.Header.Set("asaas-account", walletID)
+	}
+	resp, err := g.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 500))
+		return fmt.Errorf("asaas %s %s: status %d: %s", method, path, resp.StatusCode, clip(strings.TrimSpace(string(detail))))
+	}
+	if out != nil {
+		return json.NewDecoder(resp.Body).Decode(out)
+	}
+	return nil
+}
+
+// clip limita o corpo de erro que entra em log/mensagem: o suficiente para diagnosticar,
+// sem despejar resposta inteira.
+func clip(s string) string {
+	if len(s) > 300 {
+		return s[:300]
+	}
+	return s
+}

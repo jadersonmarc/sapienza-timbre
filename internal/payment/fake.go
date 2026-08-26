@@ -55,3 +55,26 @@ func (*FakeGateway) CreateAccount(_ context.Context, in AccountInput) (Account, 
 	sum := sha256.Sum256([]byte("wallet:" + in.TaxID))
 	return Account{WalletID: uuid.NewSHA1(uuid.Nil, sum[:]).String()}, nil
 }
+
+// Fees devolve uma tabela determinística para os testes: valores plausíveis, sem rede.
+func (*FakeGateway) Fees(_ context.Context) (Fees, error) {
+	return Fees{
+		Pix:       MethodFee{Pct: 0.99},
+		Boleto:    MethodFee{FixedCents: 199},
+		DebitCard: MethodFee{Pct: 1.89, FixedCents: 35},
+		CreditCard: []CreditTier{
+			{MinInstallments: 1, MaxInstallments: 1, Pct: 2.99, FixedCents: 49},
+			{MinInstallments: 2, MaxInstallments: 6, Pct: 3.49, FixedCents: 49},
+			{MinInstallments: 7, MaxInstallments: 21, Pct: 3.99, FixedCents: 49},
+		},
+		Raw: []byte(`{"fake":true}`),
+	}, nil
+}
+
+// AccountDocuments simula uma pendência de documento com link de onboarding.
+func (*FakeGateway) AccountDocuments(_ context.Context, walletID string) (AccountDocuments, error) {
+	return AccountDocuments{Items: []AccountDocument{{
+		ID: "doc_" + walletID, Type: "IDENTIFICATION", Status: "PENDING",
+		OnboardingURL: "https://sandbox.asaas.com/onboarding/" + walletID,
+	}}}, nil
+}

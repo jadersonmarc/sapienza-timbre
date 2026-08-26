@@ -70,6 +70,9 @@ type Request struct {
 	BuyerPhone   string      `json:"buyer_phone"`
 	// Attendees é a ficha nominal por ingresso (len == Quantity quando informada).
 	Attendees []Attendee `json:"attendees,omitempty"`
+	// Fees é a tabela de tarifas vigente do gateway, injetada pelo handler. O preço
+	// depende dela e ela não pode vir do cliente.
+	Fees payment.Fees `json:"-"`
 	// Card/Holder/RemoteIP: cartão transparente. Só trafegam; nada é gravado.
 	Card     *payment.CardData   `json:"-"`
 	Holder   *payment.HolderData `json:"-"`
@@ -159,13 +162,22 @@ func finalizeOrder(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, pr
 	if err != nil {
 		return Result{}, err
 	}
-	// Modelo Sympla (§4): o produtor recebe o FACE limpo; o comprador paga face + conveniência.
+	// O produtor recebe o FACE limpo; o comprador paga face + conveniência.
 	face := max(subtotal-discount, 0)
-	rebatePct, err := program.TierRebatePct(ctx, tx, prod.ID, time.Now())
-	if err != nil {
-		return Result{}, err
+	// As parcelas entram no preço: a tarifa percentual do crédito muda por faixa, então o
+	// número delas precisa estar decidido ANTES de calcular quanto cobrar.
+	installments := max(req.Installments, 1)
+	if req.Method != payment.MethodCard {
+		installments = 1 // só o crédito parcela
 	}
-	bd := pricing.Compute(face, req.Method, rebatePct)
+	bd, err := pricing.Compute(face, req.Method, installments, req.Fees)
+	if err != nil {
+		return Result{}, fmt.Errorf("%w: %s", ErrBadRequest, err.Error())
+	}
+	// O piso por parcela depende do total, que só existe aqui.
+	if !ValidInstallments(installments, bd.TotalCents) {
+		return Result{}, fmt.Errorf("%w: parcelamento indisponível para este valor", ErrBadRequest)
+	}
 
 	// Split: o produtor recebe o FACE; a plataforma fica com a taxa de conveniência (a
 	// adquirência deduz o processamento do total no ato).
@@ -205,15 +217,6 @@ func finalizeOrder(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, pr
 
 	// Pagamento (pending).
 	var paymentID uuid.UUID
-	installments := max(req.Installments, 1)
-	if req.Method != payment.MethodCard {
-		installments = 1 // Pix não parcela
-	}
-	// O piso por parcela depende do total, que só existe aqui. Recusar agora é melhor que
-	// levar um "parcelamento inválido" do gateway com a reserva já consumida.
-	if !ValidInstallments(installments, bd.TotalCents) {
-		return Result{}, fmt.Errorf("%w: parcelamento indisponível para este valor", ErrBadRequest)
-	}
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO payments (order_id, method, installments, amount_cents, status, split)
 		VALUES ($1,$2,$3,$4,'pending',$5::jsonb) RETURNING id`,
@@ -293,11 +296,11 @@ func Quote(ctx context.Context, tx pgx.Tx, producerID uuid.UUID, req Request) (p
 		return pricing.Breakdown{}, err
 	}
 	face := max(subtotal-discount, 0)
-	rebatePct, err := program.TierRebatePct(ctx, tx, producerID, time.Now())
-	if err != nil {
-		return pricing.Breakdown{}, err
+	installments := max(req.Installments, 1)
+	if req.Method != payment.MethodCard {
+		installments = 1
 	}
-	return pricing.Compute(face, req.Method, rebatePct), nil
+	return pricing.Compute(face, req.Method, installments, req.Fees)
 }
 
 // reserveCurrentLot resolve o lote vigente do evento e reserva `qty` nele, tolerando a

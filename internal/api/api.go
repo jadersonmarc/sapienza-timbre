@@ -24,6 +24,7 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/auth"
 	"github.com/jadersonmarc/sapienza-timbre/internal/chain"
 	"github.com/jadersonmarc/sapienza-timbre/internal/checkout"
+	"github.com/jadersonmarc/sapienza-timbre/internal/fees"
 	"github.com/jadersonmarc/sapienza-timbre/internal/notify"
 	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
 	"github.com/jadersonmarc/sapienza-timbre/internal/producer"
@@ -38,6 +39,9 @@ type Seams struct {
 	Chain   chain.ChainDriver
 	Payment payment.PaymentGateway
 	Notify  notify.Notifier
+	// Fees serve a tabela de tarifas do gateway ao cálculo de preço. Nunca é opcional no
+	// caminho de venda: sem ela o preço sairia com tarifa arbitrada.
+	Fees *fees.Service
 }
 
 // Server guarda as dependências da API.
