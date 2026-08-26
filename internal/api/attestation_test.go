@@ -52,6 +52,8 @@ func setupAttest(t *testing.T, anchorer chain.Anchorer, anchorMode chain.AnchorM
 	srv := api.NewServer(pool, auth.New("test-secret"), producer.New(pool, runner), signer, attestSigner, keyID, adminToken, "", checkout.DefaultLimits(), anchorer, anchorMode, api.Seams{
 		Chain: chain.NoopChainDriver{}, Payment: gw, Notify: notify.NewService(pool, ""),
 		Fees: fees.New(pool, gw),
+		// Conta de recebimento: sem espera de validação, para o teste não dormir.
+		Subaccounts: instantSubaccounts(pool, gw),
 	})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)

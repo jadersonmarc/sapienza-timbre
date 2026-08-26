@@ -1,14 +1,20 @@
 package api
 
 import (
+	"context"
+	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/jadersonmarc/sapienza-timbre/internal/auth"
 	"github.com/jadersonmarc/sapienza-timbre/internal/checkout"
 	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
 	"github.com/jadersonmarc/sapienza-timbre/internal/store"
+	"github.com/jadersonmarc/sapienza-timbre/internal/subaccount"
 )
 
 // Faturamento mensal declarado: o gateway usa para o perfil de movimentação da conta. O
@@ -66,7 +72,15 @@ func (s *Server) receivingAccount(w http.ResponseWriter, r *http.Request, claims
 		writeErr(w, http.StatusBadRequest, problem)
 		return
 	}
-	acc, err := s.seams.Payment.CreateAccount(ctx, in)
+	acc, err := s.seams.Subaccounts.Create(ctx, claims.ProducerID, in)
+	if errors.Is(err, subaccount.ErrLimitReached) {
+		// Teto do período de avaliação regulatória: não é erro do produtor e não adianta
+		// ele tentar de novo — é a plataforma que precisa resolver com o gateway.
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error": "no momento não estamos abrindo novas contas de recebimento. Fale com o suporte.",
+		})
+		return
+	}
 	if err != nil {
 		// A recusa vem do gateway (documento já usado, dado inconsistente) e é do produtor
 		// resolver — devolver 500 esconderia isso atrás de "erro interno".
@@ -75,11 +89,15 @@ func (s *Server) receivingAccount(w http.ResponseWriter, r *http.Request, claims
 		})
 		return
 	}
-	if err := store.SetAsaasWallet(ctx, s.pool, claims.ProducerID, acc.WalletID); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "wallet_id": acc.WalletID, "created": true})
+	// A validação do documento junto à Receita ainda está correndo: consultar os documentos
+	// agora devolveria pendências erradas. A espera acontece fora da requisição para não
+	// segurar o produtor na tela.
+	go s.syncDocumentsAfterDelay(claims.ProducerID)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "wallet_id": acc.WalletID, "created": true,
+		"account_status": acc.Status,
+	})
 }
 
 // receivingAccountStatus diz se o produtor já pode vender. O painel usa para avisar antes
@@ -90,15 +108,18 @@ func (s *Server) receivingAccountStatus(w http.ResponseWriter, r *http.Request, 
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	payout, err := store.GetPayoutAccount(r.Context(), s.pool, claims.ProducerID)
-	if err != nil {
+	acc, err := s.seams.Subaccounts.Get(r.Context(), claims.ProducerID)
+	if err != nil && !errors.Is(err, subaccount.ErrNotFound) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	split := prod.AsaasWalletID != nil && *prod.AsaasWalletID != ""
+	_ = prod
 	writeJSON(w, http.StatusOK, map[string]any{
-		"configured": split || payout.PixKey != "",
-		"mode":       payoutMode(split, payout.PixKey != ""),
+		"configured":                 acc.CanSell(),
+		"account_status":             statusOrNone(acc.Status),
+		"onboarding_url":             acc.OnboardingURL,
+		"can_sell":                   acc.CanSell(),
+		"commercial_info_expires_at": acc.CommercialInfoExpiresAt,
 	})
 }
 
@@ -159,4 +180,21 @@ func validCompanyType(t string) bool {
 		return true
 	}
 	return false
+}
+
+// syncDocumentsAfterDelay espera a validação do documento terminar no gateway e então busca
+// as pendências e o link de onboarding. Roda destacado da requisição: quem cadastrou não
+// precisa esperar por isso, e o link aparece no painel quando estiver pronto.
+func (s *Server) syncDocumentsAfterDelay(producerID uuid.UUID) {
+	svc := s.seams.Subaccounts
+	if svc == nil {
+		return
+	}
+	time.Sleep(svc.DocumentsDelay)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := svc.SyncDocuments(ctx, producerID); err != nil {
+		slog.Warn("subconta: não foi possível buscar as pendências de documentação",
+			"producer_id", producerID, "err", err)
+	}
 }

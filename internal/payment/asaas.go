@@ -135,18 +135,26 @@ func (g *AsaasGateway) CreateCharge(ctx context.Context, req ChargeRequest) (Cha
 			payload["remoteIp"] = req.RemoteIP
 		}
 	}
+	if req.ExternalReference != "" {
+		payload["externalReference"] = req.ExternalReference
+	}
 	if len(req.Split) > 0 {
 		split := make([]map[string]any, 0, len(req.Split))
 		for _, s := range req.Split {
 			item := map[string]any{"walletId": s.WalletID}
-			if s.FixedCents > 0 {
+			// Parcelado usa totalFixedValue: com fixedValue o recebedor levaria o valor
+			// A CADA parcela, ou seja, o face multiplicado pelo número de parcelas.
+			if req.Method == MethodCard && req.Installments > 1 {
+				item["totalFixedValue"] = reais(s.FixedCents)
+			} else {
 				item["fixedValue"] = reais(s.FixedCents)
-			} else if s.Percent > 0 {
-				item["percentualValue"] = s.Percent
+			}
+			if s.ExternalReference != "" {
+				item["externalReference"] = s.ExternalReference
 			}
 			split = append(split, item)
 		}
-		payload["split"] = split
+		payload["splits"] = split
 	}
 
 	var pay struct {
@@ -172,11 +180,31 @@ func (g *AsaasGateway) CreateCharge(ctx context.Context, req ChargeRequest) (Cha
 
 // asaasWebhook é o formato do webhook do Asaas.
 type asaasWebhook struct {
+	// ID do EVENTO — é por ele que a idempotência funciona.
+	ID      string `json:"id"`
 	Event   string `json:"event"`
 	Payment struct {
 		ID     string `json:"id"`
 		Status string `json:"status"`
 	} `json:"payment"`
+	Split struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	} `json:"split"`
+	// additionalInfo traz o split que originou o evento — uma cobrança pode ter vários.
+	AdditionalInfo struct {
+		SplitID       string `json:"splitId"`
+		WalletID      string `json:"walletId"`
+		RefusalReason string `json:"refusalReason"`
+	} `json:"additionalInfo"`
+	Account struct {
+		WalletID                 string `json:"walletId"`
+		Status                   string `json:"status"`
+		CommercialInfoExpiration *struct {
+			IsExpired     bool   `json:"isExpired"`
+			ScheduledDate string `json:"scheduledDate"`
+		} `json:"commercialInfoExpiration"`
+	} `json:"account"`
 }
 
 // HandleWebhook decodifica e normaliza o webhook do Asaas.
@@ -187,7 +215,49 @@ func (g *AsaasGateway) HandleWebhook(_ context.Context, payload []byte) (Webhook
 	}
 	confirmed := e.Event == "PAYMENT_CONFIRMED" || e.Event == "PAYMENT_RECEIVED"
 	refunded := e.Event == "PAYMENT_REFUNDED" || e.Event == "PAYMENT_CHARGEBACK_REQUESTED"
-	return WebhookEvent{AsaasRef: e.Payment.ID, Type: e.Event, Confirmed: confirmed, Refunded: refunded}, nil
+	evt := WebhookEvent{
+		ID: e.ID, AsaasRef: e.Payment.ID, Type: e.Event,
+		Confirmed: confirmed, Refunded: refunded,
+		SplitID:       e.AdditionalInfo.SplitID,
+		RefusalReason: e.AdditionalInfo.RefusalReason,
+		WalletID:      firstNonEmpty(e.Account.WalletID, e.AdditionalInfo.WalletID),
+		AccountStatus: e.Account.Status,
+	}
+	if e.Account.CommercialInfoExpiration != nil && e.Account.CommercialInfoExpiration.ScheduledDate != "" {
+		if t, err := time.Parse("2006-01-02", e.Account.CommercialInfoExpiration.ScheduledDate); err == nil {
+			evt.CommercialInfoExpiresAt = &t
+		}
+	}
+	evt.SplitStatus = splitStatusFor(e.Event, e.Split.Status)
+	return evt, nil
+}
+
+// splitStatusFor traduz o evento de split para o status que guardamos. O bloqueio por
+// divergência não é status do gateway — é nosso, porque tem prazo para resolver e precisa
+// aparecer como trabalho pendente e não como log.
+func splitStatusFor(event, status string) string {
+	switch event {
+	case "PAYMENT_SPLIT_DONE":
+		return "DONE"
+	case "PAYMENT_SPLIT_DIVERGENCE_BLOCK":
+		return "BLOCKED"
+	case "PAYMENT_SPLIT_DIVERGENCE_BLOCK_FINISHED":
+		return "CANCELLED"
+	case "PAYMENT_SPLIT_CANCELLED":
+		return "CANCELLED"
+	case "PAYMENT_SPLIT_REFUSED":
+		return "REFUSED"
+	}
+	return status
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func reais(cents int64) string { return fmt.Sprintf("%.2f", float64(cents)/100.0) }

@@ -36,6 +36,7 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
 	"github.com/jadersonmarc/sapienza-timbre/internal/producer"
 	"github.com/jadersonmarc/sapienza-timbre/internal/store"
+	"github.com/jadersonmarc/sapienza-timbre/internal/subaccount"
 	"github.com/jadersonmarc/sapienza-timbre/internal/ticketing"
 )
 
@@ -136,6 +137,8 @@ func main() {
 		Payment: pay,
 		Notify:  notifier,
 		Fees:    feeSvc,
+		// Conta de recebimento do produtor: destinatária do split de cada venda.
+		Subaccounts: subaccount.New(pool, pay),
 	}
 	slog.Info("seams", "chain", chainKind, "chain_enabled", chainDriver.Enabled(), "payment", payKind, "notify", notifyKind)
 

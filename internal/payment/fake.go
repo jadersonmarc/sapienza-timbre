@@ -35,6 +35,13 @@ type fakeWebhook struct {
 	Type      string `json:"type"`
 	Confirmed bool   `json:"confirmed"`
 	Refunded  bool   `json:"refunded"`
+	// Campos dos demais fluxos: split e cadastro de subconta.
+	ID            string `json:"id"`
+	SplitID       string `json:"split_id"`
+	SplitStatus   string `json:"split_status"`
+	RefusalReason string `json:"refusal_reason"`
+	WalletID      string `json:"wallet_id"`
+	AccountStatus string `json:"account_status"`
 }
 
 // HandleWebhook decodifica o payload de teste.
@@ -43,7 +50,13 @@ func (*FakeGateway) HandleWebhook(_ context.Context, payload []byte) (WebhookEve
 	if err := json.Unmarshal(payload, &e); err != nil {
 		return WebhookEvent{}, err
 	}
-	return WebhookEvent{AsaasRef: e.AsaasRef, Type: e.Type, Confirmed: e.Confirmed, Refunded: e.Refunded}, nil
+	return WebhookEvent{
+		ID: e.ID, AsaasRef: e.AsaasRef, Type: e.Type,
+		Confirmed: e.Confirmed, Refunded: e.Refunded,
+		SplitID: e.SplitID, SplitStatus: splitStatusFor(e.Type, e.SplitStatus),
+		RefusalReason: e.RefusalReason,
+		WalletID:      e.WalletID, AccountStatus: e.AccountStatus,
+	}, nil
 }
 
 // CreateAccount devolve uma carteira determinística a partir do documento — sem rede, e

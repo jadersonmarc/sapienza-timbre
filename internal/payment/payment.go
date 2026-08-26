@@ -5,6 +5,7 @@ package payment
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -16,11 +17,15 @@ const (
 	MethodDebit  = "debit_card"
 )
 
-// SplitItem é uma fatia do split (destinatário Asaas + valor/percentual).
+// SplitItem é uma fatia do split: quanto vai para a carteira de quem recebe.
+//
+// SEMPRE valor fixo, nunca percentual. O gateway calcula percentual sobre o LÍQUIDO, o que
+// faria o produtor absorver parte da tarifa — e a promessa do modelo é face limpo.
 type SplitItem struct {
-	WalletID   string  `json:"wallet_id"`
-	Percent    float64 `json:"percent,omitempty"`
-	FixedCents int64   `json:"fixed_cents,omitempty"`
+	WalletID   string `json:"wallet_id"`
+	FixedCents int64  `json:"fixed_cents"`
+	// ExternalReference identifica o repasse do nosso lado no webhook de liquidação.
+	ExternalReference string `json:"external_reference,omitempty"`
 }
 
 // ChargeRequest descreve uma cobrança (Pix ou cartão com parcelamento).
@@ -34,7 +39,12 @@ type ChargeRequest struct {
 	BuyerCPF     string
 	BuyerPhone   string
 	DueDate      time.Time
-	Split        []SplitItem // divisão automática no ato da venda
+	// Split: uma fatia por recebedor. O emissor (Timbre) NÃO se declara — recebe
+	// automaticamente o líquido não distribuído, e declarar a própria carteira é exceção
+	// na API.
+	Split []SplitItem
+	// ExternalReference amarra a cobrança ao pedido do nosso lado.
+	ExternalReference string
 	// Card e Holder existem no cartão transparente: o comprador digita na NOSSA tela e os
 	// dados seguem para o gateway nesta requisição. Não são persistidos em lugar nenhum e
 	// nunca entram em log.
@@ -76,10 +86,47 @@ type Charge struct {
 // WebhookEvent é o evento decodificado do webhook do gateway. A idempotência é do
 // chamador (o checkout ignora um asaas_ref já confirmado/estornado).
 type WebhookEvent struct {
+	// ID é o identificador DO EVENTO. A idempotência é por ele, não pela cobrança: uma
+	// mesma cobrança gera confirmação, liquidação de split e estorno, e deduplicar por
+	// cobrança descartaria eventos legítimos.
+	ID        string
 	AsaasRef  string
 	Type      string
 	Confirmed bool // pagamento confirmado/recebido
 	Refunded  bool // estorno/contestação (queima os ingressos)
+
+	// ── split ────────────────────────────────────────────────────────────────
+	// SplitID identifica QUAL split do pagamento originou o evento (uma cobrança pode
+	// ter vários recebedores).
+	SplitID       string
+	SplitStatus   string
+	RefusalReason string
+
+	// ── conta (subconta do produtor) ─────────────────────────────────────────
+	// WalletID identifica a subconta quando o evento é de cadastro, não de cobrança.
+	WalletID                string
+	AccountStatus           string
+	CommercialInfoExpiresAt *time.Time
+}
+
+// Kinds de evento que o webhook distingue. Cobrança e cadastro de subconta são fluxos
+// diferentes, com tratamento diferente.
+const (
+	EventKindPayment = "payment"
+	EventKindSplit   = "split"
+	EventKindAccount = "account"
+)
+
+// Kind classifica o evento pelo tipo declarado pelo gateway.
+func (e WebhookEvent) Kind() string {
+	switch {
+	case strings.HasPrefix(e.Type, "PAYMENT_SPLIT_"):
+		return EventKindSplit
+	case strings.HasPrefix(e.Type, "ACCOUNT_STATUS"):
+		return EventKindAccount
+	default:
+		return EventKindPayment
+	}
 }
 
 // AccountInput são os dados que o gateway exige para abrir a conta de recebimento do

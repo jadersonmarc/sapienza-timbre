@@ -235,19 +235,46 @@ func finalizeOrder(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, pr
 		return Result{}, fmt.Errorf("indexar pedido: %w", err)
 	}
 
-	// Cobrança no gateway pelo TOTAL; o split entrega o FACE ao produtor.
+	// Cobrança no gateway pelo TOTAL; o split entrega o FACE limpo ao produtor. O Timbre
+	// não se declara no split: o emissor recebe o líquido não distribuído.
 	var splitItems []payment.SplitItem
-	if prod.AsaasWalletID != nil && *prod.AsaasWalletID != "" && split.ProducerCents > 0 {
-		splitItems = []payment.SplitItem{{WalletID: *prod.AsaasWalletID, FixedCents: split.ProducerCents}}
+	if prod.AsaasWalletID != nil && *prod.AsaasWalletID != "" && bd.FaceCents > 0 {
+		// Antes de cobrar: o líquido tem de cobrir o face. Se não cobrir, o gateway
+		// bloqueia o split por divergência na LIQUIDAÇÃO — semanas depois, com o dinheiro
+		// preso e dois dias úteis para resolver. Falhar aqui é muito mais barato.
+		tarifa, err := pricing.GatewayFeeCents(bd.TotalCents, req.Method, installments, req.Fees)
+		if err != nil {
+			return Result{}, fmt.Errorf("%w: %s", ErrBadRequest, err.Error())
+		}
+		if bd.TotalCents-tarifa < bd.FaceCents {
+			return Result{}, fmt.Errorf(
+				"%w: cobrança de %d não cobre o repasse de %d após a tarifa estimada de %d",
+				ErrBadRequest, bd.TotalCents, bd.FaceCents, tarifa)
+		}
+		splitItems = []payment.SplitItem{{
+			WalletID:          *prod.AsaasWalletID,
+			FixedCents:        bd.FaceCents,
+			ExternalReference: "timbre:repasse:" + orderID.String(),
+		}}
 	}
 	charge, err := gw.CreateCharge(ctx, payment.ChargeRequest{
 		OrderID: orderID.String(), Method: req.Method, AmountCents: bd.TotalCents, Installments: installments,
-		BuyerName: req.BuyerName, BuyerEmail: req.BuyerEmail, BuyerCPF: req.BuyerCPF,
+		ExternalReference: "timbre:order:" + orderID.String(),
+		BuyerName:         req.BuyerName, BuyerEmail: req.BuyerEmail, BuyerCPF: req.BuyerCPF,
 		BuyerPhone: req.BuyerPhone, Split: splitItems,
 		Card: req.Card, Holder: req.Holder, RemoteIP: req.RemoteIP,
 	})
 	if err != nil {
 		return Result{}, fmt.Errorf("criar cobrança: %w", err)
+	}
+
+	// Repasse combinado com o produtor, com a tabela de tarifas usada no cálculo. Fica
+	// PENDING até o gateway liquidar o split e avisar por webhook.
+	if len(splitItems) > 0 {
+		if err := recordSplitTransfer(ctx, tx, orderID, prod.ID, req.EventID, bd, req.Method,
+			installments, charge.AsaasRef, req.Fees); err != nil {
+			return Result{}, err
+		}
 	}
 
 	// Grava a referência e o índice público (webhook global → tenant).

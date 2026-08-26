@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 
 	"github.com/google/uuid"
@@ -17,6 +18,7 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
 	"github.com/jadersonmarc/sapienza-timbre/internal/pricing"
 	"github.com/jadersonmarc/sapienza-timbre/internal/season"
+	"github.com/jadersonmarc/sapienza-timbre/internal/subaccount"
 )
 
 // publicQuote devolve a decomposição de preço (valor de face + taxa de conveniência +
@@ -72,6 +74,31 @@ func (s *Server) asaasWebhook(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "webhook ilegível")
 		return
 	}
+	// Idempotência pelo ID DO EVENTO: a mesma cobrança gera confirmação, liquidação de
+	// split e estorno, e deduplicar por cobrança descartaria eventos legítimos.
+	if evt.ID != "" {
+		novo, err := s.firstTimeSeeingEvent(r.Context(), evt.ID, evt.Type)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if !novo {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "duplicado": true})
+			return
+		}
+	}
+
+	// Cadastro de subconta é outro fluxo: não fala de cobrança, fala do produtor.
+	if evt.Kind() == payment.EventKindAccount {
+		s.handleAccountEvent(w, r, evt)
+		return
+	}
+	// Liquidação/bloqueio de split move o repasse, não o pedido.
+	if evt.Kind() == payment.EventKindSplit {
+		s.handleSplitEvent(w, r, evt)
+		return
+	}
+
 	// Interessam confirmação e estorno; os demais são reconhecidos com 200.
 	if evt.AsaasRef == "" || (!evt.Confirmed && !evt.Refunded) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -284,4 +311,104 @@ func (s *Server) currentFees(w http.ResponseWriter, r *http.Request) (payment.Fe
 		return payment.Fees{}, false
 	}
 	return f, true
+}
+
+// firstTimeSeeingEvent registra o evento e diz se é a primeira vez que ele chega. A chave é
+// o id do EVENTO — o gateway reenvia quando não recebe 200, e reprocessar um estorno ou uma
+// liquidação duplicaria efeito com dinheiro.
+func (s *Server) firstTimeSeeingEvent(ctx context.Context, eventID, eventType string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		INSERT INTO public.webhook_events (event_id, event_type) VALUES ($1,$2)
+		ON CONFLICT (event_id) DO NOTHING`, eventID, eventType)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// handleSplitEvent trata a vida do repasse depois da venda: liquidado, bloqueado por
+// divergência, cancelado ou recusado.
+//
+// O bloqueio por divergência acontece quando o split ficou maior que o líquido no
+// recebimento — a cobrança é criada semanas antes de ser paga, e uma mudança na tabela de
+// tarifas nesse intervalo faz um valor que passou na criação divergir na liquidação. É
+// cenário esperado, não defeito: há prazo para ajustar, e por isso vira alerta e não log.
+func (s *Server) handleSplitEvent(w http.ResponseWriter, r *http.Request, evt payment.WebhookEvent) {
+	if evt.AsaasRef == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	}
+	producerID, _, err := s.producerOfPayment(r.Context(), evt.AsaasRef)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	status := evt.SplitStatus
+	if status == "" {
+		status = checkout.SplitPending
+	}
+	if err := s.withTenant(r.Context(), producerID, func(tx pgx.Tx) error {
+		return checkout.MarkSplitStatus(r.Context(), tx, evt.AsaasRef, evt.SplitID, status, evt.RefusalReason)
+	}); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	switch status {
+	case checkout.SplitBlocked:
+		// Prazo curto para ajustar; passado ele, o split é cancelado e o repasse vira
+		// resolução manual. Precisa chegar em quem opera, não só no arquivo de log.
+		slog.Error("split bloqueado por divergência — ajuste dentro do prazo do gateway",
+			"producer_id", producerID, "cobranca", evt.AsaasRef, "split", evt.SplitID)
+	case checkout.SplitCancelled:
+		slog.Error("split cancelado pelo gateway — repasse pendente de resolução manual",
+			"producer_id", producerID, "cobranca", evt.AsaasRef, "split", evt.SplitID)
+	case checkout.SplitRefused:
+		slog.Error("split recusado pelo gateway", "producer_id", producerID,
+			"cobranca", evt.AsaasRef, "motivo", evt.RefusalReason)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleAccountEvent move a máquina de estados da subconta do produtor e agenda a
+// confirmação anual de dados comerciais quando o gateway avisa que está por vencer.
+func (s *Server) handleAccountEvent(w http.ResponseWriter, r *http.Request, evt payment.WebhookEvent) {
+	if s.seams.Subaccounts == nil || evt.WalletID == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	}
+	ctx := r.Context()
+	if evt.CommercialInfoExpiresAt != nil {
+		if err := s.seams.Subaccounts.SetCommercialInfoExpiration(ctx, evt.WalletID, evt.CommercialInfoExpiresAt); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if status := accountStatusFor(evt); status != "" {
+		if err := s.seams.Subaccounts.SetStatus(ctx, evt.WalletID, status, evt.RefusalReason); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if evt.Type == "ACCOUNT_STATUS_COMMERCIAL_INFO_EXPIRING_SOON" {
+		slog.Warn("subconta: confirmação anual de dados comerciais por vencer — sem ela a conta perde o uso da API",
+			"wallet", evt.WalletID, "vence_em", evt.CommercialInfoExpiresAt)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// accountStatusFor traduz a situação vinda do gateway para a nossa máquina de estados.
+func accountStatusFor(evt payment.WebhookEvent) string {
+	switch evt.AccountStatus {
+	case "APPROVED":
+		return subaccount.StatusApproved
+	case "REJECTED":
+		return subaccount.StatusRejected
+	case "PENDING", "AWAITING_ACTION_AUTHORIZATION":
+		return subaccount.StatusAnalysis
+	}
+	return ""
 }

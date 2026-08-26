@@ -29,6 +29,7 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
 	"github.com/jadersonmarc/sapienza-timbre/internal/producer"
 	"github.com/jadersonmarc/sapienza-timbre/internal/store"
+	"github.com/jadersonmarc/sapienza-timbre/internal/subaccount"
 	"github.com/jadersonmarc/sapienza-timbre/internal/ticketing"
 )
 
@@ -42,6 +43,8 @@ type Seams struct {
 	// Fees serve a tabela de tarifas do gateway ao cálculo de preço. Nunca é opcional no
 	// caminho de venda: sem ela o preço sairia com tarifa arbitrada.
 	Fees *fees.Service
+	// Subaccounts cuida da conta de recebimento do produtor (destinatária do split).
+	Subaccounts *subaccount.Service
 }
 
 // Server guarda as dependências da API.

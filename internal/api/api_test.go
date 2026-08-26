@@ -26,6 +26,7 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/notify"
 	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
 	"github.com/jadersonmarc/sapienza-timbre/internal/producer"
+	"github.com/jadersonmarc/sapienza-timbre/internal/subaccount"
 	"github.com/jadersonmarc/sapienza-timbre/internal/testutil"
 	"github.com/jadersonmarc/sapienza-timbre/internal/ticketing"
 )
@@ -58,6 +59,8 @@ func setupCoreMode(t *testing.T, chainDriver chain.ChainDriver, mintMode chain.M
 		// O preço depende da tabela de tarifas do gateway; sem ela a venda é recusada
 		// (503) em vez de calcular com tarifa arbitrada.
 		Fees: fees.New(pool, gw),
+		// Conta de recebimento: sem espera de validação, para o teste não dormir.
+		Subaccounts: instantSubaccounts(pool, gw),
 	})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
@@ -234,14 +237,43 @@ func createProducer(t *testing.T, ts *httptest.Server, name, email, pass string)
 		t.Fatalf("producer id vazio: %v", body)
 	}
 	token := login(t, ts, email, pass)
-	// Publicar exige conta de recebimento (sem ela o repasse não teria destino). Os testes
-	// que vendem precisam de um produtor pronto para vender, então o helper configura a
-	// carteira — quem testa o guarda usa createProducerWithoutWallet.
-	if code, body := do(t, ts, "POST", "/api/v1/producer/receiving-account", bearer(token),
-		map[string]any{"wallet_id": uuid.NewString()}); code != http.StatusOK {
-		t.Fatalf("configurar recebimento: %d %v", code, body)
-	}
+	// Abrir venda exige conta de recebimento APROVADA. Os testes que vendem precisam de um
+	// produtor pronto, então o helper percorre o caminho real: abre a subconta e recebe a
+	// aprovação pelo webhook. Quem testa o gate usa createProducerWithoutWallet.
+	approveReceivingAccount(t, ts, token, email)
 	return pid, token
+}
+
+// approveReceivingAccount abre a subconta do produtor e a aprova pelo webhook de situação
+// da conta — o mesmo caminho que a análise do gateway percorreria.
+func approveReceivingAccount(t *testing.T, ts *httptest.Server, ownerToken, email string) string {
+	t.Helper()
+	code, body := do(t, ts, "POST", "/api/v1/producer/receiving-account", bearer(ownerToken), map[string]any{
+		"legal_name": "Casa de Testes Produções", "tax_id": testCPF(email),
+		"email": email, "mobile_phone": "31988887777", "birth_date": "1985-03-10",
+		"income_cents": 500000, "postal_code": "30140-071", "address": "Rua dos Aimorés",
+		"address_number": "100", "province": "Funcionários",
+	})
+	if code != http.StatusOK {
+		t.Fatalf("abrir conta de recebimento: %d %v", code, body)
+	}
+	wallet, _ := body["wallet_id"].(string)
+	if wallet == "" {
+		t.Fatalf("conta criada sem carteira: %v", body)
+	}
+	accountWebhook(t, ts, wallet, "APPROVED")
+	return wallet
+}
+
+// accountWebhook simula o aviso de situação da subconta vindo do gateway.
+func accountWebhook(t *testing.T, ts *httptest.Server, walletID, status string) {
+	t.Helper()
+	if code, body := do(t, ts, "POST", "/api/v1/webhooks/asaas", nil, map[string]any{
+		"id": "evt_" + uuid.NewString(), "type": "ACCOUNT_STATUS_APPROVED",
+		"wallet_id": walletID, "account_status": status,
+	}); code != http.StatusOK {
+		t.Fatalf("webhook de conta: %d %v", code, body)
+	}
 }
 
 // createProducerWithoutWallet cria o produtor sem conta de recebimento — o estado de quem
@@ -411,4 +443,12 @@ func must(t *testing.T, err error) {
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
+}
+
+// instantSubaccounts monta o serviço de conta sem a espera da validação de documento: no
+// teste, esperar quinze segundos por chamada não prova nada.
+func instantSubaccounts(pool *pgxpool.Pool, gw payment.PaymentGateway) *subaccount.Service {
+	svc := subaccount.New(pool, gw)
+	svc.DocumentsDelay = 0
+	return svc
 }
