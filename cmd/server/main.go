@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
@@ -55,6 +56,13 @@ func main() {
 	}
 	defer pool.Close()
 
+	// TLS no banco só se descobre CONECTANDO: a string de conexão pode pedir TLS e o
+	// servidor não oferecer, e o modo default do driver aceita a conexão em claro sem
+	// avisar. Sem TLS, credencial e dado pessoal (CPF, e-mail, telefone) trafegam abertos.
+	if err := checkDBEncryption(ctx, pool, cfg); err != nil {
+		log.Fatalf("db: %v", err)
+	}
+
 	// Camada compartilhada do Timbre (control plane + identidade/audiência) em `public`.
 	if err := db.MigratePublic(ctx, pool, migrations.Public); err != nil {
 		log.Fatalf("migrate public: %v", err)
@@ -80,8 +88,8 @@ func main() {
 	// Gateway de pagamento: Asaas real se houver credencial, senão o Fake (default).
 	var pay payment.PaymentGateway = payment.NewFakeGateway()
 	payKind := "fake"
-	if key := os.Getenv("ASAAS_API_KEY"); key != "" {
-		asaas := payment.NewAsaas(key, os.Getenv("ASAAS_BASE_URL"))
+	if key := cfg.AsaasAPIKey; key != "" {
+		asaas := payment.NewAsaas(key, cfg.AsaasBaseURL)
 		pay = asaas
 		payKind = "asaas"
 		// A base efetiva no log: uma base errada autentica e devolve 404 na cobrança, e sem
@@ -225,7 +233,7 @@ func main() {
 
 	authz := auth.New(cfg.JWTSecret)
 	prov := producer.New(pool, runner)
-	srv := api.NewServer(pool, authz, prov, signer, attestSigner, attestKeyID, cfg.AdminToken, os.Getenv("ASAAS_WEBHOOK_TOKEN"), checkoutLimits, anchorer, chain.AnchorMode(cfg.AnchorMode), seams)
+	srv := api.NewServer(pool, authz, prov, signer, attestSigner, attestKeyID, cfg.AdminToken, cfg.AsaasWebhookToken, checkoutLimits, anchorer, chain.AnchorMode(cfg.AnchorMode), seams)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler(pool))
@@ -289,4 +297,28 @@ func seedSuperAdmin(ctx context.Context, pool *pgxpool.Pool, email, password str
 	}
 	_, err = store.CreateAdmin(ctx, pool, email, hash, auth.RoleSuperAdmin)
 	return err
+}
+
+// checkDBEncryption recusa produção com conexão de banco em claro. A correção é no servidor
+// (habilitar TLS, ou tirar a porta da internet e falar pela rede interna) — daqui só dá para
+// não deixar passar batido. TIMBRE_ALLOW_INSECURE_DB=true assume o risco por escrito.
+func checkDBEncryption(ctx context.Context, pool *pgxpool.Pool, cfg config.Config) error {
+	var ssl bool
+	if err := pool.QueryRow(ctx, `
+		SELECT COALESCE((SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()), false)`).Scan(&ssl); err != nil {
+		// Um servidor que não expõe pg_stat_ssl não é motivo para não subir; o resto das
+		// travas continua valendo.
+		slog.Warn("não foi possível verificar TLS na conexão do banco", "err", err)
+		return nil
+	}
+	if ssl {
+		return nil
+	}
+	if cfg.Env == config.EnvProduction && !cfg.AllowInsecureDB {
+		return fmt.Errorf("conexão com o banco SEM TLS em produção: credenciais e dado pessoal trafegam em claro. " +
+			"Habilite TLS no servidor de banco (ou tire a 5432 da internet e use a rede interna); " +
+			"para subir assim mesmo, assumindo o risco, defina TIMBRE_ALLOW_INSECURE_DB=true")
+	}
+	slog.Warn("conexão com o banco SEM TLS", "env", cfg.Env)
+	return nil
 }
