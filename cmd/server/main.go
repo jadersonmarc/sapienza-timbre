@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
@@ -314,11 +313,10 @@ func checkDBEncryption(ctx context.Context, pool *pgxpool.Pool, cfg config.Confi
 	if ssl {
 		return nil
 	}
-	if cfg.Env == config.EnvProduction && !cfg.AllowInsecureDB {
-		return fmt.Errorf("conexão com o banco SEM TLS em produção: credenciais e dado pessoal trafegam em claro. " +
-			"Habilite TLS no servidor de banco (ou tire a 5432 da internet e use a rede interna); " +
-			"para subir assim mesmo, assumindo o risco, defina TIMBRE_ALLOW_INSECURE_DB=true")
-	}
-	slog.Warn("conexão com o banco SEM TLS", "env", cfg.Env)
+	// Alto e claro, mas NÃO fatal: a correção é no servidor de banco (habilitar TLS, ou
+	// tirar a 5432 da internet e falar pela rede interna), e derrubar o serviço por uma
+	// mudança que não se faz daqui trocaria um risco por uma indisponibilidade certa.
+	slog.Error("conexão com o banco SEM TLS: credenciais e dado pessoal (CPF, e-mail, telefone) trafegam em claro",
+		"env", cfg.Env, "acao", "habilitar TLS no servidor de banco ou tirar a 5432 da internet")
 	return nil
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/chain"
 	"github.com/jadersonmarc/sapienza-timbre/internal/ledger"
 	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
+	"github.com/jadersonmarc/sapienza-timbre/internal/ticketing"
 )
 
 // execT roda um INSERT de apoio no schema do produtor.
@@ -542,4 +543,86 @@ func TestRefundUndoesRetention(t *testing.T) {
 		t.Fatalf("esperava NetDue 0 após estorno total, veio %d — a retenção não foi desfeita", n)
 	}
 	_ = eventID
+}
+
+// TestRefundReversesSplitSettled: split JÁ LIQUIDADO é o caso comum e o único em que o
+// dinheiro precisa voltar de fora — o gateway puxa da subconta do produtor ao estornar a
+// cobrança. Sem este teste, a origem mais frequente da reversão ficava sem prova.
+func TestRefundReversesSplitSettled(t *testing.T) {
+	ts, pool := setup(t)
+	_, owner := createProducer(t, ts, "Casa Liquidada", "owner@liquidada.com", "senha1234")
+	pid := producerID(t, ts, owner)
+	ctx := context.Background()
+	eventID, _, ref := soldEvent(t, ts, pool, owner, pid, 1, "buy@liquidada.com", "pix")
+
+	// O gateway liquida o repasse na subconta do produtor.
+	splitWebhook(t, ts, ref, "split_liq", "PAYMENT_SPLIT_DONE", "")
+	if s := scanStr(t, ctx, pool, pid, `SELECT split_status FROM split_transfers LIMIT 1`); s != "DONE" {
+		t.Fatalf("esperava split DONE antes do estorno, veio %s", s)
+	}
+
+	orderID := orderOf(t, ctx, pool, pid, eventID)
+	code, body := do(t, ts, "POST", "/api/v1/orders/"+orderID+"/refund", bearer(owner),
+		map[string]any{"reason": "depois de liquidar"})
+	if code != http.StatusOK {
+		t.Fatalf("estorno: %d %v", code, body)
+	}
+	if body["covered_by_platform"] != false {
+		t.Fatalf("a subconta cobriu; não era para a plataforma cobrir: %v", body)
+	}
+	if s := scanStr(t, ctx, pool, pid, `SELECT source FROM split_refunds LIMIT 1`); s != "producer" {
+		t.Fatalf("esperava origem producer, veio %s", s)
+	}
+	// Dinheiro que saiu da subconta do produtor: nem repasse nem estorno pesam em NetDue.
+	if n := netDue(t, ctx, pool, pid); n != 0 {
+		t.Fatalf("esperava NetDue 0 (as duas pontas se cancelam), veio %d", n)
+	}
+	if s := scanStr(t, ctx, pool, pid, `SELECT split_status FROM split_transfers LIMIT 1`); s != "REFUNDED" {
+		t.Fatalf("pedido inteiro estornado deveria fechar o repasse em REFUNDED, veio %s", s)
+	}
+}
+
+// TestRefundPartialRestStillAdmits: o que sobra de um estorno parcial precisa ENTRAR na
+// portaria. Conferir só o status no banco não prova nada para quem está na fila do evento
+// — o ingresso estornado tem de ser recusado e os outros admitidos.
+func TestRefundPartialRestStillAdmits(t *testing.T) {
+	ts, pool, signer := setupSigned(t)
+	_, owner := createProducer(t, ts, "Casa Fila", "owner@fila.com", "senha1234")
+	pid := producerID(t, ts, owner)
+	ctx := context.Background()
+	eventID, _, _ := soldEvent(t, ts, pool, owner, pid, 3, "buy@fila.com", "pix")
+	_ = signer
+
+	tickets := ticketsOf(t, ctx, pool, pid, eventID)
+	tokens := make(map[string]string, len(tickets))
+	inTenant(t, ctx, pool, pid, func(tx pgx.Tx) {
+		for _, id := range tickets {
+			tok, err := ticketing.TicketToken(ctx, tx, uuid.MustParse(id))
+			if err != nil {
+				t.Fatalf("token do ingresso: %v", err)
+			}
+			tokens[id] = tok
+		}
+	})
+
+	orderID := orderOf(t, ctx, pool, pid, eventID)
+	if code, body := do(t, ts, "POST", "/api/v1/orders/"+orderID+"/refund", bearer(owner),
+		map[string]any{"ticket_ids": []string{tickets[0]}, "reason": "um a menos"}); code != http.StatusOK {
+		t.Fatalf("estorno parcial: %d %v", code, body)
+	}
+
+	// O estornado não entra.
+	_, body := do(t, ts, "POST", "/api/v1/gate/validate", bearer(owner),
+		map[string]any{"token": tokens[tickets[0]], "gate": "G1"})
+	if v := verdict(body); v == "admitted" {
+		t.Fatalf("ingresso estornado não pode entrar, veredito %s", v)
+	}
+	// Os outros dois entram normalmente.
+	for _, id := range tickets[1:] {
+		_, body := do(t, ts, "POST", "/api/v1/gate/validate", bearer(owner),
+			map[string]any{"token": tokens[id], "gate": "G1"})
+		if v := verdict(body); v != "admitted" {
+			t.Fatalf("ingresso não estornado deveria entrar, veredito %s (%v)", v, body)
+		}
+	}
 }
