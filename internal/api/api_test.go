@@ -46,7 +46,20 @@ func setupCore(t *testing.T, chainDriver chain.ChainDriver) (*httptest.Server, *
 	return setupCoreMode(t, chainDriver, chain.MintModeEager)
 }
 
+// setupWithGateway devolve também o gateway fake, para os testes que precisam ensaiar as
+// recusas do estorno (saldo insuficiente) e contar quantas devoluções chegaram lá.
+func setupWithGateway(t *testing.T) (*httptest.Server, *pgxpool.Pool, *payment.FakeGateway) {
+	t.Helper()
+	ts, pool, _, gw := setupAll(t, chain.NoopChainDriver{}, chain.MintModeEager)
+	return ts, pool, gw
+}
+
 func setupCoreMode(t *testing.T, chainDriver chain.ChainDriver, mintMode chain.MintMode) (*httptest.Server, *pgxpool.Pool, *ticketing.Signer) {
+	ts, pool, signer, _ := setupAll(t, chainDriver, mintMode)
+	return ts, pool, signer
+}
+
+func setupAll(t *testing.T, chainDriver chain.ChainDriver, mintMode chain.MintMode) (*httptest.Server, *pgxpool.Pool, *ticketing.Signer, *payment.FakeGateway) {
 	t.Helper()
 	pool := testutil.Pool(t)
 	runner := tenancy.NewMigrationRunner(pool, migrations.Tenant)
@@ -64,7 +77,7 @@ func setupCoreMode(t *testing.T, chainDriver chain.ChainDriver, mintMode chain.M
 	})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	return ts, pool, signer
+	return ts, pool, signer, gw
 }
 
 // do faz uma requisição JSON e devolve status + corpo decodificado.

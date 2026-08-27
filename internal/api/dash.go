@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/csv"
 	"net/http"
 	"time"
@@ -81,6 +82,7 @@ type payoutRow struct {
 func (s *Server) dashPayouts(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
 	var netDue int64
 	var payouts []payoutRow
+	var debts []refundDebtRow
 	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
 		var e error
 		if netDue, e = ledger.NetDue(r.Context(), tx); e != nil {
@@ -98,12 +100,59 @@ func (s *Server) dashPayouts(w http.ResponseWriter, r *http.Request, claims *aut
 			}
 			payouts = append(payouts, p)
 		}
-		return rows.Err()
+		if e := rows.Err(); e != nil {
+			return e
+		}
+		debts, e = coveredRefunds(r.Context(), tx)
+		return e
 	}); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"net_due_cents": netDue, "payouts": payouts})
+	// Saldo devedor é NetDue negativo: estorno que a subconta do produtor não cobriu e a
+	// plataforma pagou ao comprador. Vem com a lista que o compõe — dívida sem a origem à
+	// vista é o tipo de número que ninguém aceita.
+	resp := map[string]any{"net_due_cents": netDue, "payouts": payouts}
+	if netDue < 0 {
+		resp["debt_cents"] = -netDue
+		resp["debt_refunds"] = debts
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// refundDebtRow é um estorno que a plataforma cobriu no lugar do produtor.
+type refundDebtRow struct {
+	ID         uuid.UUID `json:"id"`
+	OrderID    uuid.UUID `json:"order_id"`
+	EventTitle string    `json:"event_title"`
+	TotalCents int64     `json:"total_cents"`
+	Reason     *string   `json:"reason"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// coveredRefunds lista os estornos cobertos pela plataforma — o que forma o saldo devedor.
+func coveredRefunds(ctx context.Context, tx pgx.Tx) ([]refundDebtRow, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT DISTINCT r.id, r.order_id, e.title, r.total_cents, r.reason, r.created_at
+		  FROM refunds r
+		  JOIN split_refunds sr ON sr.refund_id = r.id AND sr.source = 'platform_covered'
+		  JOIN orders o ON o.id = r.order_id
+		  JOIN events e ON e.id = o.event_id
+		 WHERE r.status = 'confirmed'
+		 ORDER BY r.created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []refundDebtRow
+	for rows.Next() {
+		var d refundDebtRow
+		if err := rows.Scan(&d.ID, &d.OrderID, &d.EventTitle, &d.TotalCents, &d.Reason, &d.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
 }
 
 // dashNotifications mostra os envios de um evento (ingressos) — quantos foram, quantos

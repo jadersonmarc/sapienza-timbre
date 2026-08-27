@@ -394,7 +394,7 @@ func ConfirmPayment(ctx context.Context, tx pgx.Tx, em Emitter, producerID uuid.
 	}
 	// Ordem já cancelada/estornada (ex.: varredura de abandono liberou a reserva antes do
 	// webhook chegar): não emite nem re-debita capacidade.
-	if orderStatus == "cancelled" || orderStatus == "refunded" {
+	if orderStatus == "cancelled" || orderStatus == "refunded" || orderStatus == "partially_refunded" {
 		return nil, nil
 	}
 	var lotID uuid.UUID

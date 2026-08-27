@@ -231,6 +231,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/public/tokens/{id}", s.tokenView)
 	mux.HandleFunc("POST /api/v1/tickets/{id}/dispute", s.requireOwner(s.disputeTicket))
 	mux.HandleFunc("POST /api/v1/tickets/{id}/reissue", s.requireOwner(s.reissueTicket))
+	// Estorno (Fatia 1): o produtor devolve um pedido inteiro ou ingressos escolhidos; o
+	// admin passa por cima das guardas, com motivo obrigatório. A fila de aprovação de
+	// pedido do comprador vem depois — aqui são só as duas portas que movem dinheiro.
+	mux.HandleFunc("POST /api/v1/orders/{id}/refund", s.requireOwner(s.producerRefund))
 	mux.HandleFunc("POST /api/v1/public/checkins/{id}/review", s.submitReview)
 	mux.HandleFunc("GET /api/v1/public/producers/{id}/reputation", s.producerReputation)
 	mux.HandleFunc("GET /api/v1/public/subjects/{id}/discovery", s.subjectDiscovery)
@@ -247,6 +251,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/admin/producers/{id}/events/{eventId}/lineup", s.requireAdmin(s.adminLineup))
 	mux.HandleFunc("PUT /api/v1/admin/producers/{id}/events/{eventId}/lineup", s.requireAdmin(s.adminLineup))
 	mux.HandleFunc("POST /api/v1/admin/producers/{id}/payouts/mark-paid", s.requireAdmin(s.adminMarkPayoutPaid))
+	mux.HandleFunc("POST /api/v1/admin/producers/{producerId}/orders/{id}/refund", s.requireAdmin(s.adminRefund))
 	mux.HandleFunc("GET /api/v1/admin/producers", s.requireAdmin(s.listAdminProducers))
 	mux.HandleFunc("POST /api/v1/admin/producers/{id}/approve", s.requireAdmin(s.adminSetProducerStatus("active")))
 	mux.HandleFunc("POST /api/v1/admin/producers/{id}/suspend", s.requireAdmin(s.adminSetProducerStatus("suspended")))
