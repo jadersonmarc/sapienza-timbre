@@ -246,6 +246,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/events/{id}/refund-policy", s.requireOwner(s.putRefundPolicy))
 	mux.HandleFunc("GET /api/v1/public/events/{id}/refund-policy", s.publicRefundPolicy)
 	// Fila de pedidos do produtor. Recusar exige motivo; aprovar executa na sequência.
+	// Busca de vendas: por comprador, por id do pedido ou do ingresso. Quem liga não sabe o
+	// id do pedido — sabe o próprio e-mail.
+	mux.HandleFunc("GET /api/v1/sales", s.authed(s.searchSales))
+	mux.HandleFunc("GET /api/v1/sales/{id}/tickets", s.authed(s.saleTickets))
 	mux.HandleFunc("GET /api/v1/refund-requests", s.authed(s.listRefundRequests))
 	mux.HandleFunc("GET /api/v1/refund-requests/{id}/history", s.authed(s.refundRequestHistory))
 	mux.HandleFunc("POST /api/v1/refund-requests/{id}/approve", s.requireOwner(s.decideRefundRequest(true)))
@@ -263,6 +267,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/admin/subaccounts", s.requireAdmin(s.adminSubaccounts))
 	mux.HandleFunc("POST /api/v1/admin/producers/{id}/subaccount/sync-documents", s.requireAdmin(s.adminSyncDocuments))
 	mux.HandleFunc("GET /api/v1/admin/splits", s.requireAdmin(s.adminSplits))
+	mux.HandleFunc("GET /api/v1/admin/sales", s.requireAdmin(s.adminSearchSales))
 	mux.HandleFunc("GET /api/v1/admin/producers/{id}/events/{eventId}/lineup", s.requireAdmin(s.adminLineup))
 	mux.HandleFunc("PUT /api/v1/admin/producers/{id}/events/{eventId}/lineup", s.requireAdmin(s.adminLineup))
 	mux.HandleFunc("POST /api/v1/admin/producers/{id}/payouts/mark-paid", s.requireAdmin(s.adminMarkPayoutPaid))

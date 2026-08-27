@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 
 	"github.com/google/uuid"
@@ -12,6 +13,13 @@ import (
 
 	"github.com/jadersonmarc/sapienza-timbre/internal/auth"
 	"github.com/jadersonmarc/sapienza-timbre/internal/checkout"
+	"github.com/jadersonmarc/sapienza-timbre/internal/notify"
+)
+
+// Apelidos locais para os avisos do ciclo do pedido, só para a leitura das chamadas.
+const (
+	kindRefundRequested = notify.KindRefundRequested
+	kindRefundRejected  = notify.KindRefundRejected
 )
 
 // buyerRefundRequest é o comprador pedindo o dinheiro de volta.
@@ -71,7 +79,33 @@ func (s *Server) buyerRefundRequest(w http.ResponseWriter, r *http.Request, subj
 		writeJSON(w, http.StatusOK, map[string]any{"request": request, "refund": out})
 		return
 	}
+	// Pedido que some sem aviso vira ligação, e ligação vira contestação.
+	s.notifyRequest(r.Context(), producerID, request, kindRefundRequested, "")
 	writeJSON(w, http.StatusAccepted, map[string]any{"request": request})
+}
+
+// notifyRequest avisa o comprador sobre o andamento do pedido. Best effort e fora do
+// caminho da decisão: falhar o e-mail não pode desfazer o que já foi decidido.
+func (s *Server) notifyRequest(ctx context.Context, producerID uuid.UUID, req checkout.RefundRequest, kind, reason string) {
+	if s.seams.Notify == nil {
+		return
+	}
+	var to, eventName string
+	if err := s.withTenant(ctx, producerID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `
+			SELECT COALESCE(o.buyer_email,''), e.title FROM orders o
+			  JOIN events e ON e.id = o.event_id WHERE o.id=$1`, req.OrderID).Scan(&to, &eventName)
+	}); err != nil || to == "" {
+		return
+	}
+	msg := notify.Message{Kind: kind, To: to, EventName: eventName, OrderID: &req.OrderID}
+	if req.RespondsBy != nil {
+		msg.RespondsBy = req.RespondsBy.Format("02/01/2006")
+	}
+	msg.DecisionReason = reason
+	if err := s.seams.Notify.Send(ctx, msg); err != nil {
+		slog.Warn("avisar comprador sobre o pedido de estorno", "pedido", req.ID, "err", err)
+	}
 }
 
 // myRefundRequests lista os pedidos do comprador, para ele acompanhar sem ligar para a casa.
@@ -221,6 +255,8 @@ func (s *Server) decide(w http.ResponseWriter, r *http.Request, producerID uuid.
 		return
 	}
 	if !approve {
+		// A recusa vai COM o motivo: recusa sem explicação é a que volta pelo canal caro.
+		s.notifyRequest(r.Context(), producerID, request, kindRefundRejected, body.Reason)
 		writeJSON(w, http.StatusOK, map[string]any{"request": request})
 		return
 	}
