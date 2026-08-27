@@ -338,6 +338,30 @@ Lote cujo saldo não alcança o próprio mínimo **sai de venda** — sobrar 1 l
 significa que aquele lote acabou, e continuar oferecendo levaria o comprador a uma recusa no
 fim do checkout.
 
+### Validação do estorno contra o gateway real
+
+Todo o estorno foi construído e testado contra o `FakeGateway`. Três coisas só se
+respondem observando uma devolução de verdade, e até lá vivem como remendo declarado no
+código. **O caminho está instrumentado para a PRIMEIRA devolução real responder as três** —
+sem precisar de um segundo experimento.
+
+Faça uma venda de valor baixo e devolva metade, depois a outra metade, em sequência curta.
+Então procure no log:
+
+| Pergunta | O que procurar | O que ela decide |
+|---|---|---|
+| O estorno tem chave de idempotência? | `asaas: forma da resposta de estorno` | se `RefundRequest.Description` continua sendo a nossa chave ou se há campo próprio |
+| O aviso traz o id do ESTORNO ou só o da cobrança? | `asaas: forma do aviso de estorno` | se `checkout.webhookEchoWindow` (10 min) morre e a conciliação passa a ser por id |
+| Quais são os marcadores reais de recusa? | `asaas: recusa de estorno NÃO classificada` | se `payment.refundRefusalMarkers` deixa de ser texto |
+
+As duas primeiras linhas registram só a **forma** do JSON — os caminhos de chave, sem os
+valores. Payload de pagamento carrega dado do comprador; a estrutura, não.
+
+Com as duas devoluções parciais em sequência, a pergunta que fecha o assunto é: dá para
+distinguir uma da outra pelo que o aviso entrega? Se der, a janela de eco sai e a
+conciliação vira por id. Se não der, ela fica — e o motivo passa a estar escrito aqui, como
+decisão, em vez de suposição.
+
 ## Testes
 
 ```bash

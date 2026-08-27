@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"strings"
@@ -209,6 +210,9 @@ func classifyRefundErr(err error) error {
 			return fmt.Errorf("%w: %s", m.err, err.Error())
 		}
 	}
+	// Motivo desconhecido: é ele que precisa virar marcador. Sem esta linha, a primeira
+	// recusa de um tipo novo some num 500 genérico e o código continua adivinhando.
+	slog.Warn("asaas: recusa de estorno NÃO classificada — confirmar o marcador", "motivo", err.Error())
 	return err
 }
 
@@ -231,8 +235,17 @@ func (g *AsaasGateway) Refund(ctx context.Context, req RefundRequest) (Refund, e
 		Status string  `json:"status"`
 		Value  float64 `json:"value"`
 	}
-	if err := g.do(ctx, http.MethodPost, "/v3/payments/"+req.AsaasRef+"/refund", payload, &out); err != nil {
+	raw, err := g.rawPost(ctx, "/v3/payments/"+req.AsaasRef+"/refund", payload)
+	if err != nil {
 		return Refund{}, classifyRefundErr(fmt.Errorf("estornar cobrança asaas: %w", err))
+	}
+	// A FORMA da resposta (só os caminhos de chave, sem os valores) fica no log da primeira
+	// devolução real. É ela que responde se o gateway devolve id de estorno próprio e se há
+	// campo de idempotência — perguntas que hoje são remendo no código por falta de um
+	// estorno de verdade para observar.
+	slog.Info("asaas: forma da resposta de estorno", "shape", ShapeOf(raw))
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return Refund{}, fmt.Errorf("estorno asaas: resposta ilegível: %w", err)
 	}
 	value := int64(math.Round(out.Value * 100))
 	if value == 0 {
@@ -443,6 +456,36 @@ func (g *AsaasGateway) raw(ctx context.Context, method, path string) ([]byte, er
 		return nil, fmt.Errorf("asaas %s %s: status %d: %s", method, path, resp.StatusCode, clip(string(body)))
 	}
 	return body, nil
+}
+
+// rawPost faz um POST e devolve o corpo CRU, para quem precisa da resposta inteira e não só
+// dos campos que sabe ler.
+func (g *AsaasGateway) rawPost(ctx context.Context, path string, body any) ([]byte, error) {
+	var buf bytes.Buffer
+	if body != nil {
+		if err := json.NewEncoder(&buf).Encode(body); err != nil {
+			return nil, err
+		}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.baseURL+path, &buf)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("access_token", g.apiKey)
+	resp, err := g.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	out, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("asaas POST %s: status %d: %s", path, resp.StatusCode, clip(string(out)))
+	}
+	return out, nil
 }
 
 // doAs chama a API no contexto de uma SUBCONTA, identificada pelo walletId. É assim que a
