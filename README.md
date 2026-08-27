@@ -244,6 +244,36 @@ Append-only — decisão tomada não se edita, e uma decisão que muda vira outr
 o produtor mostra quando o comprador reclama, e o que a plataforma mostra quando o produtor
 reclama.
 
+### Cancelamento de evento
+
+`POST /events/{id}/cancel` cancela **e devolve o dinheiro de todo mundo**. Antes era só uma
+transição de status: o evento sumia do diretório e cada comprador ficava com ingresso válido
+e dinheiro pago, descobrindo sozinho — o produtor achava que tinha resolvido.
+
+A devolução não acontece na requisição. Um evento de mil ingressos seriam mil chamadas ao
+gateway com o produtor olhando para uma tela travada, e um timeout no meio deixaria metade
+devolvida sem registro de onde parou. A rota enfileira uma devolução por pedido pago
+(`refund_jobs`, uma por pedido — cancelar duas vezes não vira duas devoluções) e **avisa
+todos os compradores na hora**: quem tinha ingresso para amanhã precisa saber hoje, mesmo
+que o dinheiro leve dias para voltar.
+
+O worker segue a forma do `AnchorWorker` — tentativas, backoff exponencial com teto, motivo
+persistido — com uma diferença deliberada: lá a chamada externa acontece dentro da
+transação, aqui não pode. Esgotadas as tentativas, a devolução vira **trabalho manual** na
+fila do `/admin`, com o motivo à vista e um botão para reenfileirar. Dinheiro que não voltou
+precisa de alguém, não de silêncio.
+
+Cancelamento é `admin_override` em termos de autorização, ainda que disparado pelo produtor:
+ingresso que já entrou também é devolvido — o evento não aconteceu.
+
+Se o evento já estava fechado, o registro canônico é republicado **uma vez, ao fim do lote**.
+Enquanto o lote corre, o estorno avulso não republica: uma versão por pedido devolvido faria
+o atestado virar ruído em vez de prova.
+
+    GET /api/v1/events/{id}/cancellation                          # total, concluídos, falhos
+    GET /api/v1/admin/refund-jobs/failed                          # fila de resolução manual
+    POST /api/v1/admin/producers/{pid}/refund-jobs/{id}/retry
+
 ### Rotas
 
     GET|PUT /api/v1/refund-policy                                  # default do produtor
