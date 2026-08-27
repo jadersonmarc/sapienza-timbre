@@ -24,6 +24,9 @@ const (
 	// voltou". Juntar os três num só faria o comprador ler a recusa como confirmação.
 	KindRefundRequested = "refund_requested"
 	KindRefundRejected  = "refund_rejected"
+	// KindEventCancelled sai na TRANSIÇÃO do evento, não no fim da devolução: quem tinha
+	// ingresso para amanhã precisa saber hoje, mesmo que o dinheiro leve dias para voltar.
+	KindEventCancelled = "event_cancelled"
 )
 
 // Message é uma mensagem estruturada a entregar por algum canal. O worker renderiza o

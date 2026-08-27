@@ -36,6 +36,8 @@ func render(m Message, publicBaseURL string) RenderedMessage {
 		return renderRefundRequested(m)
 	case KindRefundRejected:
 		return renderRefundRejected(m)
+	case KindEventCancelled:
+		return renderEventCancelled(m)
 	case KindWaitlist:
 		return RenderedMessage{To: m.To, Subject: m.Subject, Text: m.Body, HTML: "<p>" + htmlEscape(m.Body) + "</p>"}
 	default:
@@ -84,6 +86,19 @@ func renderRefundRejected(m Message) RenderedMessage {
 		`<p>Seu pedido de devolução do ingresso para <strong>%s</strong> não foi aceito.</p>
 		 <p><strong>Motivo:</strong> %s</p><p>Seu ingresso continua válido.</p>`,
 		htmlEscape(m.EventName), htmlEscape(motivo))
+	return RenderedMessage{To: m.To, Subject: subject, Text: text, HTML: html}
+}
+
+// renderEventCancelled avisa do cancelamento e diz que a devolução já está em andamento.
+// Sem essa segunda frase, a primeira pergunta de todo mundo vira uma ligação.
+func renderEventCancelled(m Message) RenderedMessage {
+	subject := "Evento cancelado: " + m.EventName
+	text := fmt.Sprintf("O evento %s foi cancelado pelo produtor.\n\nA devolução do valor pago já está em andamento e será feita pelo mesmo meio de pagamento da compra. Você receberá outro aviso quando o valor voltar.", m.EventName)
+	html := fmt.Sprintf(
+		`<p>O evento <strong>%s</strong> foi cancelado pelo produtor.</p>
+		 <p>A devolução do valor pago já está em andamento e será feita pelo mesmo meio de
+		 pagamento da compra. Você receberá outro aviso quando o valor voltar.</p>`,
+		htmlEscape(m.EventName))
 	return RenderedMessage{To: m.To, Subject: subject, Text: text, HTML: html}
 }
 
