@@ -256,10 +256,13 @@ type Lot struct {
 	// 2, e o preço acima continua sendo o UNITÁRIO — o comprador paga preço × quantidade.
 	// A compra gera N ingressos independentes; combo é regra de COMPRA, não vínculo entre
 	// ingressos.
-	MinPurchaseQuantity int       `json:"min_purchase_quantity"`
-	MaxPurchaseQuantity *int      `json:"max_purchase_quantity,omitempty"`
-	CreatedAt           time.Time `json:"created_at"`
-	UpdatedAt           time.Time `json:"updated_at"`
+	MinPurchaseQuantity int  `json:"min_purchase_quantity"`
+	MaxPurchaseQuantity *int `json:"max_purchase_quantity,omitempty"`
+	// Notice é o aviso do produtor para ESTA categoria — "acomodações por ordem de
+	// chegada", "não recomendado para menores de 12". Texto puro, sanitizado na escrita.
+	Notice    *string   `json:"notice,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // ErrPurchaseRange é a quantidade fora da faixa do lote.
@@ -281,14 +284,14 @@ func (l Lot) CheckPurchaseQuantity(qty int) error {
 }
 
 const lotCols = `id, event_id, name, price_cents, quantity, sold_count, held_count,
-	starts_at, ends_at, sort_order, min_purchase_quantity, max_purchase_quantity,
+	starts_at, ends_at, sort_order, min_purchase_quantity, max_purchase_quantity, notice,
 	created_at, updated_at`
 
 func scanLot(row pgx.Row) (Lot, error) {
 	var l Lot
 	err := row.Scan(&l.ID, &l.EventID, &l.Name, &l.PriceCents, &l.Quantity, &l.SoldCount,
 		&l.HeldCount, &l.StartsAt, &l.EndsAt, &l.SortOrder,
-		&l.MinPurchaseQuantity, &l.MaxPurchaseQuantity, &l.CreatedAt, &l.UpdatedAt)
+		&l.MinPurchaseQuantity, &l.MaxPurchaseQuantity, &l.Notice, &l.CreatedAt, &l.UpdatedAt)
 	return l, err
 }
 
@@ -300,13 +303,14 @@ func CreateLot(ctx context.Context, tx pgx.Tx, l Lot) (Lot, error) {
 	if l.MaxPurchaseQuantity != nil && *l.MaxPurchaseQuantity < l.MinPurchaseQuantity {
 		return Lot{}, ErrBadPurchaseRange
 	}
+	l.Notice = SanitizeNotice(l.Notice)
 	row := tx.QueryRow(ctx, `
 		INSERT INTO lots (event_id, name, price_cents, quantity, starts_at, ends_at, sort_order,
-		                  min_purchase_quantity, max_purchase_quantity)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		                  min_purchase_quantity, max_purchase_quantity, notice)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 		RETURNING `+lotCols,
 		l.EventID, l.Name, l.PriceCents, l.Quantity, l.StartsAt, l.EndsAt, l.SortOrder,
-		l.MinPurchaseQuantity, l.MaxPurchaseQuantity)
+		l.MinPurchaseQuantity, l.MaxPurchaseQuantity, l.Notice)
 	out, err := scanLot(row)
 	if err != nil {
 		return Lot{}, fmt.Errorf("criar lote: %w", err)

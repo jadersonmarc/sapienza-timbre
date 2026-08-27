@@ -127,14 +127,27 @@ func renderTicket(m Message, publicBaseURL string) RenderedMessage {
 		b.WriteString("\nAssento: ")
 		b.WriteString(m.SeatLabel)
 	}
+	// O aviso da categoria vem depois dos dados e antes do link: é a última coisa que a
+	// pessoa lê na véspera, quando volta ao e-mail em vez da página (que pode ter mudado).
+	if m.Notice != "" {
+		b.WriteString("\n\nAviso do produtor: ")
+		b.WriteString(m.Notice)
+	}
 	b.WriteString("\n\nSeus ingressos: ")
 	b.WriteString(meURL)
 
+	notice := ""
+	if m.Notice != "" {
+		// Escapado mesmo já tendo sido sanitizado na escrita: defesa em profundidade custa
+		// uma chamada, e é o e-mail de quem comprou.
+		notice = "<p><strong>Aviso do produtor:</strong> " + htmlEscape(m.Notice) + "</p>"
+	}
 	html := fmt.Sprintf(
-		`<p><strong>%s</strong></p><p>Data: %s</p>%s%s<p>Seus ingressos sempre atualizados: <a href="%s">meus ingressos</a>.</p>`,
+		`<p><strong>%s</strong></p><p>Data: %s</p>%s%s%s<p>Seus ingressos sempre atualizados: <a href="%s">meus ingressos</a>.</p>`,
 		htmlEscape(m.EventName), htmlEscape(m.EventStarts),
 		lineHTML("Local", strings.TrimSpace(strings.Join([]string{m.Address, m.VenueCity}, " — "))),
 		lineHTML("Setor", m.SectorName)+lineHTML("Assento", m.SeatLabel),
+		notice,
 		htmlEscape(meURL))
 
 	rm := RenderedMessage{To: m.To, Subject: subject, Text: b.String(), HTML: html}

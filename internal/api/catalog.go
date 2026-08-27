@@ -264,6 +264,9 @@ type createLotReq struct {
 	// price_cents acima segue sendo o UNITÁRIO.
 	MinPurchaseQuantity int  `json:"min_purchase_quantity"`
 	MaxPurchaseQuantity *int `json:"max_purchase_quantity"`
+	// Notice é o aviso desta categoria. Chega como texto do produtor e é sanitizado antes
+	// de gravar — o que sai daqui já é seguro para página e e-mail.
+	Notice *string `json:"notice"`
 }
 
 func (s *Server) createLot(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
@@ -298,6 +301,7 @@ func (s *Server) createLot(w http.ResponseWriter, r *http.Request, claims *auth.
 			EventID: eventID, Name: body.Name, PriceCents: body.PriceCents, Quantity: body.Quantity,
 			StartsAt: starts, EndsAt: ends, SortOrder: body.SortOrder,
 			MinPurchaseQuantity: body.MinPurchaseQuantity, MaxPurchaseQuantity: body.MaxPurchaseQuantity,
+			Notice: body.Notice,
 		})
 		return e
 	}); err != nil {

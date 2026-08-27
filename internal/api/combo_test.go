@@ -189,3 +189,64 @@ func containsAll(s string, parts ...string) bool {
 	}
 	return true
 }
+
+// TestAvisoDaCategoriaChegaLimpo: o aviso do produtor sai na página pública já como texto
+// puro. HTML guardado aqui seria injeção com endereço de entrega — a limpeza é na escrita,
+// e a página não precisa lembrar de escapar nada.
+func TestAvisoDaCategoriaChegaLimpo(t *testing.T) {
+	ts, _ := setup(t)
+	_, owner := createProducer(t, ts, "Casa Aviso", "owner@aviso.com", "senha1234")
+	eventID := createEvent(t, ts, owner, "Show Aviso", "shows")
+	if code, b := do(t, ts, "POST", "/api/v1/events/"+eventID+"/lots", bearer(owner), map[string]any{
+		"name": "Pista", "price_cents": 5000, "quantity": 50, "sort_order": 0,
+		"notice": "Acomodações por ordem de chegada <script>alert(1)</script>",
+	}); code != http.StatusCreated {
+		t.Fatalf("criar lote com aviso: %d %v", code, b)
+	}
+	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
+		t.Fatalf("publicar")
+	}
+
+	code, body := do(t, ts, "GET", "/api/v1/public/events/"+eventID, nil, nil)
+	if code != http.StatusOK {
+		t.Fatalf("evento público: %d", code)
+	}
+	lots, _ := body["lots"].([]any)
+	first, _ := lots[0].(map[string]any)
+	notice, _ := first["notice"].(string)
+	if notice != "Acomodações por ordem de chegada alert(1)" {
+		t.Fatalf("o aviso deveria chegar sem HTML, veio %q", notice)
+	}
+}
+
+// TestAvisoEhPorCategoria: dois lotes do mesmo evento com avisos diferentes. Preso ao
+// evento, "acomodações por ordem de chegada" apareceria também para quem comprou lugar
+// numerado — dizendo o contrário do que a pessoa acabou de escolher.
+func TestAvisoEhPorCategoria(t *testing.T) {
+	ts, _ := setup(t)
+	_, owner := createProducer(t, ts, "Casa Duas Categorias", "owner@duascat.com", "senha1234")
+	eventID := createEvent(t, ts, owner, "Show", "shows")
+	for i, c := range []struct{ nome, aviso string }{
+		{"Pista", "Acomodações por ordem de chegada"},
+		{"Camarote", "Inclui uma bebida"},
+	} {
+		if code, b := do(t, ts, "POST", "/api/v1/events/"+eventID+"/lots", bearer(owner), map[string]any{
+			"name": c.nome, "price_cents": 5000, "quantity": 20, "sort_order": i, "notice": c.aviso,
+		}); code != http.StatusCreated {
+			t.Fatalf("criar lote %s: %d %v", c.nome, code, b)
+		}
+	}
+	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
+		t.Fatalf("publicar")
+	}
+	_, body := do(t, ts, "GET", "/api/v1/public/events/"+eventID, nil, nil)
+	lots, _ := body["lots"].([]any)
+	if len(lots) != 2 {
+		t.Fatalf("esperava 2 categorias, veio %d", len(lots))
+	}
+	a, _ := lots[0].(map[string]any)["notice"].(string)
+	b2, _ := lots[1].(map[string]any)["notice"].(string)
+	if a == b2 || a == "" || b2 == "" {
+		t.Fatalf("cada categoria precisa do seu aviso: %q / %q", a, b2)
+	}
+}

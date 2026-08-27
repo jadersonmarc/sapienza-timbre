@@ -145,6 +145,9 @@ type publicLot struct {
 	// unitário — o total mostrado é preço × quantidade.
 	MinPurchaseQuantity int  `json:"min_purchase_quantity"`
 	MaxPurchaseQuantity *int `json:"max_purchase_quantity,omitempty"`
+	// Notice é o aviso desta categoria, já sanitizado na escrita: a página o renderiza
+	// como TEXTO, nunca como HTML.
+	Notice *string `json:"notice,omitempty"`
 }
 
 type publicSector struct {
@@ -205,6 +208,7 @@ func (s *Server) getPublicEvent(w http.ResponseWriter, r *http.Request) {
 				Available: l.Quantity - l.SoldCount - l.HeldCount,
 				StartsAt:  l.StartsAt, EndsAt: l.EndsAt, SortOrder: l.SortOrder,
 				MinPurchaseQuantity: l.MinPurchaseQuantity, MaxPurchaseQuantity: l.MaxPurchaseQuantity,
+				Notice: l.Notice,
 			})
 		}
 		// Cota de meia: quando acaba, a meia sai de venda e a inteira continua.

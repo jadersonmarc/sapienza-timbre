@@ -60,7 +60,7 @@ func (e Emitter) emit(ctx context.Context, tx pgx.Tx, ticketIDs []uuid.UUID, del
 			ProducerID: &e.ProducerID, EventID: &info.eventID, TicketID: &tid,
 			EventName: info.title, EventStarts: info.starts,
 			VenueCity: info.city, Address: info.address,
-			SectorName: info.sector, SeatLabel: info.seat,
+			SectorName: info.sector, SeatLabel: info.seat, Notice: info.notice,
 			QRContent: token,
 		})
 	}
@@ -70,6 +70,7 @@ func (e Emitter) emit(ctx context.Context, tx pgx.Tx, ticketIDs []uuid.UUID, del
 // ticketEmailInfo carrega os dados do evento/assento para a mensagem de ingresso (uma
 // mensagem por ingresso — quem compra quatro repassa três).
 type ticketEmailInfo struct {
+	notice  string
 	eventID uuid.UUID
 	title   string
 	starts  string
@@ -84,12 +85,14 @@ func loadTicketEmailInfo(ctx context.Context, tx pgx.Tx, ticketID uuid.UUID) (ti
 	err := tx.QueryRow(ctx, `
 		SELECT t.event_id, e.title, to_char(e.starts_at, 'DD/MM/YYYY HH24:MI'),
 		       COALESCE(e.city,''), COALESCE(e.address,''),
-		       COALESCE(se.name,''), COALESCE(s.row_label,'') || COALESCE(s.number,'')
+		       COALESCE(se.name,''), COALESCE(s.row_label,'') || COALESCE(s.number,''),
+		       COALESCE(l.notice,'')
 		  FROM tickets t
 		  JOIN events e ON e.id = t.event_id
+		  JOIN lots l ON l.id = t.lot_id
 		  LEFT JOIN seats s ON s.id = t.seat_id
 		  LEFT JOIN sectors se ON se.id = s.sector_id
 		 WHERE t.id = $1`, ticketID).
-		Scan(&i.eventID, &i.title, &i.starts, &i.city, &i.address, &i.sector, &i.seat)
+		Scan(&i.eventID, &i.title, &i.starts, &i.city, &i.address, &i.sector, &i.seat, &i.notice)
 	return i, err
 }

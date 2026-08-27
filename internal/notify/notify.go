@@ -42,14 +42,17 @@ type Message struct {
 	TicketID   *uuid.UUID
 	OrderID    *uuid.UUID
 	// Dados da mensagem.
-	Code            string
-	CodeMinutes     int
-	EventName       string
-	EventStarts     string
-	VenueCity       string
-	Address         string
-	SectorName      string
-	SeatLabel       string
+	Code        string
+	CodeMinutes int
+	EventName   string
+	EventStarts string
+	VenueCity   string
+	Address     string
+	SectorName  string
+	SeatLabel   string
+	// Notice é o aviso da categoria comprada. Vai no e-mail porque é lá que a pessoa volta
+	// para conferir na véspera — a página do evento pode já ter mudado.
+	Notice          string
 	OrderValueCents int64
 	QRContent       string // conteúdo do QR (anexo de imagem no ingresso)
 	MeTicketsURL    string // link para "meus ingressos" (source of truth)
