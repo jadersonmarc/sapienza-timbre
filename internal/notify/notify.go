@@ -19,6 +19,11 @@ const (
 	KindTicket   = "ticket_issued"
 	KindRefunded = "order_refunded"
 	KindWaitlist = "waitlist"
+	// Ciclo do pedido de estorno. Existem separados do KindRefunded porque dizem coisas
+	// diferentes: "recebemos", "não vamos devolver e este é o motivo" e "o dinheiro
+	// voltou". Juntar os três num só faria o comprador ler a recusa como confirmação.
+	KindRefundRequested = "refund_requested"
+	KindRefundRejected  = "refund_rejected"
 )
 
 // Message é uma mensagem estruturada a entregar por algum canal. O worker renderiza o
@@ -26,7 +31,7 @@ const (
 type Message struct {
 	Channel string
 	To      string
-	Kind    string // auth_code | ticket_issued | order_refunded | waitlist
+	Kind    string // auth_code | ticket_issued | order_refunded | refund_requested | refund_rejected | waitlist
 	// Referências soltas para o registro e o painel.
 	ProducerID *uuid.UUID
 	EventID    *uuid.UUID
@@ -45,6 +50,11 @@ type Message struct {
 	OrderValueCents int64
 	QRContent       string // conteúdo do QR (anexo de imagem no ingresso)
 	MeTicketsURL    string // link para "meus ingressos" (source of truth)
+	// DecisionReason é o motivo da recusa do pedido de estorno. Vai INTEIRO ao comprador:
+	// recusa sem explicação é o que faz ele voltar pelo canal mais caro.
+	DecisionReason string
+	// RespondsBy é o prazo que a casa tem para responder um pedido por liberalidade.
+	RespondsBy string
 	// Mensagem livre (kind waitlist): assunto e corpo simples.
 	Subject string
 	Body    string

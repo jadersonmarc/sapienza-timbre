@@ -32,6 +32,10 @@ func render(m Message, publicBaseURL string) RenderedMessage {
 		return renderAuthCode(m)
 	case KindRefunded:
 		return renderRefund(m)
+	case KindRefundRequested:
+		return renderRefundRequested(m)
+	case KindRefundRejected:
+		return renderRefundRejected(m)
 	case KindWaitlist:
 		return RenderedMessage{To: m.To, Subject: m.Subject, Text: m.Body, HTML: "<p>" + htmlEscape(m.Body) + "</p>"}
 	default:
@@ -49,6 +53,37 @@ func renderAuthCode(m Message) RenderedMessage {
 		`<p>Seu código de acesso é:</p><p style="font-size:28px;font-weight:bold;letter-spacing:4px">%s</p>
 		 <p>Ele vale por %d minutos.</p><p>%s</p>`,
 		htmlEscape(m.Code), m.CodeMinutes, ignore)
+	return RenderedMessage{To: m.To, Subject: subject, Text: text, HTML: html}
+}
+
+// renderRefundRequested confirma que o pedido chegou e diz até quando a casa responde. Um
+// pedido que some sem aviso vira ligação, e a ligação vira contestação.
+func renderRefundRequested(m Message) RenderedMessage {
+	subject := "Recebemos seu pedido de devolução"
+	prazo := ""
+	if m.RespondsBy != "" {
+		prazo = fmt.Sprintf(" O produtor tem até %s para responder.", m.RespondsBy)
+	}
+	text := fmt.Sprintf("Recebemos seu pedido de devolução do ingresso para %s.%s\nVocê será avisado assim que houver uma resposta.", m.EventName, prazo)
+	html := fmt.Sprintf(
+		`<p>Recebemos seu pedido de devolução do ingresso para <strong>%s</strong>.%s</p>
+		 <p>Você será avisado assim que houver uma resposta.</p>`,
+		htmlEscape(m.EventName), htmlEscape(prazo))
+	return RenderedMessage{To: m.To, Subject: subject, Text: text, HTML: html}
+}
+
+// renderRefundRejected entrega a recusa COM o motivo. Recusa sem explicação é a que volta.
+func renderRefundRejected(m Message) RenderedMessage {
+	subject := "Sobre seu pedido de devolução"
+	motivo := m.DecisionReason
+	if motivo == "" {
+		motivo = "sem motivo informado"
+	}
+	text := fmt.Sprintf("Seu pedido de devolução do ingresso para %s não foi aceito.\nMotivo: %s\n\nSeu ingresso continua válido.", m.EventName, motivo)
+	html := fmt.Sprintf(
+		`<p>Seu pedido de devolução do ingresso para <strong>%s</strong> não foi aceito.</p>
+		 <p><strong>Motivo:</strong> %s</p><p>Seu ingresso continua válido.</p>`,
+		htmlEscape(m.EventName), htmlEscape(motivo))
 	return RenderedMessage{To: m.To, Subject: subject, Text: text, HTML: html}
 }
 
