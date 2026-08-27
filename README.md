@@ -128,6 +128,87 @@ em `split_transfers.refusal_reason`.
 O rateio entre artistas é **informativo**: alimenta o painel do produtor e não movimenta
 dinheiro. Artista não é recebedor no gateway — quem paga o artista é o produtor.
 
+## Estorno
+
+O comprador recebe **face + conveniência de volta**: o produtor devolve o face, a plataforma
+devolve a conveniência. Ninguém lucra com cancelamento. A tarifa que o gateway reteve não
+volta e é custo da plataforma — registrada em `refunds.gateway_fee_cents` para o custo real
+aparecer, nunca escondida no valor do produtor.
+
+O razão recebe **três** lançamentos, espelhando as três linhas da venda:
+
+| kind | valor | quem devolve |
+|---|---|---|
+| `estorno` | `-face` | produtor |
+| `estorno_taxa` | `-conveniência` | plataforma |
+| `retencao` | `-proporcional` | desfaz a reserva de contestação da parte estornada |
+
+A terceira é a que passa despercebida: `NetDue` **subtrai** a retenção de 5% enquanto ela
+está retida. Sem desfazê-la, uma venda estornada dentro dos 60 dias deixaria o produtor com
+saldo negativo por uma venda que não existe mais.
+
+### Duas fases, e por quê
+
+A chamada ao gateway acontece **fora da transação**, ao contrário da criação da cobrança. A
+razão é assimétrica: uma cobrança órfã (criada e revertida) é inofensiva — ninguém pagou.
+Um estorno órfão é dinheiro que voltou ao comprador com o ingresso ainda válido e sem
+registro nenhum.
+
+    1. transação curta  → grava a intenção em `refunds` e reserva os ingressos, e COMMITA
+    2. fora de transação → estorna no gateway
+    3. transação curta  → queima ingressos, devolve capacidade, lança o razão
+
+Falhar na fase 2 deixa `refunds.status='failed'` com o motivo, os ingressos soltos e nada
+aplicado pela metade. A idempotência é do índice único parcial em `refund_tickets`: um
+ingresso não entra em dois estornos vivos, e é o schema que garante isso.
+
+### Estorno parcial
+
+Estornar 1 de 4 devolve capacidade só daquele lote, libera só aquele assento e queima só
+aquele ingresso. O pedido fica `partially_refunded`, e os outros três continuam entrando na
+portaria. O valor por ingresso sai do preço do item que ele ocupa, ajustado para fechar
+**exatamente** o face do pedido — o cupom desconta o pedido, não o item, e dividir o total
+deixaria centavo sobrando.
+
+### Reversão do repasse
+
+De onde o dinheiro sai decide quem fica devendo (registrado em `split_refunds.source`):
+
+| Situação | Origem | Efeito |
+|---|---|---|
+| Split ainda não liquidado | `not_settled` | o estorno da cobrança cancela o split junto |
+| Venda centralizada | `platform_balance` | o dinheiro nunca saiu da plataforma |
+| Split liquidado, subconta cobre | `producer` | o gateway puxa da subconta do produtor |
+| Split liquidado, sem saldo | `platform_covered` | a plataforma cobre e o produtor fica devendo |
+
+**O comprador é estornado mesmo quando a subconta não cobre.** Deixar alguém sem o dinheiro
+porque o produtor já sacou não é opção. A dívida vira `NetDue` negativo e sai dos próximos
+repasses sozinho — `SettleDue` não materializa payout com líquido negativo — e aparece no
+painel do produtor com a lista de estornos que a compõem. Acima de `RefundDebtAlertCents`
+(provisório: R$ 500) o produtor aparece como alerta no painel da plataforma.
+
+`split_transfers` tem uma linha por PEDIDO, então o parcial nunca a sobrescreve: a reversão
+é registrada por ingresso em `split_refunds`, e `split_status` só vai a `REFUNDED` quando não
+sobra face no pedido.
+
+### Guardas
+
+- **Entrada registrada**: ingresso que já passou na portaria não é estornável pelo produtor.
+  Só admin, com motivo obrigatório — quem usou o ingresso consumiu o serviço.
+- **Evento fechado**: o estorno é permitido e **republica o atestado**, em versão nova com
+  `supersedes_id`. A anterior continua acessível. Sem isso, a comprovação de público mente.
+- **Eco do webhook**: o aviso do gateway sobre o estorno que nós mesmos originamos não pode
+  ser lido como devolução externa — senão queimaria o que sobrou do pedido. A janela de eco
+  é de 10 minutos (provisório: o aviso não traz o id do estorno de forma confiável).
+
+### Quem pode estornar
+
+    POST /api/v1/orders/{id}/refund                              # owner do produtor
+    POST /api/v1/admin/producers/{producerId}/orders/{id}/refund  # admin, motivo obrigatório
+
+Corpo vazio estorna o pedido inteiro; `{"ticket_ids": [...]}` estorna os escolhidos. A fila
+de pedidos do comprador, com política e aprovação, vem depois.
+
 ## Testes
 
 ```bash
