@@ -36,9 +36,9 @@ func (s *Server) cancelEvent(w http.ResponseWriter, r *http.Request, claims *aut
 		return
 	}
 	var enqueued int
-	var buyers []string
-	var title string
 	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
+		var buyers []string
+		var title string
 		// Quem avisar precisa ser lido ANTES do estorno mexer no status dos pedidos.
 		var e error
 		if buyers, title, e = checkout.CancelledOrderBuyers(r.Context(), tx, eventID); e != nil {
@@ -52,7 +52,13 @@ func (s *Server) cancelEvent(w http.ResponseWriter, r *http.Request, claims *aut
 		}
 		// Evento já fechado: o registro canônico vai mudar. Republicar UMA vez ao fim do
 		// lote, não a cada devolução — senão o atestado vira uma versão por pedido.
-		return checkout.MarkAttestationStale(r.Context(), tx, eventID)
+		if e := checkout.MarkAttestationStale(r.Context(), tx, eventID); e != nil {
+			return e
+		}
+		// O aviso entra na MESMA transação do cancelamento: ou o evento é cancelado e todo
+		// mundo é avisado, ou nada acontece. Avisar depois do commit abriria a janela em que
+		// o evento cai e ninguém fica sabendo.
+		return s.notifyCancelled(r.Context(), tx, eventID, title, buyers)
 	}); err != nil {
 		if errors.Is(err, catalog.ErrInvalidTransition) {
 			writeErr(w, http.StatusConflict, err.Error())
@@ -62,26 +68,27 @@ func (s *Server) cancelEvent(w http.ResponseWriter, r *http.Request, claims *aut
 		return
 	}
 
-	// O aviso sai agora, não no fim da devolução: quem tinha ingresso para amanhã precisa
-	// saber hoje, mesmo que o dinheiro leve dias para voltar.
-	s.notifyCancelled(r.Context(), eventID, title, buyers)
-
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "status": "cancelled", "refunds_queued": enqueued,
 	})
 }
 
-func (s *Server) notifyCancelled(ctx context.Context, eventID uuid.UUID, title string, buyers []string) {
+// notifyCancelled enfileira o aviso a cada comprador. O aviso sai na TRANSIÇÃO, não no fim
+// da devolução: quem tinha ingresso para amanhã precisa saber hoje, mesmo que o dinheiro
+// leve dias para voltar. A chave é evento+destinatário — cancelar duas vezes não avisa duas.
+func (s *Server) notifyCancelled(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, title string, buyers []string) error {
 	if s.seams.Notify == nil {
-		return
+		return nil
 	}
 	for _, to := range buyers {
-		if err := s.seams.Notify.Send(ctx, notify.Message{
+		if err := s.seams.Notify.Send(ctx, tx, notify.Message{
 			Kind: notify.KindEventCancelled, To: to, EventName: title, EventID: &eventID,
+			IdempotencyKey: "event_cancelled:" + eventID.String() + ":" + to,
 		}); err != nil {
-			slog.Warn("avisar cancelamento", "evento", eventID, "err", err)
+			return err
 		}
 	}
+	return nil
 }
 
 // cancelProgress é o andamento do lote, para o produtor não ficar no escuro enquanto
@@ -338,4 +345,54 @@ func (w *CancelWorker) republishStale(ctx context.Context, producerID uuid.UUID)
 		}
 	}
 	return nil
+}
+
+// adminFailedNotifications é a fila de mensagens que esgotaram as tentativas de envio.
+// Sem ela, "não recebi o ingresso" não distingue mensagem que nunca foi criada de mensagem
+// que o provedor recusou cinco vezes.
+func (s *Server) adminFailedNotifications(w http.ResponseWriter, r *http.Request, _ *auth.AdminClaims) {
+	type row struct {
+		ID        uuid.UUID `json:"id"`
+		Kind      string    `json:"kind"`
+		To        string    `json:"to_email"`
+		Attempts  int       `json:"attempts"`
+		LastError string    `json:"last_error"`
+		UpdatedAt time.Time `json:"updated_at"`
+	}
+	rows, err := s.pool.Query(r.Context(), `
+		SELECT id, kind, to_email, attempts, COALESCE(last_error,''), updated_at
+		  FROM public.notifications WHERE status='failed'
+		 ORDER BY updated_at DESC LIMIT 200`)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+	out := []row{}
+	for rows.Next() {
+		var it row
+		if err := rows.Scan(&it.ID, &it.Kind, &it.To, &it.Attempts, &it.LastError, &it.UpdatedAt); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		out = append(out, it)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"failed": out})
+}
+
+// adminResendNotification reenfileira uma mensagem falha. Cria um registro NOVO: o reenvio é
+// outra tentativa de entrega da mesma mensagem, e reaproveitar a linha apagaria o histórico
+// de por que a primeira não chegou.
+func (s *Server) adminResendNotification(w http.ResponseWriter, r *http.Request, _ *auth.AdminClaims) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "mensagem inválida")
+		return
+	}
+	newID, err := notify.ResendNotification(r.Context(), s.pool, id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": newID})
 }

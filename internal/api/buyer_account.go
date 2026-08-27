@@ -255,7 +255,8 @@ func (s *Server) sendVerificationCode(ctx context.Context, email string) {
 		VALUES ($1,$2, now() + make_interval(secs => $3))`, email, hash, otpTTL.Seconds()); err != nil {
 		return
 	}
-	_ = s.seams.Notify.Send(ctx, notify.Message{
+	// Um novo código é OUTRO código: sem chave de idempotência, de propósito.
+	s.notifyStandalone(ctx, notify.Message{
 		Kind: notify.KindAuthCode, Channel: "email", To: email,
 		Code: code, CodeMinutes: int(otpTTL.Minutes()),
 	})

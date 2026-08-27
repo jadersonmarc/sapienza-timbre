@@ -192,7 +192,7 @@ func (s *Server) runRefund(ctx context.Context, producerID uuid.UUID, in checkou
 				return e
 			}
 		}
-		return notifyRefundOrder(ctx, s.seams.Notify, tx, prepared.OrderID, prepared.TotalCents)
+		return notifyRefundOrder(ctx, s.seams.Notify, tx, prepared.OrderID, prepared.ID, prepared.TotalCents)
 	}); err != nil {
 		s.failRequest(ctx, producerID, requestID, err.Error())
 		return refundResp{}, err
@@ -251,7 +251,7 @@ func (s *Server) recloseIfClosed(ctx context.Context, producerID, orderID uuid.U
 }
 
 // notifyRefundOrder avisa o comprador. Assíncrono — nunca bloqueia o estorno.
-func notifyRefundOrder(ctx context.Context, n notify.Notifier, tx pgx.Tx, orderID uuid.UUID, valueCents int64) error {
+func notifyRefundOrder(ctx context.Context, n notify.Notifier, tx pgx.Tx, orderID, refundID uuid.UUID, valueCents int64) error {
 	if n == nil {
 		return nil
 	}
@@ -265,9 +265,12 @@ func notifyRefundOrder(ctx context.Context, n notify.Notifier, tx pgx.Tx, orderI
 	if err != nil {
 		return err
 	}
-	return n.Send(ctx, notify.Message{
+	return n.Send(ctx, tx, notify.Message{
 		Kind: notify.KindRefunded, To: to, EventName: eventName,
 		OrderValueCents: valueCents, OrderID: &orderID,
+		// A chave é o ESTORNO, não o pedido: um pedido pode ser devolvido em partes, e cada
+		// devolução merece o seu aviso.
+		IdempotencyKey: "refunded:" + refundID.String(),
 	})
 }
 

@@ -90,20 +90,28 @@ func (s *Server) notifyRequest(ctx context.Context, producerID uuid.UUID, req ch
 	if s.seams.Notify == nil {
 		return
 	}
-	var to, eventName string
 	if err := s.withTenant(ctx, producerID, func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `
+		var to, eventName string
+		if e := tx.QueryRow(ctx, `
 			SELECT COALESCE(o.buyer_email,''), e.title FROM orders o
-			  JOIN events e ON e.id = o.event_id WHERE o.id=$1`, req.OrderID).Scan(&to, &eventName)
-	}); err != nil || to == "" {
-		return
-	}
-	msg := notify.Message{Kind: kind, To: to, EventName: eventName, OrderID: &req.OrderID}
-	if req.RespondsBy != nil {
-		msg.RespondsBy = req.RespondsBy.Format("02/01/2006")
-	}
-	msg.DecisionReason = reason
-	if err := s.seams.Notify.Send(ctx, msg); err != nil {
+			  JOIN events e ON e.id = o.event_id WHERE o.id=$1`, req.OrderID).Scan(&to, &eventName); e != nil {
+			return e
+		}
+		if to == "" {
+			return nil
+		}
+		msg := notify.Message{
+			Kind: kind, To: to, EventName: eventName, OrderID: &req.OrderID,
+			// A chave é o pedido e o momento dele: "recebemos" e "recusado" são avisos
+			// diferentes do mesmo pedido, e os dois precisam sair.
+			IdempotencyKey: kind + ":" + req.ID.String(),
+		}
+		if req.RespondsBy != nil {
+			msg.RespondsBy = req.RespondsBy.Format("02/01/2006")
+		}
+		msg.DecisionReason = reason
+		return s.seams.Notify.Send(ctx, tx, msg)
+	}); err != nil {
 		slog.Warn("avisar comprador sobre o pedido de estorno", "pedido", req.ID, "err", err)
 	}
 }

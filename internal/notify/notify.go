@@ -1,7 +1,7 @@
-// Package notify define o notificador (e-mail, WhatsApp, push) usado para entrega de
-// código de acesso, ingresso e avisos. O envio é ASSÍNCRONO: Send apenas enfileira um
-// registro em public.notifications e retorna — nunca bloqueia o caminho que o disparou.
-// Um worker em segundo plano drena a fila e envia pelo provedor configurado.
+// Package notify é a OUTBOX de notificação (e-mail: código de acesso, ingresso, estorno,
+// avisos). Send apenas grava um registro em public.notifications DENTRO da transação de
+// quem chama e retorna — nunca bloqueia o caminho que o disparou e nunca sobrevive a um
+// rollback dele. Um worker em segundo plano drena a fila e envia pelo provedor.
 package notify
 
 import (
@@ -10,6 +10,7 @@ import (
 	"log/slog"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -61,14 +62,22 @@ type Message struct {
 	DecisionReason string
 	// RespondsBy é o prazo que a casa tem para responder um pedido por liberalidade.
 	RespondsBy string
+	// IdempotencyKey impede que o mesmo aviso entre duas vezes quando o caminho que o
+	// produz é retentado (webhook reprocessado, worker que volta). Vazia para o que
+	// legitimamente se repete: um novo código de acesso é outro código.
+	IdempotencyKey string
 	// Mensagem livre (kind waitlist): assunto e corpo simples.
 	Subject string
 	Body    string
 }
 
-// Notifier entrega mensagens. A implementação real enfileira em public.notifications.
+// Notifier entrega mensagens.
+//
+// Send recebe a TRANSAÇÃO EM CURSO e grava na outbox dentro dela. É o ponto do desenho:
+// se a venda faz rollback, a mensagem vai junto e nada é enviado. Antes a gravação era pelo
+// pool, e um rollback tardio mandava o ingresso de uma compra que não existe.
 type Notifier interface {
-	Send(ctx context.Context, msg Message) error
+	Send(ctx context.Context, tx pgx.Tx, msg Message) error
 }
 
 // Service implementa Notifier enfileirando a notificação e retornando imediatamente.
@@ -84,7 +93,7 @@ func NewService(pool *pgxpool.Pool, publicBaseURL string) *Service {
 }
 
 // Send renderiza e enfileira a mensagem (status 'queued'). Retorna sem esperar o envio.
-func (s *Service) Send(ctx context.Context, msg Message) error {
+func (s *Service) Send(ctx context.Context, tx pgx.Tx, msg Message) error {
 	if msg.To == "" || msg.Kind == "" {
 		return nil // sem destino/canário: nada a enviar
 	}
@@ -97,11 +106,15 @@ func (s *Service) Send(ctx context.Context, msg Message) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.pool.Exec(ctx, `
+	// ON CONFLICT em vez de erro: reenfileirar o mesmo aviso é o retry funcionando, não uma
+	// falha — e derrubar o caller por causa disso mataria a venda por um e-mail repetido.
+	_, err = tx.Exec(ctx, `
 		INSERT INTO public.notifications
-		    (producer_id, event_id, kind, to_email, subject_id, ticket_id, order_id, payload)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-		msg.ProducerID, msg.EventID, msg.Kind, msg.To, msg.SubjectID, msg.TicketID, msg.OrderID, payload)
+		    (producer_id, event_id, kind, to_email, subject_id, ticket_id, order_id, payload, idempotency_key)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING`,
+		msg.ProducerID, msg.EventID, msg.Kind, msg.To, msg.SubjectID, msg.TicketID, msg.OrderID,
+		payload, nilIfEmpty(msg.IdempotencyKey))
 	if err != nil {
 		slog.Warn("notify: falha ao enfileirar", "kind", msg.Kind, "to", msg.To, "err", err)
 		return err
@@ -110,4 +123,11 @@ func (s *Service) Send(ctx context.Context, msg Message) error {
 	// criada de mensagem que o provedor recusou. É uma linha por e-mail — volume trivial.
 	slog.Info("notify: enfileirado", "kind", msg.Kind, "to", msg.To)
 	return nil
+}
+
+func nilIfEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }

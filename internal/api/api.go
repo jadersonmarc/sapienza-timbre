@@ -272,6 +272,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/admin/splits", s.requireAdmin(s.adminSplits))
 	mux.HandleFunc("GET /api/v1/admin/sales", s.requireAdmin(s.adminSearchSales))
 	mux.HandleFunc("GET /api/v1/admin/refund-jobs/failed", s.requireAdmin(s.adminFailedRefunds))
+	mux.HandleFunc("GET /api/v1/admin/notifications/failed", s.requireAdmin(s.adminFailedNotifications))
+	mux.HandleFunc("POST /api/v1/admin/notifications/{id}/resend", s.requireAdmin(s.adminResendNotification))
 	mux.HandleFunc("POST /api/v1/admin/producers/{producerId}/refund-jobs/{id}/retry", s.requireAdmin(s.adminRetryRefundJob))
 	mux.HandleFunc("GET /api/v1/admin/producers/{id}/events/{eventId}/lineup", s.requireAdmin(s.adminLineup))
 	mux.HandleFunc("PUT /api/v1/admin/producers/{id}/events/{eventId}/lineup", s.requireAdmin(s.adminLineup))
@@ -366,6 +368,29 @@ func (s *Server) requireOwner(fn authedHandler) http.HandlerFunc {
 		}
 		fn(w, r, claims)
 	})
+}
+
+// notifyStandalone enfileira um aviso que NÃO acompanha transação de negócio nenhuma —
+// código de acesso, confirmação de conta. A outbox exige transação porque a regra é a
+// mensagem morrer junto com o que a gerou; aqui não há nada para morrer junto, então a
+// transação é só desta escrita. Best effort: falhar o e-mail não pode derrubar a resposta.
+func (s *Server) notifyStandalone(ctx context.Context, msg notify.Message) {
+	if s.seams.Notify == nil {
+		return
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		slog.Warn("notify: abrir transação", "kind", msg.Kind, "err", err)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := s.seams.Notify.Send(ctx, tx, msg); err != nil {
+		slog.Warn("notify: enfileirar", "kind", msg.Kind, "err", err)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		slog.Warn("notify: commit", "kind", msg.Kind, "err", err)
+	}
 }
 
 // withTenant roda fn numa transação escopada ao schema do produtor. Base para os

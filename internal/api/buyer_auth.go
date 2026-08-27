@@ -158,7 +158,8 @@ func (s *Server) requestCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Assunto com o código de propósito (lido na notificação do celular, sem abrir o e-mail).
-	_ = s.seams.Notify.Send(ctx, notify.Message{
+	// Um novo código é OUTRO código: sem chave de idempotência, de propósito.
+	s.notifyStandalone(ctx, notify.Message{
 		Kind: notify.KindAuthCode, Channel: "email", To: email,
 		Code: code, CodeMinutes: int(otpTTL.Minutes()),
 	})

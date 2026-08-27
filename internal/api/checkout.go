@@ -164,8 +164,9 @@ func notifyRefund(ctx context.Context, n notify.Notifier, tx pgx.Tx, asaasRef st
 	if err != nil {
 		return err
 	}
-	return n.Send(ctx, notify.Message{
+	return n.Send(ctx, tx, notify.Message{
 		Kind: notify.KindRefunded, To: to, EventName: eventName, OrderValueCents: total,
+		IdempotencyKey: "refunded:" + asaasRef,
 	})
 }
 

@@ -55,8 +55,11 @@ func (e Emitter) emit(ctx context.Context, tx pgx.Tx, ticketIDs []uuid.UUID, del
 		if err != nil {
 			return err
 		}
-		_ = e.Notify.Send(ctx, notify.Message{
+		// Na MESMA transação que assina e grava o ingresso: se a venda rolar para trás, o
+		// e-mail vai junto. A chave é o ingresso — reprocessar o webhook não manda dois.
+		_ = e.Notify.Send(ctx, tx, notify.Message{
 			Kind: notify.KindTicket, Channel: "email", To: deliverTo,
+			IdempotencyKey: "ticket:" + tid.String(),
 			ProducerID: &e.ProducerID, EventID: &info.eventID, TicketID: &tid,
 			EventName: info.title, EventStarts: info.starts,
 			VenueCity: info.city, Address: info.address,

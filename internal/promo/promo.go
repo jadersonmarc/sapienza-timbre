@@ -102,7 +102,7 @@ func NotifyWaitlist(ctx context.Context, tx pgx.Tx, notifier notify.Notifier, ev
 			return 0, err
 		}
 		if notifier != nil {
-			_ = notifier.Send(ctx, notify.Message{Channel: "email", Kind: notify.KindWaitlist, To: it.email, Subject: "Timbre — vaga disponível", Body: reason})
+			_ = notifier.Send(ctx, tx, notify.Message{Channel: "email", Kind: notify.KindWaitlist, To: it.email, Subject: "Timbre — vaga disponível", Body: reason})
 		}
 	}
 	return len(list), nil
