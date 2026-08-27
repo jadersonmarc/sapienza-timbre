@@ -165,6 +165,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/public/me/tickets/{id}/transfer", s.buyerAuthed(s.buyerTransfer))
 	mux.HandleFunc("POST /api/v1/public/me/tickets/{id}/listings", s.buyerAuthed(s.buyerCreateListing))
 	mux.HandleFunc("POST /api/v1/public/me/tickets/{id}/reissue", s.buyerAuthed(s.buyerReissue))
+	// Pedido de estorno do comprador. A trilha sai da política, não da escolha dele.
+	mux.HandleFunc("POST /api/v1/public/me/orders/{id}/refund-request", s.buyerAuthed(s.buyerRefundRequest))
+	mux.HandleFunc("GET /api/v1/public/me/refund-requests", s.buyerAuthed(s.myRefundRequests))
 	// Camada pública (Onda 1): cadastro público de produtor (landing B2B) — self-service,
 	// nasce ativo. E cadastro de artista (catálogo global), também ativo na hora.
 	mux.HandleFunc("POST /api/v1/public/producer-signup", s.rateLimited("producer-signup", s.producerSignup))
@@ -235,6 +238,18 @@ func (s *Server) Handler() http.Handler {
 	// admin passa por cima das guardas, com motivo obrigatório. A fila de aprovação de
 	// pedido do comprador vem depois — aqui são só as duas portas que movem dinheiro.
 	mux.HandleFunc("POST /api/v1/orders/{id}/refund", s.requireOwner(s.producerRefund))
+	// Política de estorno: o que a casa promete. Por evento, com o default do produtor
+	// como herança; a leitura pública é o que o comprador lê ANTES de comprar.
+	mux.HandleFunc("GET /api/v1/refund-policy", s.requireOwner(s.getRefundPolicy))
+	mux.HandleFunc("PUT /api/v1/refund-policy", s.requireOwner(s.putRefundPolicy))
+	mux.HandleFunc("GET /api/v1/events/{id}/refund-policy", s.requireOwner(s.getRefundPolicy))
+	mux.HandleFunc("PUT /api/v1/events/{id}/refund-policy", s.requireOwner(s.putRefundPolicy))
+	mux.HandleFunc("GET /api/v1/public/events/{id}/refund-policy", s.publicRefundPolicy)
+	// Fila de pedidos do produtor. Recusar exige motivo; aprovar executa na sequência.
+	mux.HandleFunc("GET /api/v1/refund-requests", s.authed(s.listRefundRequests))
+	mux.HandleFunc("GET /api/v1/refund-requests/{id}/history", s.authed(s.refundRequestHistory))
+	mux.HandleFunc("POST /api/v1/refund-requests/{id}/approve", s.requireOwner(s.decideRefundRequest(true)))
+	mux.HandleFunc("POST /api/v1/refund-requests/{id}/reject", s.requireOwner(s.decideRefundRequest(false)))
 	mux.HandleFunc("POST /api/v1/public/checkins/{id}/review", s.submitReview)
 	mux.HandleFunc("GET /api/v1/public/producers/{id}/reputation", s.producerReputation)
 	mux.HandleFunc("GET /api/v1/public/subjects/{id}/discovery", s.subjectDiscovery)
@@ -252,6 +267,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/admin/producers/{id}/events/{eventId}/lineup", s.requireAdmin(s.adminLineup))
 	mux.HandleFunc("POST /api/v1/admin/producers/{id}/payouts/mark-paid", s.requireAdmin(s.adminMarkPayoutPaid))
 	mux.HandleFunc("POST /api/v1/admin/producers/{producerId}/orders/{id}/refund", s.requireAdmin(s.adminRefund))
+	mux.HandleFunc("POST /api/v1/admin/producers/{producerId}/refund-requests/{id}/approve", s.requireAdmin(s.adminDecideRefundRequest(true)))
+	mux.HandleFunc("POST /api/v1/admin/producers/{producerId}/refund-requests/{id}/reject", s.requireAdmin(s.adminDecideRefundRequest(false)))
 	mux.HandleFunc("GET /api/v1/admin/producers", s.requireAdmin(s.listAdminProducers))
 	mux.HandleFunc("POST /api/v1/admin/producers/{id}/approve", s.requireAdmin(s.adminSetProducerStatus("active")))
 	mux.HandleFunc("POST /api/v1/admin/producers/{id}/suspend", s.requireAdmin(s.adminSetProducerStatus("suspended")))

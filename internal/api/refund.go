@@ -34,7 +34,8 @@ type refundResp struct {
 	TotalCents       int64     `json:"total_cents"`
 	// CoveredByPlatform é o caso em que a subconta do produtor não cobriu: o comprador foi
 	// estornado assim mesmo e o produtor ficou devendo.
-	CoveredByPlatform bool `json:"covered_by_platform"`
+	CoveredByPlatform bool       `json:"covered_by_platform"`
+	RequestID         *uuid.UUID `json:"request_id,omitempty"`
 }
 
 // producerRefund estorna um pedido (owner do produtor). Guarda de entrada registrada vale:
@@ -81,14 +82,36 @@ func (s *Server) handleRefund(w http.ResponseWriter, r *http.Request, producerID
 		tickets = append(tickets, id)
 	}
 
+	// Mesmo o cancelamento por conta própria abre um pedido: é o registro que responde
+	// "quem mandou estornar isso, e por quê" meses depois. Sem ele, a trilha de auditoria
+	// teria buraco justo nas decisões que ninguém pediu.
+	requester := checkout.RequesterProducer
+	actorKind := "producer"
+	if override {
+		requester, actorKind = checkout.RequesterAdmin, "admin"
+	}
+	var request checkout.RefundRequest
+	if err := s.withTenant(r.Context(), producerID, func(tx pgx.Tx) error {
+		var e error
+		request, e = checkout.CreateRequest(r.Context(), tx, checkout.NewRefundRequest{
+			OrderID: orderID, TicketIDs: tickets, RequestedBy: requester,
+			Reason: req.Reason, Actor: actorKind,
+		})
+		return e
+	}); err != nil {
+		writeRefundErr(w, err)
+		return
+	}
+
 	out, err := s.runRefund(r.Context(), producerID, checkout.RefundInput{
 		OrderID: orderID, TicketIDs: tickets, InitiatedBy: by,
 		Reason: req.Reason, AllowCheckedIn: override,
-	})
+	}, &request.ID)
 	if err != nil {
 		writeRefundErr(w, err)
 		return
 	}
+	out.RequestID = &request.ID
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -99,13 +122,26 @@ func (s *Server) handleRefund(w http.ResponseWriter, r *http.Request, producerID
 // registro nenhum. Então a intenção é gravada e COMMITADA antes de qualquer chamada
 // externa, e os efeitos entram depois, numa segunda transação. Falhar no meio deixa a
 // operação marcada 'failed', com os ingressos soltos e nada aplicado pela metade.
-func (s *Server) runRefund(ctx context.Context, producerID uuid.UUID, in checkout.RefundInput) (refundResp, error) {
+func (s *Server) runRefund(ctx context.Context, producerID uuid.UUID, in checkout.RefundInput,
+	requestID *uuid.UUID) (refundResp, error) {
 	var prepared checkout.PreparedRefund
 	if err := s.withTenant(ctx, producerID, func(tx pgx.Tx) error {
+		// O pedido vai a 'processing' na MESMA transação que reserva os ingressos: uma
+		// segunda aprovação clicada enquanto a primeira está em voo não pode virar um
+		// segundo estorno.
+		if requestID != nil {
+			if e := checkout.MarkRequestProcessing(ctx, tx, *requestID); e != nil {
+				return e
+			}
+		}
 		var e error
 		prepared, e = checkout.PrepareRefund(ctx, tx, in)
 		return e
 	}); err != nil {
+		// A tentativa barrada não pode ficar viva: o índice único guarda um pedido vivo por
+		// compra, e um pedido travado aqui trancaria a ordem — inclusive para o admin que
+		// vem justamente para passar por cima da guarda que barrou.
+		s.failRequest(ctx, producerID, requestID, err.Error())
 		return refundResp{}, err
 	}
 
@@ -130,6 +166,11 @@ func (s *Server) runRefund(ctx context.Context, producerID uuid.UUID, in checkou
 	default:
 		cause := err.Error()
 		if e := s.withTenant(ctx, producerID, func(tx pgx.Tx) error {
+			if requestID != nil {
+				if e := checkout.FailRequest(ctx, tx, *requestID, cause); e != nil {
+					return e
+				}
+			}
 			return checkout.FailRefund(ctx, tx, prepared.ID, cause)
 		}); e != nil {
 			slog.Error("marcar estorno falho", "refund", prepared.ID, "err", e)
@@ -145,8 +186,15 @@ func (s *Server) runRefund(ctx context.Context, producerID uuid.UUID, in checkou
 		if e := checkout.CompleteRefund(ctx, tx, prepared.ID, covered); e != nil {
 			return e
 		}
+		if requestID != nil {
+			if e := checkout.CompleteRequest(ctx, tx, *requestID, prepared.ID,
+				prepared.FaceCents, prepared.ConvenienceCents, prepared.TotalCents); e != nil {
+				return e
+			}
+		}
 		return notifyRefundOrder(ctx, s.seams.Notify, tx, prepared.OrderID, prepared.TotalCents)
 	}); err != nil {
+		s.failRequest(ctx, producerID, requestID, err.Error())
 		return refundResp{}, err
 	}
 
@@ -160,6 +208,20 @@ func (s *Server) runRefund(ctx context.Context, producerID uuid.UUID, in checkou
 		FaceCents: prepared.FaceCents, ConvenienceCents: prepared.ConvenienceCents,
 		TotalCents: prepared.TotalCents, CoveredByPlatform: covered,
 	}, nil
+}
+
+// failRequest tira o pedido do estado vivo depois de uma tentativa que não foi adiante.
+// Best effort: o erro que trouxe até aqui é o que interessa ao chamador, e engolir este
+// segundo erro é melhor que trocá-lo pelo primeiro — mas ele fica no log.
+func (s *Server) failRequest(ctx context.Context, producerID uuid.UUID, requestID *uuid.UUID, cause string) {
+	if requestID == nil {
+		return
+	}
+	if err := s.withTenant(ctx, producerID, func(tx pgx.Tx) error {
+		return checkout.FailRequest(ctx, tx, *requestID, cause)
+	}); err != nil {
+		slog.Error("encerrar pedido de estorno após falha", "pedido", *requestID, "err", err)
+	}
 }
 
 // recloseIfClosed republica o atestado quando o evento do pedido já estava fechado. Best
@@ -213,6 +275,14 @@ func writeRefundErr(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusConflict, "já existe um estorno em andamento para este ingresso")
 	case errors.Is(err, checkout.ErrRefundCheckedIn):
 		writeErr(w, http.StatusConflict, "ingresso com entrada registrada não é estornável")
+	case errors.Is(err, checkout.ErrRequestOpen):
+		writeErr(w, http.StatusConflict, "já existe um pedido de estorno em aberto para esta compra")
+	case errors.Is(err, checkout.ErrRequestNotOpen):
+		writeErr(w, http.StatusConflict, "este pedido já foi decidido")
+	case errors.Is(err, checkout.ErrDiscretionaryClosed):
+		writeErr(w, http.StatusConflict, "fora da janela de arrependimento, e esta casa não aceita pedidos por liberalidade")
+	case errors.Is(err, checkout.ErrBadRequest):
+		writeErr(w, http.StatusBadRequest, err.Error())
 	default:
 		writeErr(w, http.StatusInternalServerError, err.Error())
 	}
