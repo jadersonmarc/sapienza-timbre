@@ -17,17 +17,29 @@ import (
 	"github.com/jadersonmarc/sapienza-kit/tenancy"
 )
 
-// NetDue calcula o valor líquido disponível para repasse agora: repasse já liberado,
-// menos a retenção ainda retida, mais estornos (negativos), menos o que já foi pago.
+// NetDue calcula o valor líquido que a PLATAFORMA ainda deve ao produtor: repasse já
+// liberado, menos a retenção ainda retida, mais estornos (negativos), menos o que já foi
+// pago. Negativo é dívida do produtor com a plataforma — estorno que a subconta dele não
+// cobriu — e é abatido dos próximos repasses por construção, já que SettleDue não
+// materializa payout com líquido negativo.
+//
+// Só entram as linhas com settled_by='platform'. A venda que saiu com split foi paga pelo
+// gateway direto na subconta do produtor: contar o repasse dela aqui mandaria pagar duas
+// vezes, e descontar a retenção dela deixaria a conta negativa por dinheiro que a
+// plataforma nunca segurou. As linhas continuam no razão, e a receita do produtor continua
+// aparecendo em dash.EventFinance — o que muda é só quem ainda deve.
 func NetDue(ctx context.Context, tx pgx.Tx) (int64, error) {
 	var net int64
 	err := tx.QueryRow(ctx, `
 		SELECT
 		  COALESCE((SELECT SUM(amount_cents) FROM ledger_entries
-		             WHERE kind='repasse' AND (available_at IS NULL OR available_at <= now())),0)
+		             WHERE kind='repasse' AND settled_by='platform'
+		               AND (available_at IS NULL OR available_at <= now())),0)
 		- COALESCE((SELECT SUM(amount_cents) FROM ledger_entries
-		             WHERE kind='retencao' AND available_at IS NOT NULL AND available_at > now()),0)
-		+ COALESCE((SELECT SUM(amount_cents) FROM ledger_entries WHERE kind='estorno'),0)
+		             WHERE kind='retencao' AND settled_by='platform'
+		               AND available_at IS NOT NULL AND available_at > now()),0)
+		+ COALESCE((SELECT SUM(amount_cents) FROM ledger_entries
+		             WHERE kind='estorno' AND settled_by='platform'),0)
 		- COALESCE((SELECT SUM(amount_cents) FROM payouts WHERE status IN ('pending','sent')),0)`).Scan(&net)
 	return net, err
 }

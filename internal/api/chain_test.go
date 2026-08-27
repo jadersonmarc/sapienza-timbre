@@ -71,13 +71,17 @@ func soldStandingTicket(t *testing.T, ts *httptest.Server, pool *pgxpool.Pool, o
 	return eventID
 }
 
-// TestPayoutSettlement: o repasse disponível vira um payout.
+// TestPayoutSettlement: o repasse vira payout SÓ quando o dinheiro está com a plataforma.
+//
+// Venda liquidada por split não gera payout: o gateway entregou o face direto na subconta
+// do produtor, na própria cobrança. Materializar payout também para ela mandaria transferir
+// de novo o que já foi pago — o razão contava a mesma venda duas vezes.
 func TestPayoutSettlement(t *testing.T) {
 	ts, pool := setup(t)
 	_, owner := createProducer(t, ts, "Casa Payout", "owner@payout.com", "senha1234")
 	pid := producerID(t, ts, owner)
 	ctx := context.Background()
-	soldStandingTicket(t, ts, pool, owner) // face 5000 → repasse 5000 (limpo); taxa plataforma 450
+	soldStandingTicket(t, ts, pool, owner) // face 5000, liquidado por SPLIT
 
 	// O repasse nasce disponível D+2 (futuro); antecipamos para o passado no teste.
 	inTenant(t, ctx, pool, pid, func(tx pgx.Tx) {
@@ -91,6 +95,24 @@ func TestPayoutSettlement(t *testing.T) {
 		var e error
 		if amount, e = ledger.SettleDue(ctx, tx); e != nil {
 			t.Fatalf("settle: %v", e)
+		}
+	})
+	if amount != 0 {
+		t.Fatalf("venda com split não deveria gerar payout, veio %d", amount)
+	}
+
+	// Venda CENTRALIZADA (sem split): o dinheiro está com a plataforma e vira payout.
+	seedCardSale(t, ctx, pool, pid)
+	inTenant(t, ctx, pool, pid, func(tx pgx.Tx) {
+		// Libera a retenção de 60 dias para o líquido ficar cheio.
+		if _, err := tx.Exec(ctx, `UPDATE ledger_entries SET available_at = now() - interval '1 day' WHERE kind='retencao'`); err != nil {
+			t.Fatalf("liberar retenção: %v", err)
+		}
+	})
+	inTenant(t, ctx, pool, pid, func(tx pgx.Tx) {
+		var e error
+		if amount, e = ledger.SettleDue(ctx, tx); e != nil {
+			t.Fatalf("settle centralizado: %v", e)
 		}
 	})
 	if amount != 5000 {

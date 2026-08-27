@@ -96,7 +96,12 @@ type Finance struct {
 	TaxaCents     int64 `json:"taxa_cents"`
 	RepasseCents  int64 `json:"repasse_cents"`  // receita líquida do produtor
 	RetencaoCents int64 `json:"retencao_cents"` // reserva de contestação (cartão)
-	EstornoCents  int64 `json:"estorno_cents"`
+	// EstornoCents é o que voltou do PRODUTOR (face devolvido); EstornoTaxaCents é o que
+	// voltou da PLATAFORMA (conveniência). Somados, dão o que o comprador recebeu de volta.
+	// Separados porque quem devolve cada parte é diferente, e juntá-los foi exatamente o
+	// erro que descontava do produtor a taxa que nunca foi dele.
+	EstornoCents     int64 `json:"estorno_cents"`
+	EstornoTaxaCents int64 `json:"estorno_taxa_cents"`
 }
 
 // EventFinance soma ordens pagas (bruto) e o razão por tipo.
@@ -129,6 +134,8 @@ func EventFinance(ctx context.Context, tx pgx.Tx, eventID uuid.UUID) (Finance, e
 			f.RetencaoCents = amount
 		case "estorno":
 			f.EstornoCents = amount
+		case "estorno_taxa":
+			f.EstornoTaxaCents = amount
 		}
 	}
 	return f, rows.Err()

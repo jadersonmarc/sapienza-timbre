@@ -32,7 +32,18 @@ type payoutDue struct {
 	// Blocked marca quem tem dinheiro a receber e nenhum destino cadastrado — é o caso
 	// que precisa de cobrança ativa, não de transferência.
 	Blocked bool `json:"blocked"`
+	// DebtCents é o contrário do repasse: estorno que a subconta do produtor não cobriu e
+	// a plataforma pagou ao comprador. Sai dos próximos repasses sozinho, mas acima do
+	// limiar vira trabalho — produtor que acumula dívida e não vende mais não se resolve
+	// por desconto futuro.
+	DebtCents int64 `json:"debt_cents"`
+	DebtAlert bool  `json:"debt_alert"`
 }
+
+// RefundDebtAlertCents é a dívida a partir da qual o produtor aparece como alerta no
+// painel da plataforma. PROVISÓRIO: R$ 500,00, escolhido para ser alto o bastante para não
+// disparar com um estorno isolado e baixo o bastante para aparecer antes de virar prejuízo.
+const RefundDebtAlertCents int64 = 50_000
 
 // adminPayouts lista o que a plataforma deve a cada produtor. Enquanto a divisão automática
 // na venda não estiver em uso, o dinheiro entra centralizado e a transferência é feita por
@@ -75,6 +86,16 @@ func (s *Server) adminPayouts(w http.ResponseWriter, r *http.Request, _ *auth.Ad
 		}); err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
+		}
+		// Líquido negativo é dívida, não repasse: o produtor deve à plataforma. Entra na
+		// lista ANTES dos filtros abaixo — quem deve é justamente quem os filtros
+		// esconderiam, por não ter nada a receber.
+		if due.NetDueCents < 0 {
+			due.DebtCents = -due.NetDueCents
+			due.DebtAlert = due.DebtCents >= RefundDebtAlertCents
+			due.NetDueCents = 0
+			list = append(list, due)
+			continue
 		}
 		// Produtor sem venda nenhuma não é trabalho de ninguém: fica fora da lista.
 		if due.NetDueCents <= 0 && due.PendingCents <= 0 && due.UpcomingCents <= 0 {
