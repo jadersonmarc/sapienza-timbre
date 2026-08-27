@@ -2,10 +2,28 @@
 
 ## O que é
 
-Data plane do **Timbre**: bilheteria descentralizada da Sapienza Labs (ingressos como
-NFT, assinatura Ed25519 verificável offline, carteira invisível por MPC). Repo novo,
-**não** entra no `sapienza-core`. Reusa `../sapienza-kit` (tenancy). Ver `SPEC.md`
-(arquitetura/regras) e `AGENTS.md` (convenções). Estado: **Etapa 1.1 (Fundação)**.
+Data plane do **Timbre**: bilheteria da Sapienza Labs. O ingresso é assinado em Ed25519 e
+verificável OFFLINE na portaria (só com a chave pública). Repo novo, **não** entra no
+`sapienza-core`. Reusa `../sapienza-kit` (tenancy). Ver `SPEC.md` (arquitetura/regras) e
+`AGENTS.md` (convenções).
+
+**O eixo on-chain é PROVA, não posse.** Isto é uma decisão tomada, não uma etapa pendente:
+
+- **Não existe** MPC, carteira custodial, exportação ou importação de carteira externa,
+  derivação hierárquica nem integração com Monitor. ERC-1155 fica dormente e
+  `CHAIN_MINT_MODE=off` — nenhum caminho materializa token.
+- **Existe** atestado de fechamento assinado em Ed25519 (chave SEPARADA da do QR), com
+  registro canônico agregado e sem dado pessoal, `key_id` versionado (a verificação resolve
+  a chave pelo key_id do atestado, nunca pela corrente) e verificação pública em `/a/[id]`.
+- Âncora em cadeia em modo `log`: registra a intenção, `anchor_status` fica `none`, e nada
+  é afirmado como registrado em cadeia sem transação real.
+- Transferência, revenda, teto de revenda e royalty existem em **custódia de plataforma**,
+  sem depender de cadeia nenhuma.
+
+**Pagamento:** Asaas, com split direto ao produtor na própria cobrança. Sem Escrow, sem
+BaaS. **Só Pix e cartão — boleto não existe no produto.** A taxa de plataforma é **10% flat
+para todo produtor**: o programa de níveis foi extinto, e não existe rebate, tabela de
+níveis nem taxa efetiva por produtor.
 
 
 ## Arquitetura (alinhamento pós-frontend)
@@ -56,16 +74,22 @@ make compose-up     # sobe Postgres próprio + binário
 - `internal/catalog` — eventos/lotes/cupons (1.2) + setores/assentos/preços (1.3).
 - `internal/inventory` — motor de reserva: Hold/Release/Confirm + varredura de expiração (1.3).
 - `internal/payment` — PaymentGateway: FakeGateway (default) e AsaasGateway (HTTP, split).
-- `internal/checkout` — compra: StartCheckout + webhook idempotente + split + ledger + cortesias + estorno (1.4/1.5).
+- `internal/checkout` — compra: sessão de checkout, webhook idempotente, split, razão,
+  cortesias; e todo o ciclo de ESTORNO (política, pedido com quatro trilhas, execução total
+  ou parcial, reversão do repasse, cancelamento de evento com devolução em massa).
 - `internal/ticketing` — assinatura Ed25519 dos ingressos + verificador offline (só chave pública) (1.5).
-- `internal/nft` — gestão-NFT: metadados ERC-1155 (sem dado pessoal), estado, export, disputa, reemissão (1.9).
+- `internal/nft` — metadados públicos do ingresso (sem dado pessoal), estado, disputa, reemissão.
+- `internal/attest` — fechamento do evento: registro canônico agregado, assinatura Ed25519,
+  âncora (modo log), compromissos declarados e a cota de meia-entrada que vale na venda.
 - `internal/gate` — portaria: valida QR offline, check-in + presença, reconciliação do sync (1.6/2.4).
 - `internal/gateweb` — PWA da portaria (assets embutidos, servida em /gate) (1.6).
 - `internal/dash` — agregações dos painéis (produtor + plataforma) (1.7).
 - `internal/api` — API do produto: guard/withTenant + handlers de catálogo/inventário/checkout/portaria/painel/admin.
-- `internal/chain` — emissão/transferência on-chain assíncrona: interface + Noop/Base + fila chain_jobs/worker (1.8/2.1).
+- `internal/chain` — seam de cadeia: interface + Noop/Base e a fila de âncora. Dormente.
 - `internal/ledger` — fechamento de repasse em payouts (D+2, retenção, estorno) (1.8).
-- `internal/program` — programa de produtores: taxa 15% + nível (10/15/20) por data da venda, originação (2.7).
+- `internal/pricing` — preço: face + conveniência, com a taxa de plataforma de 10% flat.
+- `internal/fees` — tabela de tarifas do gateway (nenhum valor de tarifa é chumbado).
+- `internal/subaccount` — conta de recebimento do produtor no gateway (subconta + split).
 - `internal/transfer` — transferência restrita: teto de revenda + royalty + reatribuição de dono (2.1).
 - `internal/market` — mercado secundário: anúncio, compra pública, procedência, receita (2.2).
 - `internal/season` — passe de temporada: emite um ingresso por data, destacável/repassável (2.3).
@@ -73,7 +97,7 @@ make compose-up     # sobe Postgres próprio + binário
 - `internal/trust` — descoberta e confiança: reviews (só quem entrou), reputação, descoberta (2.6).
 - `internal/promo` — divulgação: campanhas UTM/pixels, lista de espera + aviso na virada, perfil do público (2.8).
 - `internal/audience` — Fase 3: segmentação por presença, consentimento granular, recompensa, alcance sem identidade.
-- `internal/{chain,payment,wallet,notify}` — seams (interfaces + Noop/stub).
+- `internal/{chain,payment,notify}` — seams (interfaces + Noop/stub).
 
 ## Convenções (regras de ouro)
 
@@ -83,14 +107,17 @@ make compose-up     # sobe Postgres próprio + binário
 - **Auth é nativa do Timbre** (o produtor é criado e autenticado aqui). O owner tem
   todas as permissões; as granulares são `checkin | financeiro | relatorios | atendimento`.
 - **pgx à mão** (SQL cru, revisável). Erros com `%w`.
-- **A rede nunca bloqueia a venda** — emissão em rede via fila/`ChainDriver` (Noop default).
-- **Nenhum dado pessoal em payload de rede.** Vínculo pessoa↔carteira em `public.wallets`,
-  apagável a pedido.
+- **A rede nunca bloqueia a venda** — a âncora é assíncrona e o `ChainDriver` é Noop por
+  default. Derrubar o RPC não impede venda nem entrada na portaria.
+- **Nenhum dado pessoal no registro canônico nem nos metadados públicos** — só agregados.
+- **Preço é um só:** 10% flat, num ponto de configuração. Qualquer caminho de venda (compra
+  comum, passe de temporada, mercado secundário) apura igual.
 - **Preço/regra nunca chumbados.** Segredos nunca versionados; testes usam mocks.
 
 ## Restrições
 
 - Não editar `../sapienza-kit`, `../sapienza-core`, `../sapienza-margot` fora do combinado.
 - Não introduzir sqlc nem golang-migrate. Não criar microserviços — módulos são pacotes.
-- O schema de todas as fases (1, 2 e 3) já está nas migrations da 1.1: **não reescrever
-  schema depois**, só adicionar migrations forward.
+- Só adicionar migrations **forward**; não reescrever migration já aplicada.
+- **Não reintroduzir** MPC, carteira, mint, Escrow, BaaS, boleto ou programa de níveis. São
+  caminhos descartados por decisão, não pendências.

@@ -1,16 +1,22 @@
 # sapienza-timbre
 
-Bilheteria descentralizada da **Sapienza Labs**. Organizadores e participantes gerenciam
-ingressos de evento, com contratos inteligentes e ingressos emitidos como NFT. Cada
-ingresso tem seu próprio *timbre* — verificável por qualquer um, falsificável por ninguém.
+Bilheteria da **Sapienza Labs**. Cada ingresso tem seu próprio *timbre*: uma assinatura
+Ed25519 que a portaria verifica **offline**, só com a chave pública — verificável por
+qualquer um, falsificável por ninguém.
 
 Backend em Go, data plane no espírito Control/Data da suíte Sapienza. Reusa o
 `sapienza-kit` para tenancy. Roda no seu **próprio** Postgres.
 
-> Estado: **Etapa 1.1 (Fundação)**. O binário sobe, migra e responde health check; um
-> produtor é criado e autenticado com permissões granulares por colaborador. As migrations
-> já contemplam todo o modelo de dados (fases 1–3). Catálogo, checkout, emissão, portaria,
-> painéis e rede vêm nas etapas seguintes.
+> **O que este produto é.** Venda (Pix e cartão, com split direto ao produtor), emissão
+> assinada, portaria offline, estorno em todas as suas formas, e **prova de público**: o
+> fechamento do evento gera um registro canônico agregado, sem dado pessoal, assinado e
+> verificável publicamente.
+>
+> **O que ele não é.** Não há carteira, MPC, mint de token, exportação para carteira
+> externa, Escrow, BaaS nem boleto. O eixo on-chain é prova por âncora, não posse por
+> token, e a âncora está em modo `log` — nada é afirmado como registrado em cadeia sem
+> transação real. Transferência, revenda, teto e royalty funcionam em custódia de
+> plataforma, sem depender de cadeia.
 
 ## Rodar local
 
@@ -29,7 +35,7 @@ export TIMBRE_JWT_SECRET=... TIMBRE_ADMIN_TOKEN=...
 make run
 ```
 
-## Provar o fluxo (Etapa 1.1)
+## Provar o fluxo
 
 ```bash
 curl -s localhost:8082/health          # -> ok
