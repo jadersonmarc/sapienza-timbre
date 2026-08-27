@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/jadersonmarc/sapienza-timbre/internal/attest"
 	"github.com/jadersonmarc/sapienza-timbre/internal/catalog"
 	"github.com/jadersonmarc/sapienza-timbre/internal/checkout"
 	"github.com/jadersonmarc/sapienza-timbre/internal/inventory"
@@ -101,6 +102,17 @@ type publicEventDetail struct {
 	Lots    []publicLot    `json:"lots"`
 	Current *uuid.UUID     `json:"current_lot_id,omitempty"`
 	Sectors []publicSector `json:"sectors"`
+	// HalfPrice diz se ainda cabe meia-entrada e qual a cota do evento. A Lei 12.933/2013,
+	// art. 1º, §1º, obriga a informar isso de forma visível em todos os pontos de venda —
+	// não é enfeite de tela, é obrigação.
+	HalfPrice halfPriceInfo `json:"half_price"`
+}
+
+type halfPriceInfo struct {
+	Available bool `json:"available"`
+	Quota     int  `json:"quota"`
+	Granted   int  `json:"granted"`
+	Remaining int  `json:"remaining"`
 }
 
 type publicEvent struct {
@@ -129,6 +141,10 @@ type publicLot struct {
 	StartsAt   *time.Time `json:"starts_at,omitempty"`
 	EndsAt     *time.Time `json:"ends_at,omitempty"`
 	SortOrder  int        `json:"sort_order"`
+	// Faixa de quantidade por compra: o seletor da página trava nela, e o preço acima é o
+	// unitário — o total mostrado é preço × quantidade.
+	MinPurchaseQuantity int  `json:"min_purchase_quantity"`
+	MaxPurchaseQuantity *int `json:"max_purchase_quantity,omitempty"`
 }
 
 type publicSector struct {
@@ -188,7 +204,16 @@ func (s *Server) getPublicEvent(w http.ResponseWriter, r *http.Request) {
 				ID: l.ID, Name: l.Name, PriceCents: l.PriceCents,
 				Available: l.Quantity - l.SoldCount - l.HeldCount,
 				StartsAt:  l.StartsAt, EndsAt: l.EndsAt, SortOrder: l.SortOrder,
+				MinPurchaseQuantity: l.MinPurchaseQuantity, MaxPurchaseQuantity: l.MaxPurchaseQuantity,
 			})
+		}
+		// Cota de meia: quando acaba, a meia sai de venda e a inteira continua.
+		if hp, e := attest.HalfPrice(r.Context(), tx, eventID); e == nil {
+			detail.HalfPrice = halfPriceInfo{
+				Available: hp.Available(), Quota: hp.Quota, Granted: hp.Granted, Remaining: hp.Remaining,
+			}
+		} else {
+			return e
 		}
 		if cur, e := catalog.CurrentLot(r.Context(), tx, eventID); e == nil {
 			detail.Current = &cur.ID

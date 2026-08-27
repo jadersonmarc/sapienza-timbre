@@ -114,6 +114,12 @@ func CreateCommitment(ctx context.Context, tx pgx.Tx, c Commitment) (Commitment,
 	if err != nil {
 		return Commitment{}, fmt.Errorf("target_value inválido: %w", err)
 	}
+	// Cota de meia declarada abaixo do piso legal não é compromisso, é promessa de
+	// descumprir a lei. Recusar na declaração dá ao produtor a chance de corrigir; deixar
+	// passar só adiaria o problema para a venda (onde o piso vale de qualquer forma).
+	if c.Kind == KindMeiaEntradaCota && c.TargetType == TargetPercent && val < LegalHalfPricePct {
+		return Commitment{}, ErrHalfPriceBelowLegal
+	}
 	if c.TargetType == TargetPercent {
 		if val < 0 || val > 100 {
 			return Commitment{}, fmt.Errorf("percentual fora de 0..100")

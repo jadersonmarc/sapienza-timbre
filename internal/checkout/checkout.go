@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/jadersonmarc/sapienza-timbre/internal/attest"
 	"github.com/jadersonmarc/sapienza-timbre/internal/catalog"
 	"github.com/jadersonmarc/sapienza-timbre/internal/inventory"
 	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
@@ -45,6 +46,11 @@ var (
 	// ErrBadRequest: pedido malformado.
 	ErrBadRequest = errors.New("checkout: pedido inválido")
 )
+
+// errHalfPriceSoldOut é a cota de meia esgotada, já com a mensagem que o comprador lê: o
+// que acabou foi a meia, não o evento.
+var errHalfPriceSoldOut = fmt.Errorf(
+	"%w: a cota de meia-entrada deste evento acabou; a inteira segue disponível", ErrBadRequest)
 
 // Producer carrega o que o checkout precisa do produtor (billing).
 type Producer struct {
@@ -133,6 +139,21 @@ func reserve(ctx context.Context, tx pgx.Tx, req Request) (catalog.Lot, *uuid.UU
 	if err != nil {
 		return catalog.Lot{}, nil, err
 	}
+	// Faixa de quantidade do lote (combo duplo, trio, grupo). A checagem é AQUI, no mesmo
+	// caminho que reserva — a UI travar o seletor não impede ninguém de chamar a API. Como
+	// a reserva já aconteceu nesta transação, o erro desfaz tudo junto no rollback.
+	if err := lot.CheckPurchaseQuantity(req.Quantity); err != nil {
+		return catalog.Lot{}, nil, err
+	}
+	// Cota de meia já na SELEÇÃO: recusar só no pagamento faria a pessoa preencher a ficha
+	// inteira para ouvir não no fim. A checagem definitiva continua na criação da ordem,
+	// onde a ficha nominal pode ter mudado quem é meia.
+	if err := attest.EnsureHalfPrice(ctx, tx, req.EventID, req.HalfPriceQty); err != nil {
+		if errors.Is(err, attest.ErrHalfPriceSoldOut) {
+			return catalog.Lot{}, nil, errHalfPriceSoldOut
+		}
+		return catalog.Lot{}, nil, err
+	}
 	var holdID *uuid.UUID
 	if seated {
 		id, err := inventory.Hold(ctx, tx, req.EventID, req.SeatIDs, inventory.DefaultTTL)
@@ -155,7 +176,22 @@ func finalizeOrder(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, pr
 	if err != nil {
 		return Result{}, err
 	}
-	subtotal := applyHalfPrice(unitPrices, halfMask(req))
+	mask := halfMask(req)
+	// Cota de meia-entrada (Lei 12.933/2013): a checagem é AQUI, no funil único de criação
+	// de ordem, porque a UI esconder a opção não impede ninguém de chamar a API.
+	half := 0
+	for _, h := range mask {
+		if h {
+			half++
+		}
+	}
+	if err := attest.EnsureHalfPrice(ctx, tx, req.EventID, half); err != nil {
+		if errors.Is(err, attest.ErrHalfPriceSoldOut) {
+			return Result{}, errHalfPriceSoldOut
+		}
+		return Result{}, err
+	}
+	subtotal := applyHalfPrice(unitPrices, mask)
 
 	// Cupom (limite de uso e validade).
 	couponID, discount, err := applyCoupon(ctx, tx, req.EventID, req.CouponCode, subtotal)
