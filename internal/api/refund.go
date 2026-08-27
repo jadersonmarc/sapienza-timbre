@@ -233,6 +233,12 @@ func (s *Server) recloseIfClosed(ctx context.Context, producerID, orderID uuid.U
 		if err := tx.QueryRow(ctx, `SELECT event_id FROM orders WHERE id=$1`, orderID).Scan(&eventID); err != nil {
 			return err
 		}
+		// Um lote de cancelamento em curso é dono da republicação: ele republica UMA vez no
+		// fim. Republicar aqui também daria uma versão por pedido devolvido.
+		stale, err := checkout.IsAttestationStale(ctx, tx, eventID)
+		if err != nil || stale {
+			return err
+		}
 		cur, err := attest.Current(ctx, tx, eventID)
 		if err != nil || cur == nil {
 			return err

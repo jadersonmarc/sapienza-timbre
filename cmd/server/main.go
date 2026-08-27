@@ -234,6 +234,10 @@ func main() {
 	prov := producer.New(pool, runner)
 	srv := api.NewServer(pool, authz, prov, signer, attestSigner, attestKeyID, cfg.AdminToken, cfg.AsaasWebhookToken, checkoutLimits, anchorer, chain.AnchorMode(cfg.AnchorMode), seams)
 
+	// Devolução dos eventos cancelados, em segundo plano. Cancelar um evento de mil
+	// ingressos não pode significar mil chamadas ao gateway com o produtor esperando.
+	go api.NewCancelWorker(pool, srv).Run(ctx)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler(pool))
 	mux.Handle("/api/v1/", srv.Handler())

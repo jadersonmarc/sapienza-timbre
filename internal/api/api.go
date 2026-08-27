@@ -125,7 +125,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/producer/payout-account", s.requireOwner(s.payoutAccount))
 	mux.HandleFunc("POST /api/v1/events/{id}/submit-review", s.requireOwner(s.transitionEvent("pending_review")))
 	mux.HandleFunc("POST /api/v1/events/{id}/suspend", s.requireOwner(s.transitionEvent("suspended")))
-	mux.HandleFunc("POST /api/v1/events/{id}/cancel", s.requireOwner(s.transitionEvent("cancelled")))
+	// Cancelar é devolver: enfileira uma devolução por pedido pago e avisa todo mundo na
+	// hora. A transição sozinha deixava cada comprador com ingresso válido e dinheiro pago.
+	mux.HandleFunc("POST /api/v1/events/{id}/cancel", s.requireOwner(s.cancelEvent))
+	mux.HandleFunc("GET /api/v1/events/{id}/cancellation", s.authed(s.cancelProgress))
 	mux.HandleFunc("GET /api/v1/categories", s.authed(s.listCategories))
 	mux.HandleFunc("POST /api/v1/events/{id}/lots", s.requireOwner(s.createLot))
 	mux.HandleFunc("GET /api/v1/events/{id}/lots", s.authed(s.listLots))
@@ -268,6 +271,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/admin/producers/{id}/subaccount/sync-documents", s.requireAdmin(s.adminSyncDocuments))
 	mux.HandleFunc("GET /api/v1/admin/splits", s.requireAdmin(s.adminSplits))
 	mux.HandleFunc("GET /api/v1/admin/sales", s.requireAdmin(s.adminSearchSales))
+	mux.HandleFunc("GET /api/v1/admin/refund-jobs/failed", s.requireAdmin(s.adminFailedRefunds))
+	mux.HandleFunc("POST /api/v1/admin/producers/{producerId}/refund-jobs/{id}/retry", s.requireAdmin(s.adminRetryRefundJob))
 	mux.HandleFunc("GET /api/v1/admin/producers/{id}/events/{eventId}/lineup", s.requireAdmin(s.adminLineup))
 	mux.HandleFunc("PUT /api/v1/admin/producers/{id}/events/{eventId}/lineup", s.requireAdmin(s.adminLineup))
 	mux.HandleFunc("POST /api/v1/admin/producers/{id}/payouts/mark-paid", s.requireAdmin(s.adminMarkPayoutPaid))

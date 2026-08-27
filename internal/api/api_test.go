@@ -50,16 +50,24 @@ func setupCore(t *testing.T, chainDriver chain.ChainDriver) (*httptest.Server, *
 // recusas do estorno (saldo insuficiente) e contar quantas devoluções chegaram lá.
 func setupWithGateway(t *testing.T) (*httptest.Server, *pgxpool.Pool, *payment.FakeGateway) {
 	t.Helper()
-	ts, pool, _, gw := setupAll(t, chain.NoopChainDriver{}, chain.MintModeEager)
+	ts, pool, _, gw, _ := setupAll(t, chain.NoopChainDriver{}, chain.MintModeEager)
 	return ts, pool, gw
 }
 
+// setupWithServer devolve também o *api.Server, para os testes que precisam rodar um worker
+// deterministicamente em vez de esperar o ticker.
+func setupWithServer(t *testing.T) (*httptest.Server, *pgxpool.Pool, *api.Server) {
+	t.Helper()
+	ts, pool, _, _, srv := setupAll(t, chain.NoopChainDriver{}, chain.MintModeEager)
+	return ts, pool, srv
+}
+
 func setupCoreMode(t *testing.T, chainDriver chain.ChainDriver, mintMode chain.MintMode) (*httptest.Server, *pgxpool.Pool, *ticketing.Signer) {
-	ts, pool, signer, _ := setupAll(t, chainDriver, mintMode)
+	ts, pool, signer, _, _ := setupAll(t, chainDriver, mintMode)
 	return ts, pool, signer
 }
 
-func setupAll(t *testing.T, chainDriver chain.ChainDriver, mintMode chain.MintMode) (*httptest.Server, *pgxpool.Pool, *ticketing.Signer, *payment.FakeGateway) {
+func setupAll(t *testing.T, chainDriver chain.ChainDriver, mintMode chain.MintMode) (*httptest.Server, *pgxpool.Pool, *ticketing.Signer, *payment.FakeGateway, *api.Server) {
 	t.Helper()
 	pool := testutil.Pool(t)
 	runner := tenancy.NewMigrationRunner(pool, migrations.Tenant)
@@ -77,7 +85,7 @@ func setupAll(t *testing.T, chainDriver chain.ChainDriver, mintMode chain.MintMo
 	})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	return ts, pool, signer, gw
+	return ts, pool, signer, gw, srv
 }
 
 // do faz uma requisição JSON e devolve status + corpo decodificado.

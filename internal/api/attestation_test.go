@@ -36,6 +36,13 @@ import (
 // setupAttest sobe o servidor com a chave de atestação acessível e o modo de âncora dado.
 // Registra a chave em attestation_keys (idempotente) e devolve o key_id + signer.
 func setupAttest(t *testing.T, anchorer chain.Anchorer, anchorMode chain.AnchorMode) (*httptest.Server, *pgxpool.Pool, *ticketing.Signer, string) {
+	ts, pool, signer, keyID, _ := setupAttestFull(t, anchorer, anchorMode)
+	return ts, pool, signer, keyID
+}
+
+// setupAttestFull devolve também o *api.Server, para os testes que precisam rodar um worker
+// deterministicamente em vez de esperar o ticker.
+func setupAttestFull(t *testing.T, anchorer chain.Anchorer, anchorMode chain.AnchorMode) (*httptest.Server, *pgxpool.Pool, *ticketing.Signer, string, *api.Server) {
 	t.Helper()
 	pool := testutil.Pool(t)
 	runner := tenancy.NewMigrationRunner(pool, migrations.Tenant)
@@ -57,7 +64,7 @@ func setupAttest(t *testing.T, anchorer chain.Anchorer, anchorMode chain.AnchorM
 	})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	return ts, pool, attestSigner, keyID
+	return ts, pool, attestSigner, keyID, srv
 }
 
 // failAnchorer simula o relayer fora do ar.
