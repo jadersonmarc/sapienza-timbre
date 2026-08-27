@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/jadersonmarc/sapienza-timbre/internal/auth"
+	"github.com/jadersonmarc/sapienza-timbre/internal/catalog"
 	"github.com/jadersonmarc/sapienza-timbre/internal/checkout"
 	"github.com/jadersonmarc/sapienza-timbre/internal/inventory"
 	"github.com/jadersonmarc/sapienza-timbre/internal/market"
@@ -178,6 +179,8 @@ func (s *Server) producerOfPayment(ctx context.Context, asaasRef string) (uuid.U
 // writeCheckoutErr mapeia os erros de domínio do checkout para status HTTP.
 func writeCheckoutErr(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, catalog.ErrPurchaseRange), errors.Is(err, catalog.ErrBadPurchaseRange):
+		writeErr(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, checkout.ErrLotUnavailable):
 		writeErr(w, http.StatusConflict, "lote indisponível")
 	case errors.Is(err, checkout.ErrInsufficientStock), errors.Is(err, inventory.ErrSeatUnavailable):

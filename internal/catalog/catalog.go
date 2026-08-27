@@ -252,27 +252,61 @@ type Lot struct {
 	StartsAt   *time.Time `json:"starts_at,omitempty"`
 	EndsAt     *time.Time `json:"ends_at,omitempty"`
 	SortOrder  int        `json:"sort_order"`
-	CreatedAt  time.Time  `json:"created_at"`
-	UpdatedAt  time.Time  `json:"updated_at"`
+	// Faixa de quantidade por compra. Um "ingresso duplo" é um lote com mínimo 2 e máximo
+	// 2, e o preço acima continua sendo o UNITÁRIO — o comprador paga preço × quantidade.
+	// A compra gera N ingressos independentes; combo é regra de COMPRA, não vínculo entre
+	// ingressos.
+	MinPurchaseQuantity int       `json:"min_purchase_quantity"`
+	MaxPurchaseQuantity *int      `json:"max_purchase_quantity,omitempty"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
+}
+
+// ErrPurchaseRange é a quantidade fora da faixa do lote.
+var ErrPurchaseRange = errors.New("catalog: quantidade fora da faixa deste ingresso")
+
+// ErrBadPurchaseRange é a faixa mal declarada pelo produtor.
+var ErrBadPurchaseRange = errors.New("catalog: o máximo por compra não pode ser menor que o mínimo")
+
+// CheckPurchaseQuantity valida a quantidade contra a faixa do lote. Devolve ErrPurchaseRange
+// com a faixa, para a mensagem dizer o que fazer em vez de só recusar.
+func (l Lot) CheckPurchaseQuantity(qty int) error {
+	if qty < l.MinPurchaseQuantity {
+		return fmt.Errorf("%w: mínimo de %d por compra", ErrPurchaseRange, l.MinPurchaseQuantity)
+	}
+	if l.MaxPurchaseQuantity != nil && qty > *l.MaxPurchaseQuantity {
+		return fmt.Errorf("%w: máximo de %d por compra", ErrPurchaseRange, *l.MaxPurchaseQuantity)
+	}
+	return nil
 }
 
 const lotCols = `id, event_id, name, price_cents, quantity, sold_count, held_count,
-	starts_at, ends_at, sort_order, created_at, updated_at`
+	starts_at, ends_at, sort_order, min_purchase_quantity, max_purchase_quantity,
+	created_at, updated_at`
 
 func scanLot(row pgx.Row) (Lot, error) {
 	var l Lot
 	err := row.Scan(&l.ID, &l.EventID, &l.Name, &l.PriceCents, &l.Quantity, &l.SoldCount,
-		&l.HeldCount, &l.StartsAt, &l.EndsAt, &l.SortOrder, &l.CreatedAt, &l.UpdatedAt)
+		&l.HeldCount, &l.StartsAt, &l.EndsAt, &l.SortOrder,
+		&l.MinPurchaseQuantity, &l.MaxPurchaseQuantity, &l.CreatedAt, &l.UpdatedAt)
 	return l, err
 }
 
 // CreateLot insere um lote. sort_order ordena a fila de virada.
 func CreateLot(ctx context.Context, tx pgx.Tx, l Lot) (Lot, error) {
+	if l.MinPurchaseQuantity <= 0 {
+		l.MinPurchaseQuantity = 1
+	}
+	if l.MaxPurchaseQuantity != nil && *l.MaxPurchaseQuantity < l.MinPurchaseQuantity {
+		return Lot{}, ErrBadPurchaseRange
+	}
 	row := tx.QueryRow(ctx, `
-		INSERT INTO lots (event_id, name, price_cents, quantity, starts_at, ends_at, sort_order)
-		VALUES ($1,$2,$3,$4,$5,$6,$7)
+		INSERT INTO lots (event_id, name, price_cents, quantity, starts_at, ends_at, sort_order,
+		                  min_purchase_quantity, max_purchase_quantity)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 		RETURNING `+lotCols,
-		l.EventID, l.Name, l.PriceCents, l.Quantity, l.StartsAt, l.EndsAt, l.SortOrder)
+		l.EventID, l.Name, l.PriceCents, l.Quantity, l.StartsAt, l.EndsAt, l.SortOrder,
+		l.MinPurchaseQuantity, l.MaxPurchaseQuantity)
 	out, err := scanLot(row)
 	if err != nil {
 		return Lot{}, fmt.Errorf("criar lote: %w", err)
@@ -312,7 +346,10 @@ func CurrentLot(ctx context.Context, tx pgx.Tx, eventID uuid.UUID) (Lot, error) 
 		 WHERE event_id = $1
 		   AND (starts_at IS NULL OR starts_at <= now())
 		   AND (ends_at IS NULL OR ends_at > now())
-		   AND sold_count + held_count < quantity
+		   -- Saldo menor que o mínimo por compra é lote ESGOTADO: sobrar 1 lugar num
+		   -- ingresso duplo significa que aquele lote acabou, e continuar oferecendo
+		   -- levaria o comprador a uma recusa no fim do checkout.
+		   AND quantity - sold_count - held_count >= min_purchase_quantity
 		 ORDER BY sort_order, created_at
 		 LIMIT 1`, eventID)
 	lot, err := scanLot(row)

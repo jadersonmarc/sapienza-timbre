@@ -293,6 +293,45 @@ o atestado virar ruído em vez de prova.
 
 Corpo vazio estorna o pedido inteiro; `{"ticket_ids": [...]}` estorna os escolhidos.
 
+## Meia-entrada e combo
+
+### Cota de meia (Lei 12.933/2013)
+
+A cota de **40% dos ingressos disponíveis** vale mesmo sem o produtor declarar nada: a
+obrigação é da lei, não da declaração. O compromisso `meia_entrada_cota`, que até aqui só
+era reportado no atestado, passa a **valer na venda** — uma cota que não barra nada é uma
+promessa sem consequência. Declarar acima de 40% é direito do produtor; abaixo é recusado.
+
+Esgotada a cota, a meia sai de venda e a **inteira continua**: acabou a meia, não o evento.
+A checagem acontece em dois pontos, de propósito: na seleção (para a pessoa não preencher a
+ficha inteira e ouvir não no fim) e na criação da ordem (onde a ficha nominal pode ter
+mudado quem é meia). A base é a soma das quantidades dos lotes, e o concedido é contado em
+**ingressos emitidos** — é assim que a lei mede, e é o que faz um combo de duas meias
+consumir dois da cota.
+
+`GET /public/events/{id}` publica `half_price` com cota, concedido e restante. Não é
+enfeite: o art. 1º, §1º obriga a informar a disponibilidade de meia em todos os pontos de
+venda.
+
+### Combo (duplo, trio, grupo)
+
+Combo é **quantidade mínima de compra**, não ingresso especial. Um "ingresso duplo" é um
+lote com `min_purchase_quantity = 2` e `max_purchase_quantity = 2`; o preço cadastrado
+continua sendo o **unitário** e o comprador paga preço × quantidade. Trio, quarteto e combo
+de grupo saem da mesma regra, sem código novo.
+
+A compra gera **N ingressos independentes**, cada um com seu QR, transferíveis e estornáveis
+separadamente. Nada muda na portaria, no atestado ou na contagem de público: um ingresso
+continua sendo uma pessoa. Não existe campo de "quantas pessoas o ingresso admite" — ele
+mudaria o significado de tudo o que conta gente.
+
+Estorno parcial dentro de um combo é permitido: o mínimo é regra de **compra**, não vínculo
+entre os ingressos depois de emitidos.
+
+Lote cujo saldo não alcança o próprio mínimo **sai de venda** — sobrar 1 lugar num duplo
+significa que aquele lote acabou, e continuar oferecendo levaria o comprador a uma recusa no
+fim do checkout.
+
 ## Testes
 
 ```bash

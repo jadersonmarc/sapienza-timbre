@@ -260,6 +260,10 @@ type createLotReq struct {
 	StartsAt   *string `json:"starts_at"`
 	EndsAt     *string `json:"ends_at"`
 	SortOrder  int     `json:"sort_order"`
+	// Faixa de quantidade por compra: mínimo 2 e máximo 2 é o "ingresso duplo". O
+	// price_cents acima segue sendo o UNITÁRIO.
+	MinPurchaseQuantity int  `json:"min_purchase_quantity"`
+	MaxPurchaseQuantity *int `json:"max_purchase_quantity"`
 }
 
 func (s *Server) createLot(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
@@ -293,9 +297,14 @@ func (s *Server) createLot(w http.ResponseWriter, r *http.Request, claims *auth.
 		out, e = catalog.CreateLot(r.Context(), tx, catalog.Lot{
 			EventID: eventID, Name: body.Name, PriceCents: body.PriceCents, Quantity: body.Quantity,
 			StartsAt: starts, EndsAt: ends, SortOrder: body.SortOrder,
+			MinPurchaseQuantity: body.MinPurchaseQuantity, MaxPurchaseQuantity: body.MaxPurchaseQuantity,
 		})
 		return e
 	}); err != nil {
+		if errors.Is(err, catalog.ErrBadPurchaseRange) {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
