@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -176,6 +177,68 @@ func (g *AsaasGateway) CreateCharge(ctx context.Context, req ChargeRequest) (Cha
 		}
 	}
 	return c, nil
+}
+
+// refundRefusalMarkers classifica a recusa do gateway no estorno. Os três motivos levam a
+// tratamentos diferentes — saldo insuficiente faz a plataforma cobrir a devolução, estorno
+// repetido é sucesso disfarçado, e cobrança não estornável é erro de quem chamou.
+//
+// PROVISÓRIO: a classificação é por marcador no corpo da resposta, porque o Asaas devolve a
+// causa em texto e o código de erro dele não é estável entre endpoints. Confirmar contra a
+// documentação e trocar por código assim que houver um confiável.
+var refundRefusalMarkers = []struct {
+	marker string
+	err    error
+}{
+	{"saldo insuficiente", ErrRefundInsufficientFunds},
+	{"insufficient", ErrRefundInsufficientFunds},
+	{"já estornad", ErrRefundAlreadyExists},
+	{"already refunded", ErrRefundAlreadyExists},
+	{"não pode ser estornad", ErrRefundNotRefundable},
+	{"cannot be refunded", ErrRefundNotRefundable},
+	{"not refundable", ErrRefundNotRefundable},
+}
+
+// classifyRefundErr traduz a recusa do gateway para um dos erros que o chamador distingue,
+// preservando a mensagem original no wrap. Sem marcador conhecido, devolve o erro cru: um
+// motivo que não sabemos ler não pode virar "saldo insuficiente" por descarte.
+func classifyRefundErr(err error) error {
+	low := strings.ToLower(err.Error())
+	for _, m := range refundRefusalMarkers {
+		if strings.Contains(low, m.marker) {
+			return fmt.Errorf("%w: %s", m.err, err.Error())
+		}
+	}
+	return err
+}
+
+// Refund devolve o valor da cobrança ao comprador. Sem ValueCents, o Asaas estorna o
+// integral; com ele, estorna parcial — e uma cobrança aceita vários parciais, por isso a
+// idempotência não pode ser pela cobrança (ver RefundRequest.Description).
+func (g *AsaasGateway) Refund(ctx context.Context, req RefundRequest) (Refund, error) {
+	if req.AsaasRef == "" {
+		return Refund{}, fmt.Errorf("cobrança obrigatória para estornar")
+	}
+	payload := map[string]any{}
+	if req.ValueCents > 0 {
+		payload["value"] = float64(req.ValueCents) / 100
+	}
+	if req.Description != "" {
+		payload["description"] = req.Description
+	}
+	var out struct {
+		ID     string  `json:"id"`
+		Status string  `json:"status"`
+		Value  float64 `json:"value"`
+	}
+	if err := g.do(ctx, http.MethodPost, "/v3/payments/"+req.AsaasRef+"/refund", payload, &out); err != nil {
+		return Refund{}, classifyRefundErr(fmt.Errorf("estornar cobrança asaas: %w", err))
+	}
+	value := int64(math.Round(out.Value * 100))
+	if value == 0 {
+		value = req.ValueCents
+	}
+	return Refund{ID: out.ID, Status: out.Status, ValueCents: value, Description: req.Description}, nil
 }
 
 // asaasWebhook é o formato do webhook do Asaas.

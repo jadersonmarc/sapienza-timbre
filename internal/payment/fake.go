@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"github.com/google/uuid"
 )
@@ -12,10 +13,66 @@ import (
 // FakeGateway é o gateway determinístico usado por default (sem ASAAS_API_KEY) e nos
 // testes. Não fala com rede: gera um asaas_ref a partir do order id e um código Pix
 // fictício, e normaliza um webhook no nosso formato interno de teste.
-type FakeGateway struct{}
+//
+// O estorno carrega estado porque os modos de falha dele importam: saldo insuficiente é o
+// cenário do produtor que já sacou, e é ele que decide se a plataforma cobre a devolução.
+// Sem poder ensaiar isso sem rede, o caminho mais caro do estorno ficaria sem teste.
+type FakeGateway struct {
+	mu sync.Mutex
+	// refunds guarda os estornos por cobrança: alimenta o contador de chamadas e a recusa
+	// por estorno repetido.
+	refunds map[string][]Refund
+	// forced é o modo de falha ensaiado por cobrança.
+	forced map[string]error
+}
 
 // NewFakeGateway constrói o gateway fake.
-func NewFakeGateway() *FakeGateway { return &FakeGateway{} }
+func NewFakeGateway() *FakeGateway {
+	return &FakeGateway{refunds: map[string][]Refund{}, forced: map[string]error{}}
+}
+
+// FailRefund faz o próximo estorno da cobrança falhar com err. Só para teste.
+func (g *FakeGateway) FailRefund(asaasRef string, err error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.forced[asaasRef] = err
+}
+
+// RefundCalls diz quantos estornos a cobrança recebeu. Só para teste: é como se prova que
+// o duplo disparo não virou dois estornos.
+func (g *FakeGateway) RefundCalls(asaasRef string) int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return len(g.refunds[asaasRef])
+}
+
+// Refund devolve um estorno determinístico e registra a chamada. A recusa ensaiada por
+// FailRefund vale UMA vez — o teste que quer o cenário de saldo insuficiente seguido de
+// sucesso não precisa de outro gateway.
+func (g *FakeGateway) Refund(_ context.Context, req RefundRequest) (Refund, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if req.AsaasRef == "" {
+		return Refund{}, fmt.Errorf("cobrança obrigatória para estornar")
+	}
+	if err, ok := g.forced[req.AsaasRef]; ok {
+		delete(g.forced, req.AsaasRef)
+		return Refund{}, err
+	}
+	for _, r := range g.refunds[req.AsaasRef] {
+		if req.Description != "" && r.Description == req.Description {
+			return r, ErrRefundAlreadyExists
+		}
+	}
+	r := Refund{
+		ID:          fmt.Sprintf("fake_refund_%s_%d", req.AsaasRef, len(g.refunds[req.AsaasRef])+1),
+		Status:      "DONE",
+		ValueCents:  req.ValueCents,
+		Description: req.Description,
+	}
+	g.refunds[req.AsaasRef] = append(g.refunds[req.AsaasRef], r)
+	return r, nil
+}
 
 // Configured é sempre true (é um stub operável).
 func (*FakeGateway) Configured() bool { return true }

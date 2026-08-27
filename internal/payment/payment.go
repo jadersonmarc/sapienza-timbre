@@ -5,6 +5,7 @@ package payment
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 )
@@ -171,9 +172,46 @@ type AccountDocument struct {
 	OnboardingURL string `json:"onboarding_url"`
 }
 
+// RefundRequest descreve a devolução de uma cobrança já paga.
+type RefundRequest struct {
+	// AsaasRef é a cobrança original.
+	AsaasRef string
+	// ValueCents zero estorna o valor integral; maior que zero, estorna parcial. Uma
+	// cobrança pode receber vários parciais.
+	ValueCents int64
+	// Description acompanha o estorno no extrato do comprador e carrega a nossa chave de
+	// idempotência: o gateway não expõe cabeçalho próprio para isso, então a garantia de
+	// "um estorno só" é nossa (índice único em refunds), e este campo é o que permite
+	// reconhecer, do lado de lá, qual operação originou a devolução.
+	Description string
+}
+
+// Refund é o estorno criado no gateway.
+type Refund struct {
+	// ID identifica o ESTORNO, não a cobrança — é por ele que o webhook de devolução é
+	// reconciliado com a operação que o originou.
+	ID          string
+	Status      string
+	ValueCents  int64
+	Description string
+}
+
+// Erros de estorno que o chamador precisa distinguir. Saldo insuficiente não é falha de
+// programação nem indisponibilidade: é o cenário esperado de produtor que já sacou, e
+// decide se a plataforma cobre a devolução.
+var (
+	ErrRefundInsufficientFunds = errors.New("saldo insuficiente para o estorno")
+	ErrRefundNotRefundable     = errors.New("cobrança não estornável")
+	ErrRefundAlreadyExists     = errors.New("estorno já existente")
+)
+
 // PaymentGateway é a interface com o gateway.
 type PaymentGateway interface {
 	CreateCharge(ctx context.Context, req ChargeRequest) (Charge, error)
+	// Refund devolve o valor ao comprador na cobrança original. Devolve
+	// ErrRefundInsufficientFunds, ErrRefundNotRefundable ou ErrRefundAlreadyExists quando
+	// o gateway recusa por um desses motivos — cada um leva a um tratamento diferente.
+	Refund(ctx context.Context, req RefundRequest) (Refund, error)
 	HandleWebhook(ctx context.Context, payload []byte) (WebhookEvent, error)
 	// CreateAccount abre a conta de recebimento do produtor (subconta da plataforma).
 	CreateAccount(ctx context.Context, in AccountInput) (Account, error)
