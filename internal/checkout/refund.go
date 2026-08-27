@@ -263,6 +263,16 @@ func CompleteRefund(ctx context.Context, tx pgx.Tx, refundID uuid.UUID, coveredB
 		Scan(&eventID, &orderFace); err != nil {
 		return err
 	}
+	// Quem absorve a tarifa que o gateway retém sai da política do evento — é promessa
+	// comercial, não constante.
+	policy, err := ResolvePolicy(ctx, tx, eventID)
+	if err != nil {
+		return err
+	}
+	var gatewayFee int64
+	if err := tx.QueryRow(ctx, `SELECT gateway_fee_cents FROM refunds WHERE id=$1`, refundID).Scan(&gatewayFee); err != nil {
+		return err
+	}
 
 	tickets, err := refundTicketIDs(ctx, tx, refundID)
 	if err != nil {
@@ -349,7 +359,8 @@ func CompleteRefund(ctx context.Context, tx pgx.Tx, refundID uuid.UUID, coveredB
 		return err
 	}
 
-	if err := writeRefundLedger(ctx, tx, eventID, orderID, paymentID, face, convenience, orderFace, source); err != nil {
+	if err := writeRefundLedger(ctx, tx, eventID, orderID, paymentID, face, convenience, orderFace,
+		source, policy.RefundGatewayFeeBearer, gatewayFee); err != nil {
 		return err
 	}
 
@@ -368,7 +379,7 @@ func CompleteRefund(ctx context.Context, tx pgx.Tx, refundID uuid.UUID, coveredB
 // saldo negativo por uma venda que não existe mais. Lançamento negativo com o mesmo
 // available_at zera a soma sem UPDATE destrutivo — o razão continua append-only.
 func writeRefundLedger(ctx context.Context, tx pgx.Tx, eventID, orderID, paymentID uuid.UUID,
-	face, convenience, orderFace int64, source string) error {
+	face, convenience, orderFace int64, source, feeBearer string, gatewayFee int64) error {
 	// settled_by do estorno acompanha de onde o dinheiro saiu: quando ele volta da subconta
 	// do produtor (ou o split nem tinha liquidado), a plataforma não passa a dever nem a
 	// receber nada — as duas pontas se cancelam e a linha fica fora de NetDue. Quando a
@@ -377,9 +388,16 @@ func writeRefundLedger(ctx context.Context, tx pgx.Tx, eventID, orderID, payment
 	if source == SourceNotSettled || source == SourceProducer {
 		settledBy = "split"
 	}
+	// A tarifa do gateway não volta de ninguém: ela ficou lá. O que a política decide é
+	// quem a absorve. Com o produtor, ela entra no estorno dele — devolver o face e ainda
+	// pagar a tarifa da devolução é uma escolha comercial, e precisa ser declarada antes.
+	producerBack := face
+	if feeBearer == FeeBearerProducer {
+		producerBack += gatewayFee
+	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO ledger_entries (event_id, order_id, payment_id, kind, amount_cents, available_at, settled_by)
-		VALUES ($1,$2,$3,'estorno',$4, now(), $5)`, eventID, orderID, paymentID, -face, settledBy); err != nil {
+		VALUES ($1,$2,$3,'estorno',$4, now(), $5)`, eventID, orderID, paymentID, -producerBack, settledBy); err != nil {
 		return err
 	}
 	if convenience > 0 {
