@@ -201,13 +201,67 @@ sobra face no pedido.
   ser lido como devolução externa — senão queimaria o que sobrou do pedido. A janela de eco
   é de 10 minutos (provisório: o aviso não traz o id do estorno de forma confiável).
 
-### Quem pode estornar
+### Política: o que a casa promete
 
-    POST /api/v1/orders/{id}/refund                              # owner do produtor
-    POST /api/v1/admin/producers/{producerId}/orders/{id}/refund  # admin, motivo obrigatório
+Por evento, com o default do produtor como herança e o embutido como último recurso.
+Nenhum valor é chumbado — o default só vale enquanto ninguém configurar.
 
-Corpo vazio estorna o pedido inteiro; `{"ticket_ids": [...]}` estorna os escolhidos. A fila
-de pedidos do comprador, com política e aprovação, vem depois.
+| Campo | Default | O que decide |
+|---|---|---|
+| `withdrawal_window_days` | 7 | janela de arrependimento, contada da COMPRA |
+| `withdrawal_min_hours_before_event` | 0 | antecedência mínima do evento |
+| `refund_gateway_fee_bearer` | `platform` | quem absorve a tarifa retida pelo gateway |
+| `producer_discretionary_enabled` | `true` | se a casa analisa pedido fora da janela |
+| `discretionary_response_hours` | 72 | prazo de resposta (vencido = atrasado, nunca aprovado) |
+| `checkin_blocks_refund` | `true` | entrada registrada bloqueia |
+
+Os **7 dias são piso**, não default editável: é o direito de arrependimento do art. 49 do
+CDC. O produtor oferece mais, nunca menos, e quem garante isso é o `CHECK` da tabela.
+
+### As quatro trilhas
+
+A trilha é **derivada da política** no momento do pedido, nunca escolhida por quem pede —
+senão o comprador se autoconcederia o caminho automático.
+
+| Trilha | Quem | Autorização |
+|---|---|---|
+| `withdrawal` | comprador, dentro da janela | automática: é direito, não passa pela casa |
+| `discretionary` | comprador, fora da janela | fila do produtor; recusa exige motivo |
+| `producer_initiated` | a casa cancelando | sem fila — quem pede já é quem decide |
+| `admin_override` | a plataforma | passa por cima das guardas, motivo obrigatório |
+
+**Silêncio não aprova.** O prazo vencido marca o pedido como atrasado na fila e nada mais:
+aprovação automática moveria dinheiro sem ninguém decidir.
+
+Uma tentativa barrada (entrada registrada, por exemplo) **sai do estado vivo**. O índice
+único guarda um pedido vivo por compra, e um pedido travado ali trancaria a ordem para todo
+mundo — inclusive para o admin que vem justamente para passar por cima da guarda que barrou.
+
+### Auditoria
+
+Toda transição entra em `refund_request_events`: data, ator, papel, de-para e motivo.
+Append-only — decisão tomada não se edita, e uma decisão que muda vira outra linha. É o que
+o produtor mostra quando o comprador reclama, e o que a plataforma mostra quando o produtor
+reclama.
+
+### Rotas
+
+    GET|PUT /api/v1/refund-policy                                  # default do produtor
+    GET|PUT /api/v1/events/{id}/refund-policy                      # do evento
+    GET     /api/v1/public/events/{id}/refund-policy               # o que o comprador lê
+
+    POST /api/v1/public/me/orders/{id}/refund-request              # comprador
+    GET  /api/v1/public/me/refund-requests
+
+    GET  /api/v1/refund-requests?status=pending                    # fila do produtor
+    GET  /api/v1/refund-requests/{id}/history                      # trilha de auditoria
+    POST /api/v1/refund-requests/{id}/approve|reject
+
+    POST /api/v1/orders/{id}/refund                                # a casa cancelando
+    POST /api/v1/admin/producers/{pid}/orders/{id}/refund          # admin
+    POST /api/v1/admin/producers/{pid}/refund-requests/{id}/approve|reject
+
+Corpo vazio estorna o pedido inteiro; `{"ticket_ids": [...]}` estorna os escolhidos.
 
 ## Testes
 
