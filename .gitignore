@@ -10,6 +10,8 @@
 # dentro pode ser ignorado, ou a imagem compila um pacote incompleto.
 !vendor/**
 
-# Env
+# Env: qualquer variante. O padrão amplo é de propósito — um .env.bak ou .env.producao
+# criado às pressas é exatamente o arquivo que vaza, e este repo é PÚBLICO.
 .env
-.env.local
+.env.*
+!.env.example
