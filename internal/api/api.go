@@ -302,10 +302,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/v1/admin/admins/{id}", s.requireSuperAdmin(s.setAdminRole))
 	// Denúncia pública (moderação reativa) — com limite por IP+rota.
 	mux.HandleFunc("POST /api/v1/public/moderation/flags", s.rateLimited("flag", s.createModerationFlag))
-	// Programa de produtores (Etapa 2.7): nível e originação (admin); nível/extrato (produtor).
-	mux.HandleFunc("POST /api/v1/admin/producers/{id}/tier", s.requireAdmin(s.adminSetTier))
+	// Originação: indicação de produtor por produtor (admin define; o indicador vê o extrato).
 	mux.HandleFunc("POST /api/v1/admin/producers/{id}/origination", s.requireAdmin(s.adminSetOrigination))
-	mux.HandleFunc("GET /api/v1/dash/program", s.requirePermission("relatorios", s.dashProgram))
 	mux.HandleFunc("GET /api/v1/dash/origination", s.requirePermission("relatorios", s.dashOrigination))
 	// Divulgação e engajamento (Etapa 2.8): campanhas/audiência (owner/relatorios) e
 	// links/lista de espera/pixels (público).

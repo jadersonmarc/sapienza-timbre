@@ -1,17 +1,15 @@
-// Package program é o programa de produtores (Etapa 2.7): níveis, apuração da taxa por
-// nível vigente NA DATA DA VENDA, e originação. Valores DEFINIDOS: taxa 15%; níveis
-// Iniciante 10% / Pro 15% / Sênior 20% (versionados em public.platform_fee_rules).
+// Package program lança a venda no razão: repasse ao produtor, taxa da plataforma, custo de
+// processamento, retenção do cartão e a participação do originador.
 //
-// PROVISÓRIO (pendente de definição comercial — não inventado, isolado e reportado):
-//   - producerRebate: como o % do nível modifica a taxa. Interpretação de trabalho: o
-//     produtor RETÉM tier_pct% da taxa (rebate). Trocar aqui quando definido.
-//   - DefaultOriginatorPct: participação do originador. Sem valor → 0 (inerte).
-//   - Critério de transição entre níveis: não automático; troca manual (SetTier).
+// O PROGRAMA DE NÍVEIS FOI EXTINTO. A taxa é 10% do face para todo produtor, calculada num
+// ponto só (pricing.PlatformFeeCents). Não existe rebate, tabela de níveis nem taxa efetiva
+// por produtor — e nada aqui deve reintroduzi-los.
 package program
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"time"
 
@@ -24,110 +22,10 @@ import (
 // PROVISÓRIO: sem valor comercial definido → 0 (a originação fica inerte até definir).
 const DefaultOriginatorPct = 0.0
 
-// producerRebate calcula quanto da taxa volta ao produtor pelo nível dele.
-// PROVISÓRIO: fórmula tier→benefício pendente de definição comercial (interpretação de
-// trabalho = produtor retém tier_pct% da taxa).
-func producerRebate(feeCents int64, tierPct float64) int64 {
-	return int64(math.Round(float64(feeCents) * tierPct / 100))
-}
-
-// Queryer é o subconjunto usado por Apurar/TierAt (satisfeito por *pgxpool.Pool e pgx.Tx).
-type Queryer interface {
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-}
-
-// Apuracao é o resultado da apuração de uma venda.
-type Apuracao struct {
-	Tier                string  `json:"tier"`
-	FeePct              float64 `json:"fee_pct"`
-	TierPct             float64 `json:"tier_pct"`
-	FeeCents            int64   `json:"fee_cents"`
-	ProducerRebateCents int64   `json:"producer_rebate_cents"`
-	PlatformNetCents    int64   `json:"platform_net_cents"`
-}
-
-// Apurar calcula a taxa (15%), o rebate do nível (PROVISÓRIO) e o líquido da plataforma,
-// usando as regras e o nível vigentes na data `at` (a data da venda).
-func Apurar(ctx context.Context, db Queryer, producerID uuid.UUID, valueCents int64, at time.Time) (Apuracao, error) {
-	var feePct, ini, pro, sen float64
-	if err := db.QueryRow(ctx, `
-		SELECT fee_pct, tier_iniciante_pct, tier_pro_pct, tier_senior_pct
-		  FROM public.platform_fee_rules
-		 WHERE effective_from <= $1 ORDER BY effective_from DESC LIMIT 1`, at).Scan(&feePct, &ini, &pro, &sen); err != nil {
-		return Apuracao{}, err
-	}
-	tier := TierAt(ctx, db, producerID, at)
-	tierPct := ini
-	switch tier {
-	case "pro":
-		tierPct = pro
-	case "senior":
-		tierPct = sen
-	}
-	fee := int64(math.Round(float64(valueCents) * feePct / 100))
-	rebate := producerRebate(fee, tierPct)
-	return Apuracao{
-		Tier: tier, FeePct: feePct, TierPct: tierPct,
-		FeeCents: fee, ProducerRebateCents: rebate, PlatformNetCents: fee - rebate,
-	}, nil
-}
-
-// TierRebatePct devolve o percentual do NÍVEL vigente do produtor na data `at` (o rebate
-// do programa). Usado pelo modelo de cobrança para descontar da taxa de plataforma.
-func TierRebatePct(ctx context.Context, db Queryer, producerID uuid.UUID, at time.Time) (float64, error) {
-	var ini, pro, sen float64
-	if err := db.QueryRow(ctx, `
-		SELECT tier_iniciante_pct, tier_pro_pct, tier_senior_pct
-		  FROM public.platform_fee_rules
-		 WHERE effective_from <= $1 ORDER BY effective_from DESC LIMIT 1`, at).Scan(&ini, &pro, &sen); err != nil {
-		return 0, err
-	}
-	switch TierAt(ctx, db, producerID, at) {
-	case "pro":
-		return pro, nil
-	case "senior":
-		return sen, nil
-	default:
-		return ini, nil
-	}
-}
-
-// TierAt devolve o nível vigente do produtor na data `at` (histórico ou atual).
-func TierAt(ctx context.Context, db Queryer, producerID uuid.UUID, at time.Time) string {
-	var tier string
-	if err := db.QueryRow(ctx, `
-		SELECT tier FROM public.producer_tier_history
-		 WHERE producer_id=$1 AND effective_from<=$2 ORDER BY effective_from DESC LIMIT 1`, producerID, at).Scan(&tier); err == nil {
-		return tier
-	}
-	_ = db.QueryRow(ctx, `SELECT tier FROM public.producers WHERE id=$1`, producerID).Scan(&tier)
-	if tier == "" {
-		tier = "iniciante"
-	}
-	return tier
-}
-
-var errBadTier = errors.New("program: nível inválido")
-
-// SetTier registra uma transição de nível com vigência (nunca retroativa sobre o que já
-// foi apurado — a apuração sempre usa o nível vigente na data da venda).
-func SetTier(ctx context.Context, pool *pgxpool.Pool, producerID uuid.UUID, tier string, effectiveFrom time.Time) error {
-	if tier != "iniciante" && tier != "pro" && tier != "senior" {
-		return errBadTier
-	}
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `INSERT INTO producer_tier_history (producer_id, tier, effective_from) VALUES ($1,$2,$3)`, producerID, tier, effectiveFrom); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `UPDATE producers SET tier=$2, updated_at=now() WHERE id=$1`, producerID, tier); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
-}
+// ErrNoFace é ordem sem decomposição de preço. Antes isso caía num fallback que apurava
+// por outro modelo — e o produto passou a ter dois preços ao mesmo tempo, sem ninguém ver.
+// Ordem sem face é BUG de quem a criou, não caso de negócio.
+var ErrNoFace = errors.New("program: ordem sem face_cents — todo caminho de venda precisa gravar a decomposição do preço")
 
 // SetOrigination registra (upsert) que um produtor foi indicado por um originador.
 func SetOrigination(ctx context.Context, pool *pgxpool.Pool, producerID, originatorID uuid.UUID, participationPct float64, until *time.Time) error {
@@ -147,21 +45,15 @@ func SetOrigination(ctx context.Context, pool *pgxpool.Pool, producerID, origina
 func SettleLedger(ctx context.Context, tx pgx.Tx, producerID, orderID, paymentID uuid.UUID) error {
 	var eventID uuid.UUID
 	var total, face, platformFee, processing int64
-	var createdAt time.Time
-	if err := tx.QueryRow(ctx, `SELECT event_id, total_cents, face_cents, platform_fee_cents, processing_fee_cents, created_at FROM orders WHERE id=$1`, orderID).
-		Scan(&eventID, &total, &face, &platformFee, &processing, &createdAt); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT event_id, total_cents, face_cents, platform_fee_cents, processing_fee_cents FROM orders WHERE id=$1`, orderID).
+		Scan(&eventID, &total, &face, &platformFee, &processing); err != nil {
 		return err
 	}
-	// Fallback legado (§4 não migrou season/mercado): ordem sem decomposição usa o modelo
-	// antigo (taxa embutida via Apurar sobre o total), preservando esses fluxos.
+	// Sem decomposição não há como apurar sem inventar. Falhar aqui é barato; estimar
+	// silenciosamente foi o que deixou passe de temporada e mercado secundário cobrando por
+	// um modelo diferente do checkout durante meses.
 	if face == 0 && total > 0 {
-		ap, err := Apurar(ctx, tx, producerID, total, createdAt)
-		if err != nil {
-			return err
-		}
-		platformFee = ap.PlatformNetCents
-		face = total - platformFee
-		processing = 0
+		return fmt.Errorf("%w (ordem %s)", ErrNoFace, orderID)
 	}
 	var method string
 	_ = tx.QueryRow(ctx, `SELECT method FROM payments WHERE id=$1`, paymentID).Scan(&method)

@@ -43,9 +43,9 @@ func TestSeasonPassIssuesPerDate(t *testing.T) {
 	if n := scanInt(t, ctx, pool, pid, `SELECT count(*) FROM tickets WHERE season_pass_id=$1 AND status='active'`, uuid.MustParse(passID)); n != 2 {
 		t.Fatalf("esperava 2 ingressos do passe, veio %d", n)
 	}
-	// Taxa do passe (13,5% de 8000).
-	if n := scanInt(t, ctx, pool, pid, `SELECT count(*) FROM ledger_entries WHERE kind='taxa' AND amount_cents=1080`); n != 1 {
-		t.Fatalf("esperava taxa 1080, veio %d", n)
+	// Taxa do passe: 10% do face, a MESMA de qualquer outro caminho de venda.
+	if n := scanInt(t, ctx, pool, pid, `SELECT count(*) FROM ledger_entries WHERE kind='taxa' AND amount_cents=800`); n != 1 {
+		t.Fatalf("esperava taxa 800 (10%% de 8000), veio %d", n)
 	}
 
 	// Cada ingresso é destacável/transferível individualmente.

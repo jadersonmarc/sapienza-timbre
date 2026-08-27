@@ -25,6 +25,16 @@ import (
 // produtor.
 const PlatformFeePct = 10.0
 
+// PlatformFeeCents é a taxa da plataforma sobre um face. Existe para que TODO caminho de
+// venda — compra comum, passe de temporada, mercado secundário — apure pelo mesmo lugar.
+// Enquanto cada um calculava a sua, o produto teve dois preços ao mesmo tempo.
+func PlatformFeeCents(faceCents int64) int64 {
+	if faceCents <= 0 {
+		return 0
+	}
+	return int64(math.Round(float64(faceCents) * PlatformFeePct / 100))
+}
+
 // Breakdown é a decomposição do preço, mostrada ao comprador e guardada na venda.
 type Breakdown struct {
 	FaceCents           int64 `json:"face_cents"`            // repasse ao produtor (limpo, é o split)

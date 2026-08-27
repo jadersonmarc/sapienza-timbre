@@ -15,6 +15,7 @@ import (
 
 	"github.com/jadersonmarc/sapienza-timbre/internal/checkout"
 	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
+	"github.com/jadersonmarc/sapienza-timbre/internal/pricing"
 	"github.com/jadersonmarc/sapienza-timbre/internal/program"
 )
 
@@ -84,20 +85,25 @@ func BuyPass(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, producer
 		return BuyResult{}, err
 	}
 
+	// O preço do passe é o FACE; o comprador paga face + conveniência, como em qualquer
+	// outra venda. Gravar a decomposição aqui é o que faz os três caminhos apurarem igual.
+	fee := pricing.PlatformFeeCents(price)
+	total := price + fee
 	var orderID uuid.UUID
 	if err := tx.QueryRow(ctx, `
-		INSERT INTO orders (event_id, buyer_email, total_cents, status, season_pass_id)
-		VALUES ($1,$2,$3,'pending',$4) RETURNING id`, firstEvent, nilStr(buyerEmail), price, passID).Scan(&orderID); err != nil {
+		INSERT INTO orders (event_id, buyer_email, total_cents, face_cents, platform_fee_cents, status, season_pass_id)
+		VALUES ($1,$2,$3,$4,$5,'pending',$6) RETURNING id`,
+		firstEvent, nilStr(buyerEmail), total, price, fee, passID).Scan(&orderID); err != nil {
 		return BuyResult{}, err
 	}
 	var paymentID uuid.UUID
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO payments (order_id, method, amount_cents, status)
-		VALUES ($1,'pix',$2,'pending') RETURNING id`, orderID, price).Scan(&paymentID); err != nil {
+		VALUES ($1,'pix',$2,'pending') RETURNING id`, orderID, total).Scan(&paymentID); err != nil {
 		return BuyResult{}, err
 	}
 	charge, err := gw.CreateCharge(ctx, payment.ChargeRequest{
-		OrderID: orderID.String(), Method: payment.MethodPix, AmountCents: price, BuyerEmail: buyerEmail,
+		OrderID: orderID.String(), Method: payment.MethodPix, AmountCents: total, BuyerEmail: buyerEmail,
 	})
 	if err != nil {
 		return BuyResult{}, fmt.Errorf("cobrança: %w", err)
@@ -178,7 +184,7 @@ func ConfirmPass(ctx context.Context, tx pgx.Tx, em checkout.Emitter, producerID
 		return err
 	}
 
-	// Apuração e razão do passe (taxa 15% − rebate do nível na data da venda, repasse,
+	// Apuração e razão do passe (taxa de 10% do face, repasse,
 	// originação) — centralizado em program.SettleLedger.
 	if err := program.SettleLedger(ctx, tx, producerID, orderID, paymentID); err != nil {
 		return err

@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
+	"github.com/jadersonmarc/sapienza-timbre/internal/pricing"
 	"github.com/jadersonmarc/sapienza-timbre/internal/program"
 	"github.com/jadersonmarc/sapienza-timbre/internal/transfer"
 )
@@ -132,10 +133,14 @@ func BuyListing(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, produ
 		return BuyResult{}, err
 	}
 
+	// A ordem nasce com a decomposição do preço, como no checkout comum: sem ela, a
+	// apuração cairia num modelo diferente e a revenda teria outra taxa.
+	fee := pricing.PlatformFeeCents(price)
 	var orderID uuid.UUID
 	if err := tx.QueryRow(ctx, `
-		INSERT INTO orders (event_id, buyer_email, total_cents, status)
-		VALUES ($1,$2,$3,'pending') RETURNING id`, eventID, nilStr(buyerEmail), price).Scan(&orderID); err != nil {
+		INSERT INTO orders (event_id, buyer_email, total_cents, face_cents, platform_fee_cents, status)
+		VALUES ($1,$2,$3,$4,$5,'pending') RETURNING id`,
+		eventID, nilStr(buyerEmail), price+fee, price, fee).Scan(&orderID); err != nil {
 		return BuyResult{}, err
 	}
 	if _, err := tx.Exec(ctx, `
@@ -215,18 +220,15 @@ func ConfirmResale(ctx context.Context, tx pgx.Tx, producerID uuid.UUID, asaasRe
 			 WHERE o.id = $1 AND td.ticket_id = $2`, orderID, ticketID); err != nil {
 			return err
 		}
-		// Taxa da plataforma sobre a revenda (15% − rebate do nível); o royalty já foi
-		// apurado na transferência. O repasse ao vendedor não é modelado nesta etapa.
-		ap, err := program.Apurar(ctx, tx, producerID, price, time.Now())
-		if err != nil {
-			return err
-		}
+		// Taxa da plataforma sobre a revenda, pelo mesmo ponto que o checkout usa; o royalty
+		// já foi apurado na transferência. O repasse ao vendedor não é modelado nesta etapa.
+		fee := pricing.PlatformFeeCents(price)
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO ledger_entries (event_id, order_id, payment_id, kind, amount_cents, available_at)
-			VALUES ($1,$2,$3,'taxa',$4, now())`, eventID, orderID, paymentID, ap.PlatformNetCents); err != nil {
+			VALUES ($1,$2,$3,'taxa',$4, now())`, eventID, orderID, paymentID, fee); err != nil {
 			return err
 		}
-		if err := program.RecordOrigination(ctx, tx, producerID, eventID, orderID, ap.PlatformNetCents); err != nil {
+		if err := program.RecordOrigination(ctx, tx, producerID, eventID, orderID, fee); err != nil {
 			return err
 		}
 	}

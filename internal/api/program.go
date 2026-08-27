@@ -10,41 +10,6 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/program"
 )
 
-type setTierReq struct {
-	Tier          string  `json:"tier"`
-	EffectiveFrom *string `json:"effective_from"`
-}
-
-// adminSetTier registra a transição de nível do produtor (admin). A apuração passada
-// não muda — sempre usa o nível vigente na data da venda.
-func (s *Server) adminSetTier(w http.ResponseWriter, r *http.Request, claims *auth.AdminClaims) {
-	id, err := uuid.Parse(r.PathValue("id"))
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "id inválido")
-		return
-	}
-	var body setTierReq
-	if err := decode(w, r, &body); err != nil {
-		writeErr(w, http.StatusBadRequest, "corpo inválido")
-		return
-	}
-	eff := time.Now()
-	if body.EffectiveFrom != nil && *body.EffectiveFrom != "" {
-		if t, e := time.Parse(time.RFC3339, *body.EffectiveFrom); e == nil {
-			eff = t
-		} else {
-			writeErr(w, http.StatusBadRequest, "effective_from inválido (RFC3339)")
-			return
-		}
-	}
-	if err := program.SetTier(r.Context(), s.pool, id, body.Tier, eff); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	s.audit(r, claims, "producer.set_tier", "producer", &id, map[string]any{"tier": body.Tier})
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tier": body.Tier})
-}
-
 type setOriginationReq struct {
 	OriginatorID     string   `json:"originator_id"`
 	ParticipationPct *float64 `json:"participation_pct"`
@@ -88,16 +53,6 @@ func (s *Server) adminSetOrigination(w http.ResponseWriter, r *http.Request, cla
 	}
 	s.audit(r, claims, "producer.set_origination", "producer", &id, map[string]any{"originator_id": originatorID})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
-// dashProgram mostra o nível vigente e os percentuais aplicáveis ao produtor.
-func (s *Server) dashProgram(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
-	ap, err := program.Apurar(r.Context(), s.pool, claims.ProducerID, 0, time.Now())
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"tier": ap.Tier, "fee_pct": ap.FeePct, "tier_pct": ap.TierPct})
 }
 
 // dashOrigination é o extrato do originador: o que ele apurou por produtores indicados.

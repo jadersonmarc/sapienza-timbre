@@ -60,7 +60,7 @@ func (e Emitter) emit(ctx context.Context, tx pgx.Tx, ticketIDs []uuid.UUID, del
 		_ = e.Notify.Send(ctx, tx, notify.Message{
 			Kind: notify.KindTicket, Channel: "email", To: deliverTo,
 			IdempotencyKey: "ticket:" + tid.String(),
-			ProducerID: &e.ProducerID, EventID: &info.eventID, TicketID: &tid,
+			ProducerID:     &e.ProducerID, EventID: &info.eventID, TicketID: &tid,
 			EventName: info.title, EventStarts: info.starts,
 			VenueCity: info.city, Address: info.address,
 			SectorName: info.sector, SeatLabel: info.seat, Notice: info.notice,

@@ -525,8 +525,8 @@ func ConfirmPayment(ctx context.Context, tx pgx.Tx, em Emitter, producerID uuid.
 		return nil, err
 	}
 
-	// Apuração e razão: taxa (15% − rebate do nível), repasse (D+2) e retenção 5%/60d no
-	// cartão, pelo nível vigente na data da venda; e a participação do originador.
+	// Apuração e razão: taxa (10% do face), repasse (D+2) e retenção 5%/60d no
+	// cartão; e a participação do originador.
 	if err := program.SettleLedger(ctx, tx, producerID, orderID, paymentID); err != nil {
 		return nil, err
 	}

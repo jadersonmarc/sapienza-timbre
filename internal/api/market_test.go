@@ -57,8 +57,9 @@ func TestSecondaryMarketResale(t *testing.T) {
 	if n := scanInt(t, ctx, pool, pid, `SELECT count(*) FROM royalty_entries WHERE amount_cents=400`); n != 1 {
 		t.Fatalf("esperava royalty de 400 (10%% de 4000), veio %d", n)
 	}
-	if n := scanInt(t, ctx, pool, pid, `SELECT count(*) FROM ledger_entries WHERE kind='taxa' AND amount_cents=540`); n != 1 {
-		t.Fatalf("esperava taxa de revenda 540 (13,5%% de 4000), veio %d", n)
+	// A revenda apura pela MESMA taxa da venda comum: 10% do face.
+	if n := scanInt(t, ctx, pool, pid, `SELECT count(*) FROM ledger_entries WHERE kind='taxa' AND amount_cents=400`); n != 1 {
+		t.Fatalf("esperava taxa de revenda 400 (10%% de 4000), veio %d", n)
 	}
 
 	// Procedência: cadeia de posse com o elo da revenda.
