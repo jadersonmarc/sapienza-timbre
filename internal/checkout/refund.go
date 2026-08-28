@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -496,7 +498,7 @@ func reverseSplit(ctx context.Context, tx pgx.Tx, refundID, orderID uuid.UUID, t
 // RefundPayment processa o aviso de estorno vindo do gateway (contestação no cartão,
 // devolução feita no painel do Asaas). Estorna o que ainda estiver ativo na ordem.
 // Idempotente: aviso repetido, e eco do estorno que nós mesmos originamos, não reprocessam.
-func RefundPayment(ctx context.Context, tx pgx.Tx, asaasRef string) error {
+func RefundPayment(ctx context.Context, tx pgx.Tx, asaasRef string, refundKeys []string) error {
 	var orderID uuid.UUID
 	var status string
 	err := tx.QueryRow(ctx, `
@@ -513,15 +515,34 @@ func RefundPayment(ctx context.Context, tx pgx.Tx, asaasRef string) error {
 	}
 	// Eco do nosso próprio estorno: o gateway avisa o que nós mandamos fazer. Sem esta
 	// guarda, o aviso seria lido como devolução externa e queimaria o que sobrou do pedido.
-	var echoes int
-	if err := tx.QueryRow(ctx, `
-		SELECT count(*) FROM refunds
-		 WHERE order_id=$1 AND initiated_by <> 'webhook' AND status IN ('sent','confirmed')
-		   AND updated_at > now() - $2::interval`, orderID, webhookEchoWindow.String()).Scan(&echoes); err != nil {
-		return err
-	}
-	if echoes > 0 {
-		return nil
+	//
+	// Quando o aviso traz as CHAVES das devoluções, o reconhecimento é exato: cada chave é
+	// `refundKeyPrefix + id da nossa operação`, então basta ver se todas já são nossas. Sem
+	// as chaves, sobra a janela de tempo — que é um palpite, e por isso só vale quando não
+	// há alternativa.
+	if len(refundKeys) > 0 {
+		nossos, err := allKnownRefundKeys(ctx, tx, refundKeys)
+		if err != nil {
+			return err
+		}
+		if nossos {
+			slog.Info("estorno: aviso reconhecido pela chave (eco do nosso)", "cobranca", asaasRef)
+			return nil
+		}
+		slog.Info("estorno: aviso com chave desconhecida — devolução feita por fora", "cobranca", asaasRef)
+	} else {
+		var echoes int
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM refunds
+			 WHERE order_id=$1 AND initiated_by <> 'webhook' AND status IN ('sent','confirmed')
+			   AND updated_at > now() - $2::interval`, orderID, webhookEchoWindow.String()).Scan(&echoes); err != nil {
+			return err
+		}
+		if echoes > 0 {
+			slog.Info("estorno: aviso tratado como eco pela JANELA (o gateway não mandou a chave)",
+				"cobranca", asaasRef, "janela", webhookEchoWindow.String())
+			return nil
+		}
 	}
 
 	prepared, err := PrepareRefund(ctx, tx, RefundInput{
@@ -542,6 +563,37 @@ func RefundPayment(ctx context.Context, tx pgx.Tx, asaasRef string) error {
 		return err
 	}
 	return CompleteRefund(ctx, tx, prepared.ID, false)
+}
+
+// refundKeyPrefix é o começo da chave que viaja na description do estorno. A identidade de
+// um estorno no gateway é essa chave: ele não emite id próprio (medido no sandbox).
+const refundKeyPrefix = "timbre:refund:"
+
+// RefundKey é a chave que identifica a operação de estorno do lado do gateway.
+func RefundKey(refundID uuid.UUID) string { return refundKeyPrefix + refundID.String() }
+
+// allKnownRefundKeys diz se TODAS as chaves do aviso pertencem a operações nossas. Basta uma
+// desconhecida para o aviso deixar de ser eco: houve devolução feita por fora, e ela precisa
+// ser processada.
+func allKnownRefundKeys(ctx context.Context, tx pgx.Tx, keys []string) (bool, error) {
+	for _, k := range keys {
+		raw, ok := strings.CutPrefix(k, refundKeyPrefix)
+		if !ok {
+			return false, nil
+		}
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			return false, nil
+		}
+		var n int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM refunds WHERE id=$1`, id).Scan(&n); err != nil {
+			return false, err
+		}
+		if n == 0 {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // ── apoio ────────────────────────────────────────────────────────────────────

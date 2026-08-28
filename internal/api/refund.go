@@ -151,7 +151,7 @@ func (s *Server) runRefund(ctx context.Context, producerID uuid.UUID, in checkou
 		AsaasRef:   prepared.AsaasRef,
 		ValueCents: prepared.TotalCents,
 		// Carrega a nossa chave de idempotência: o gateway não tem cabeçalho próprio.
-		Description: "timbre:refund:" + prepared.ID.String(),
+		Description: checkout.RefundKey(prepared.ID),
 	})
 	switch {
 	case err == nil, errors.Is(err, payment.ErrRefundAlreadyExists):

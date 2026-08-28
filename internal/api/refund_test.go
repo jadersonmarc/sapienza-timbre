@@ -626,3 +626,47 @@ func TestRefundPartialRestStillAdmits(t *testing.T) {
 		}
 	}
 }
+
+// TestEcoReconhecidoPelaChave: quando o aviso do gateway traz as chaves das devoluções, o
+// reconhecimento é EXATO — não depende de janela de tempo, que é palpite.
+//
+// Medido no sandbox: o Asaas não emite id de estorno, e a identidade é a description que
+// enviamos. Se ela viajar no aviso, é por ela que se sabe o que é eco do nosso.
+func TestEcoReconhecidoPelaChave(t *testing.T) {
+	ts, pool := setup(t)
+	_, owner := createProducer(t, ts, "Casa Chave", "owner@chave.com", "senha1234")
+	pid := producerID(t, ts, owner)
+	ctx := context.Background()
+	eventID, _, ref := soldEvent(t, ts, pool, owner, pid, 2, "buy@chave.com", "pix")
+
+	tickets := ticketsOf(t, ctx, pool, pid, eventID)
+	orderID := orderOf(t, ctx, pool, pid, eventID)
+	code, body := do(t, ts, "POST", "/api/v1/orders/"+orderID+"/refund", bearer(owner),
+		map[string]any{"ticket_ids": []string{tickets[0]}, "reason": "parcial"})
+	if code != http.StatusOK {
+		t.Fatalf("estorno parcial: %d %v", code, body)
+	}
+	refundID, _ := body["id"].(string)
+
+	// O aviso chega com a chave da NOSSA devolução: é eco, e não pode tocar no que sobrou.
+	if code, _ := do(t, ts, "POST", "/api/v1/webhooks/asaas", nil, map[string]any{
+		"id": "evt_" + uuid.NewString(), "asaas_ref": ref, "refunded": true,
+		"type": "PAYMENT_REFUNDED", "refund_keys": []string{"timbre:refund:" + refundID},
+	}); code != http.StatusOK {
+		t.Fatalf("webhook eco")
+	}
+	if n := scanInt(t, ctx, pool, pid, `SELECT count(*) FROM tickets WHERE status='active'`); n != 1 {
+		t.Fatalf("o eco não pode queimar o ingresso restante; ativos=%d", n)
+	}
+
+	// Agora um aviso com chave DESCONHECIDA: devolução feita por fora, e ela vale.
+	if code, _ := do(t, ts, "POST", "/api/v1/webhooks/asaas", nil, map[string]any{
+		"id": "evt_" + uuid.NewString(), "asaas_ref": ref, "refunded": true,
+		"type": "PAYMENT_REFUNDED", "refund_keys": []string{"outro-sistema:qualquer"},
+	}); code != http.StatusOK {
+		t.Fatalf("webhook externo")
+	}
+	if n := scanInt(t, ctx, pool, pid, `SELECT count(*) FROM tickets WHERE status='active'`); n != 0 {
+		t.Fatalf("devolução feita por fora precisa valer; ativos=%d", n)
+	}
+}

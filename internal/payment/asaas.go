@@ -279,6 +279,14 @@ type asaasWebhook struct {
 	Payment struct {
 		ID     string `json:"id"`
 		Status string `json:"status"`
+		// O objeto da cobrança embutido no aviso carrega as devoluções. Se elas vierem, a
+		// description de cada uma é a NOSSA chave de volta — e é ela que distingue o eco do
+		// nosso próprio estorno de uma devolução feita por fora.
+		Refunds []struct {
+			Description string  `json:"description"`
+			Status      string  `json:"status"`
+			Value       float64 `json:"value"`
+		} `json:"refunds"`
 	} `json:"payment"`
 	Split struct {
 		ID     string `json:"id"`
@@ -308,8 +316,14 @@ func (g *AsaasGateway) HandleWebhook(_ context.Context, payload []byte) (Webhook
 	}
 	confirmed := e.Event == "PAYMENT_CONFIRMED" || e.Event == "PAYMENT_RECEIVED"
 	refunded := e.Event == "PAYMENT_REFUNDED" || e.Event == "PAYMENT_CHARGEBACK_REQUESTED"
+	var refundKeys []string
+	for _, r := range e.Payment.Refunds {
+		if r.Description != "" {
+			refundKeys = append(refundKeys, r.Description)
+		}
+	}
 	evt := WebhookEvent{
-		ID: e.ID, AsaasRef: e.Payment.ID, Type: e.Event,
+		ID: e.ID, AsaasRef: e.Payment.ID, Type: e.Event, RefundKeys: refundKeys,
 		Confirmed: confirmed, Refunded: refunded,
 		SplitID:       e.AdditionalInfo.SplitID,
 		RefusalReason: e.AdditionalInfo.RefusalReason,

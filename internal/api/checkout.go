@@ -118,7 +118,7 @@ func (s *Server) asaasWebhook(w http.ResponseWriter, r *http.Request) {
 	if err := s.withTenant(r.Context(), producerID, func(tx pgx.Tx) error {
 		switch {
 		case evt.Refunded:
-			if err := checkout.RefundPayment(r.Context(), tx, evt.AsaasRef); err != nil {
+			if err := checkout.RefundPayment(r.Context(), tx, evt.AsaasRef, evt.RefundKeys); err != nil {
 				return err
 			}
 			return notifyRefund(r.Context(), s.seams.Notify, tx, evt.AsaasRef)

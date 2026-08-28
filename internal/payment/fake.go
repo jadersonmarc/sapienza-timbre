@@ -89,12 +89,13 @@ type fakeWebhook struct {
 	Confirmed bool   `json:"confirmed"`
 	Refunded  bool   `json:"refunded"`
 	// Campos dos demais fluxos: split e cadastro de subconta.
-	ID            string `json:"id"`
-	SplitID       string `json:"split_id"`
-	SplitStatus   string `json:"split_status"`
-	RefusalReason string `json:"refusal_reason"`
-	WalletID      string `json:"wallet_id"`
-	AccountStatus string `json:"account_status"`
+	ID            string   `json:"id"`
+	SplitID       string   `json:"split_id"`
+	SplitStatus   string   `json:"split_status"`
+	RefusalReason string   `json:"refusal_reason"`
+	WalletID      string   `json:"wallet_id"`
+	AccountStatus string   `json:"account_status"`
+	RefundKeys    []string `json:"refund_keys"`
 }
 
 // HandleWebhook decodifica o payload de teste.
@@ -109,6 +110,7 @@ func (*FakeGateway) HandleWebhook(_ context.Context, payload []byte) (WebhookEve
 		SplitID: e.SplitID, SplitStatus: splitStatusFor(e.Type, e.SplitStatus),
 		RefusalReason: e.RefusalReason,
 		WalletID:      e.WalletID, AccountStatus: e.AccountStatus,
+		RefundKeys: e.RefundKeys,
 	}, nil
 }
 

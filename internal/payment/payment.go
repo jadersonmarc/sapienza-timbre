@@ -95,6 +95,10 @@ type WebhookEvent struct {
 	Type      string
 	Confirmed bool // pagamento confirmado/recebido
 	Refunded  bool // estorno/contestação (queima os ingressos)
+	// RefundKeys são as descriptions das devoluções que o aviso carrega — a NOSSA chave de
+	// volta, quando o gateway a envia. Vazio quando ele não manda: aí a conciliação cai na
+	// janela de tempo, que é o que existia antes de haver identidade alguma.
+	RefundKeys []string
 
 	// ── split ────────────────────────────────────────────────────────────────
 	// SplitID identifica QUAL split do pagamento originou o evento (uma cobrança pode

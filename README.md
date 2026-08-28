@@ -368,9 +368,26 @@ processa é recusada com `invalid_object` / *"O estorno dessa cobrança já est�
 Isso é ESPERA, não falha — virou `ErrRefundInProgress`, e o caminho manual do produtor
 responde 409 pedindo para tentar em instantes, em vez de marcar a devolução como falha.
 
-Falta uma resposta: **o aviso (webhook) carrega a `description`?** Ela decide se a janela de
-eco de 10 minutos morre. Precisa do servidor de pé com o webhook do sandbox apontado —
-procure `asaas: forma do aviso de estorno` no log.
+**O aviso (webhook) carrega a `description`?** Não deu para medir — a API do Asaas não expõe
+histórico de entrega de webhook, e a máquina não tem túnel. Mas isso deixou de ser
+bloqueante: o código passou a **reconhecer pelas duas vias**.
+
+Se o aviso trouxer `payment.refunds[].description`, o eco é reconhecido de forma EXATA — cada
+chave é a nossa, e basta ver se todas já são conhecidas; chave desconhecida significa
+devolução feita por fora, e ela vale. Se o aviso não trouxer, cai na janela de 10 minutos,
+que é palpite e por isso só entra quando não há alternativa. O log diz qual via foi usada:
+
+    estorno: aviso reconhecido pela chave (eco do nosso)
+    estorno: aviso tratado como eco pela JANELA (o gateway não mandou a chave)
+
+A primeira devolução real em produção decide o assunto sem precisar de experimento: se a
+linha da JANELA nunca aparecer, ela pode ser removida.
+
+> **Atenção à configuração do webhook.** O webhook do sandbox desta conta está inscrito só em
+> `PAYMENT_OVERDUE`, `PAYMENT_RECEIVED` e `PAYMENT_CONFIRMED` — **sem `PAYMENT_REFUNDED`**.
+> Com essa lista, uma devolução feita pelo painel ou uma contestação nunca chegariam ao
+> Timbre, e o ingresso continuaria válido com o dinheiro devolvido. Confira a inscrição de
+> eventos do webhook de produção antes do primeiro evento real.
 
 | Pergunta | Resposta | Consequência |
 |---|---|---|
