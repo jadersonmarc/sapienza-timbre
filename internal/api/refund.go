@@ -147,7 +147,7 @@ func (s *Server) runRefund(ctx context.Context, producerID uuid.UUID, in checkou
 
 	// ── fase 2: fora de transação ────────────────────────────────────────────
 	var covered bool
-	refund, err := s.seams.Payment.Refund(ctx, payment.RefundRequest{
+	_, err := s.seams.Payment.Refund(ctx, payment.RefundRequest{
 		AsaasRef:   prepared.AsaasRef,
 		ValueCents: prepared.TotalCents,
 		// Carrega a nossa chave de idempotência: o gateway não tem cabeçalho próprio.
@@ -156,6 +156,17 @@ func (s *Server) runRefund(ctx context.Context, producerID uuid.UUID, in checkou
 	switch {
 	case err == nil, errors.Is(err, payment.ErrRefundAlreadyExists):
 		// Estorno repetido é sucesso disfarçado: o dinheiro já voltou.
+	case errors.Is(err, payment.ErrRefundInProgress):
+		// O gateway serializa devoluções por cobrança. É ESPERA, não falha: devolver o
+		// pedido à fila deixa a próxima passada concluir, enquanto tratar como erro
+		// definitivo mostraria "não deu" para algo que só precisava de um instante.
+		s.failRequest(ctx, producerID, requestID, err.Error())
+		if e := s.withTenant(ctx, producerID, func(tx pgx.Tx) error {
+			return checkout.FailRefund(ctx, tx, prepared.ID, err.Error())
+		}); e != nil {
+			slog.Error("soltar estorno em espera", "refund", prepared.ID, "err", e)
+		}
+		return refundResp{}, fmt.Errorf("%w: %s", checkout.ErrRefundBusy, err.Error())
 	case errors.Is(err, payment.ErrRefundInsufficientFunds):
 		// A subconta do produtor não cobre. O comprador é estornado assim mesmo — a
 		// plataforma cobre e o produtor fica devendo, e a dívida sai dos próximos repasses.
@@ -180,7 +191,9 @@ func (s *Server) runRefund(ctx context.Context, producerID uuid.UUID, in checkou
 
 	// ── fase 3: efeitos ──────────────────────────────────────────────────────
 	if err := s.withTenant(ctx, producerID, func(tx pgx.Tx) error {
-		if e := checkout.MarkRefundSent(ctx, tx, prepared.ID, refund.ID); e != nil {
+		// O gateway não emite id de estorno (medido no sandbox): a identidade é a nossa
+		// description, que já é derivável do id da operação. Nada a guardar aqui.
+		if e := checkout.MarkRefundSent(ctx, tx, prepared.ID, ""); e != nil {
 			return e
 		}
 		if e := checkout.CompleteRefund(ctx, tx, prepared.ID, covered); e != nil {
@@ -282,6 +295,8 @@ func writeRefundErr(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusConflict, "pedido não pago")
 	case errors.Is(err, checkout.ErrRefundInFlight):
 		writeErr(w, http.StatusConflict, "já existe um estorno em andamento para este ingresso")
+	case errors.Is(err, checkout.ErrRefundBusy):
+		writeErr(w, http.StatusConflict, "já há uma devolução em andamento nesta compra; tente de novo em instantes")
 	case errors.Is(err, checkout.ErrRefundCheckedIn):
 		writeErr(w, http.StatusConflict, "ingresso com entrada registrada não é estornável")
 	case errors.Is(err, checkout.ErrRequestOpen):

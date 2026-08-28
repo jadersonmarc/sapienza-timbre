@@ -65,7 +65,7 @@ func TestSandboxRefundProbe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("primeira devolução parcial: %v", err)
 	}
-	t.Logf("RESPOSTA 1 — primeira metade: id=%q status=%q valor=%d", primeira.ID, primeira.Status, primeira.ValueCents)
+	t.Logf("RESPOSTA 1 — primeira metade: description=%q status=%q valor=%d", primeira.Description, primeira.Status, primeira.ValueCents)
 
 	segunda, err := gw.Refund(ctx, RefundRequest{
 		AsaasRef: payID, ValueCents: 1000, Description: "timbre:refund:probe-B",
@@ -73,16 +73,14 @@ func TestSandboxRefundProbe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("segunda devolução parcial: %v", err)
 	}
-	t.Logf("RESPOSTA 2 — segunda metade: id=%q status=%q valor=%d", segunda.ID, segunda.Status, segunda.ValueCents)
+	t.Logf("RESPOSTA 2 — segunda metade: description=%q status=%q valor=%d", segunda.Description, segunda.Status, segunda.ValueCents)
 
 	switch {
-	case primeira.ID == "":
-		t.Log("VEREDITO: a resposta NÃO traz id de estorno — conciliar por id está fora, a janela de eco fica")
-	case primeira.ID == segunda.ID:
-		t.Logf("VEREDITO: as duas devoluções vieram com o MESMO id (%s) — não dá para distinguir, a janela fica", primeira.ID)
+	case primeira.Description != segunda.Description && primeira.Description != "":
+		t.Log("VEREDITO: cada devolução é distinguível pela nossa description — o gateway a devolve de volta")
+		t.Log("  falta confirmar se o AVISO (webhook) a carrega: 'asaas: forma do aviso de estorno' no log do servidor")
 	default:
-		t.Log("VEREDITO: ids distintos por devolução — dá para conciliar por id e remover a janela de eco")
-		t.Log("  falta confirmar se o AVISO (webhook) carrega esse id: ver a linha 'asaas: forma do aviso de estorno' no log do servidor")
+		t.Log("VEREDITO: não deu para distinguir as devoluções — a janela de eco fica")
 	}
 
 	// ── pergunta 2: replay da mesma chave ────────────────────────────────────

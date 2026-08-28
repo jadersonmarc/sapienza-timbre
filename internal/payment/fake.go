@@ -64,12 +64,8 @@ func (g *FakeGateway) Refund(_ context.Context, req RefundRequest) (Refund, erro
 			return r, ErrRefundAlreadyExists
 		}
 	}
-	r := Refund{
-		ID:          fmt.Sprintf("fake_refund_%s_%d", req.AsaasRef, len(g.refunds[req.AsaasRef])+1),
-		Status:      "DONE",
-		ValueCents:  req.ValueCents,
-		Description: req.Description,
-	}
+	// Espelha o real: sem id, identidade na description (medido no sandbox).
+	r := Refund{Status: "DONE", ValueCents: req.ValueCents, Description: req.Description}
 	g.refunds[req.AsaasRef] = append(g.refunds[req.AsaasRef], r)
 	return r, nil
 }

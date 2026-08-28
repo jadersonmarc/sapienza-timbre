@@ -25,6 +25,9 @@ var (
 	ErrRefundCheckedIn = errors.New("ingresso com entrada registrada não é estornável")
 	// ErrRefundNotPaid é ordem que não chegou a ser paga.
 	ErrRefundNotPaid = errors.New("ordem não paga")
+	// ErrRefundBusy é outra devolução da mesma cobrança ainda em processamento no gateway.
+	// Espera, não falha: a próxima tentativa conclui.
+	ErrRefundBusy = errors.New("já há uma devolução em andamento nesta compra")
 )
 
 // Origem da operação de estorno.

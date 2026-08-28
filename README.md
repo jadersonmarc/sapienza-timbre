@@ -348,11 +348,36 @@ sem precisar de um segundo experimento.
 Faça uma venda de valor baixo e devolva metade, depois a outra metade, em sequência curta.
 Então procure no log:
 
-| Pergunta | O que procurar | O que ela decide |
+#### O que foi medido (sandbox, 28/08/2026)
+
+**O Asaas não emite id de estorno.** `POST /v3/payments/{id}/refund` devolve o objeto da
+COBRANÇA; as devoluções vivem em `refunds[]`, com os campos `dateCreated`, `description`,
+`effectiveDate`, `endToEndIdentifier`, `refundedSplits`, `status`, `transactionReceiptUrl` e
+`value`. Não há `refunds[].id`.
+
+A consequência é boa: **a identidade de um estorno é a `description`** — o único campo que
+nós controlamos, que sobrevive à ida e volta e distingue uma devolução parcial da outra. Já
+é lá que a nossa chave viaja. Duas devoluções parciais de R$ 10 na mesma cobrança voltaram
+como duas entradas distintas, cada uma com a sua chave.
+
+Isso corrigiu **dois defeitos do cliente**, que liam o topo da resposta: o "id do estorno"
+era o id da cobrança, e o "valor devolvido" era o valor total dela.
+
+**O gateway serializa devoluções por cobrança.** Uma segunda devolução enquanto a primeira
+processa é recusada com `invalid_object` / *"O estorno dessa cobrança já está em andamento"*.
+Isso é ESPERA, não falha — virou `ErrRefundInProgress`, e o caminho manual do produtor
+responde 409 pedindo para tentar em instantes, em vez de marcar a devolução como falha.
+
+Falta uma resposta: **o aviso (webhook) carrega a `description`?** Ela decide se a janela de
+eco de 10 minutos morre. Precisa do servidor de pé com o webhook do sandbox apontado —
+procure `asaas: forma do aviso de estorno` no log.
+
+| Pergunta | Resposta | Consequência |
 |---|---|---|
-| O estorno tem chave de idempotência? | `asaas: forma da resposta de estorno` | se `RefundRequest.Description` continua sendo a nossa chave ou se há campo próprio |
-| O aviso traz o id do ESTORNO ou só o da cobrança? | `asaas: forma do aviso de estorno` | se `checkout.webhookEchoWindow` (10 min) morre e a conciliação passa a ser por id |
-| Quais são os marcadores reais de recusa? | `asaas: recusa de estorno NÃO classificada` | se `payment.refundRefusalMarkers` deixa de ser texto |
+| O estorno tem id próprio? | **Não** — identidade é a `description` | cliente corrigido; conciliação por description |
+| O gateway deduplica pela nossa chave? | **Não medido** — o replay bateu no bloqueio de concorrência antes | a idempotência segue sendo nossa |
+| Marcadores reais de recusa? | `invalid_object` + "já está em andamento" | novo `ErrRefundInProgress`, retentável |
+| O aviso traz a `description`? | **em aberto** | decide o fim da janela de eco |
 
 #### Atalho: a sonda do sandbox
 

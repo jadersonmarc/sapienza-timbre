@@ -191,6 +191,11 @@ var refundRefusalMarkers = []struct {
 	marker string
 	err    error
 }{
+	// MEDIDO no sandbox: a recusa por estorno concorrente vem como invalid_object com esta
+	// frase. Ela é ESPERA, não falha — e sem o marcador caía em erro desconhecido, que o
+	// caminho manual do produtor mostrava como "não deu".
+	{"estorno dessa cobrança já está em andamento", ErrRefundInProgress},
+	{"refund is already in progress", ErrRefundInProgress},
 	{"saldo insuficiente", ErrRefundInsufficientFunds},
 	{"insufficient", ErrRefundInsufficientFunds},
 	{"já estornad", ErrRefundAlreadyExists},
@@ -230,10 +235,16 @@ func (g *AsaasGateway) Refund(ctx context.Context, req RefundRequest) (Refund, e
 	if req.Description != "" {
 		payload["description"] = req.Description
 	}
+	// A resposta é o objeto da COBRANÇA, não do estorno: o `id` e o `value` do topo são os
+	// dela. A devolução recém-criada é a entrada de `refunds[]` com a nossa description —
+	// ler o topo daria o id da cobrança e o valor total, que foi o que este código fez até
+	// medirmos contra o sandbox.
 	var out struct {
-		ID     string  `json:"id"`
-		Status string  `json:"status"`
-		Value  float64 `json:"value"`
+		Refunds []struct {
+			Description string  `json:"description"`
+			Status      string  `json:"status"`
+			Value       float64 `json:"value"`
+		} `json:"refunds"`
 	}
 	raw, err := g.rawPost(ctx, "/v3/payments/"+req.AsaasRef+"/refund", payload)
 	if err != nil {
@@ -247,11 +258,17 @@ func (g *AsaasGateway) Refund(ctx context.Context, req RefundRequest) (Refund, e
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return Refund{}, fmt.Errorf("estorno asaas: resposta ilegível: %w", err)
 	}
-	value := int64(math.Round(out.Value * 100))
-	if value == 0 {
-		value = req.ValueCents
+	r := Refund{Description: req.Description, ValueCents: req.ValueCents}
+	for _, ref := range out.Refunds {
+		if ref.Description == req.Description {
+			r.Status = ref.Status
+			if v := int64(math.Round(ref.Value * 100)); v > 0 {
+				r.ValueCents = v
+			}
+			break
+		}
 	}
-	return Refund{ID: out.ID, Status: out.Status, ValueCents: value, Description: req.Description}, nil
+	return r, nil
 }
 
 // asaasWebhook é o formato do webhook do Asaas.

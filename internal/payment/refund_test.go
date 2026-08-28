@@ -36,7 +36,9 @@ func refundSpy(t *testing.T, status int, body string, capture *map[string]any, p
 func TestRefundIntegralOmitsValue(t *testing.T) {
 	var sent map[string]any
 	var path string
-	gw := refundSpy(t, http.StatusOK, `{"id":"ref_1","status":"DONE","value":56.00}`, &sent, &path)
+	gw := refundSpy(t, http.StatusOK,
+		`{"id":"pay_1","status":"RECEIVED","value":56.00,
+		  "refunds":[{"description":"timbre:refund:abc","status":"DONE","value":56.00}]}`, &sent, &path)
 
 	out, err := gw.Refund(context.Background(), RefundRequest{AsaasRef: "pay_1", Description: "timbre:refund:abc"})
 	if err != nil {
@@ -51,8 +53,14 @@ func TestRefundIntegralOmitsValue(t *testing.T) {
 	if sent["description"] != "timbre:refund:abc" {
 		t.Fatalf("a chave de idempotência precisa acompanhar o estorno, veio %v", sent["description"])
 	}
-	if out.ID != "ref_1" {
-		t.Fatalf("esperava o id do ESTORNO (não o da cobrança), veio %q", out.ID)
+	// O gateway NÃO emite id de estorno (medido no sandbox): a devolução é uma entrada de
+	// refunds[] e a identidade é a description que enviamos. Ler o `id` do topo daria o id
+	// da COBRANÇA — foi o que este cliente fez até medirmos.
+	if out.Description != "timbre:refund:abc" {
+		t.Fatalf("a identidade do estorno é a description, veio %q", out.Description)
+	}
+	if out.Status != "DONE" {
+		t.Fatalf("status deveria vir da entrada de refunds[], veio %q", out.Status)
 	}
 	if out.ValueCents != 5600 {
 		t.Fatalf("esperava 5600 centavos, veio %d", out.ValueCents)
@@ -63,17 +71,20 @@ func TestRefundIntegralOmitsValue(t *testing.T) {
 // centavo devolveria cem vezes o valor.
 func TestRefundPartialSendsValueInReais(t *testing.T) {
 	var sent map[string]any
-	gw := refundSpy(t, http.StatusOK, `{"id":"ref_2","status":"DONE","value":12.34}`, &sent, nil)
+	gw := refundSpy(t, http.StatusOK,
+		`{"id":"pay_1","status":"RECEIVED","value":56.00,
+		  "refunds":[{"description":"parcial","status":"DONE","value":12.34}]}`, &sent, nil)
 
-	out, err := gw.Refund(context.Background(), RefundRequest{AsaasRef: "pay_1", ValueCents: 1234})
+	out, err := gw.Refund(context.Background(), RefundRequest{AsaasRef: "pay_1", ValueCents: 1234, Description: "parcial"})
 	if err != nil {
 		t.Fatalf("estorno parcial: %v", err)
 	}
 	if sent["value"] != 12.34 {
 		t.Fatalf("esperava value 12.34, veio %v", sent["value"])
 	}
+	// O valor vem da ENTRADA do estorno, não do topo: o topo é o valor da cobrança (5600).
 	if out.ValueCents != 1234 {
-		t.Fatalf("esperava 1234 centavos de volta, veio %d", out.ValueCents)
+		t.Fatalf("esperava 1234 centavos (valor do estorno, não da cobrança), veio %d", out.ValueCents)
 	}
 }
 
@@ -89,6 +100,9 @@ func TestRefundClassifiesRefusals(t *testing.T) {
 		{"saldo", `{"errors":[{"description":"Saldo insuficiente para o estorno"}]}`, ErrRefundInsufficientFunds},
 		{"repetido", `{"errors":[{"description":"Cobrança já estornada"}]}`, ErrRefundAlreadyExists},
 		{"não estornável", `{"errors":[{"description":"Esta cobrança não pode ser estornada"}]}`, ErrRefundNotRefundable},
+		// MEDIDO no sandbox: o gateway serializa devoluções por cobrança e recusa a
+		// concorrente com esta frase. É espera, não falha.
+		{"em andamento", `{"errors":[{"code":"invalid_object","description":"O estorno dessa cobrança já está em andamento."}]}`, ErrRefundInProgress},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -110,7 +124,7 @@ func TestRefundUnknownRefusalStaysUnknown(t *testing.T) {
 	if err == nil {
 		t.Fatal("esperava erro")
 	}
-	for _, known := range []error{ErrRefundInsufficientFunds, ErrRefundAlreadyExists, ErrRefundNotRefundable} {
+	for _, known := range []error{ErrRefundInsufficientFunds, ErrRefundAlreadyExists, ErrRefundNotRefundable, ErrRefundInProgress} {
 		if errors.Is(err, known) {
 			t.Fatalf("recusa desconhecida foi classificada como %v", known)
 		}

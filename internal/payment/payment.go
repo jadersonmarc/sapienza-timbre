@@ -187,19 +187,29 @@ type RefundRequest struct {
 }
 
 // Refund é o estorno criado no gateway.
+//
+// MEDIDO NO SANDBOX (28/08/2026): o Asaas NÃO emite id de estorno. `POST /payments/{id}/
+// refund` devolve o objeto da COBRANÇA, e as devoluções vivem em `refunds[]` com os campos
+// dateCreated, description, effectiveDate, endToEndIdentifier, refundedSplits, status,
+// transactionReceiptUrl e value — sem id.
+//
+// A identidade de um estorno, portanto, é a `description`: é o único campo que nós
+// controlamos, que sobrevive à ida e volta e distingue uma devolução parcial da outra.
 type Refund struct {
-	// ID identifica o ESTORNO, não a cobrança — é por ele que o webhook de devolução é
-	// reconciliado com a operação que o originou.
-	ID          string
+	// Description é a identidade do estorno — a chave que enviamos e o gateway devolve.
+	Description string
 	Status      string
 	ValueCents  int64
-	Description string
 }
 
 // Erros de estorno que o chamador precisa distinguir. Saldo insuficiente não é falha de
 // programação nem indisponibilidade: é o cenário esperado de produtor que já sacou, e
 // decide se a plataforma cobre a devolução.
 var (
+	// ErrRefundInProgress é outro estorno da MESMA cobrança ainda em processamento. O
+	// gateway serializa devoluções por cobrança: é espera, não falha — tentar de novo
+	// resolve, e tratar como erro definitivo transformaria um "aguarde" em "não deu".
+	ErrRefundInProgress        = errors.New("já há um estorno em andamento nesta cobrança")
 	ErrRefundInsufficientFunds = errors.New("saldo insuficiente para o estorno")
 	ErrRefundNotRefundable     = errors.New("cobrança não estornável")
 	ErrRefundAlreadyExists     = errors.New("estorno já existente")
