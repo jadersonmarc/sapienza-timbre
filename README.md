@@ -354,6 +354,27 @@ Então procure no log:
 | O aviso traz o id do ESTORNO ou só o da cobrança? | `asaas: forma do aviso de estorno` | se `checkout.webhookEchoWindow` (10 min) morre e a conciliação passa a ser por id |
 | Quais são os marcadores reais de recusa? | `asaas: recusa de estorno NÃO classificada` | se `payment.refundRefusalMarkers` deixa de ser texto |
 
+#### Atalho: a sonda do sandbox
+
+Antes de tocar em dinheiro real, `internal/payment/sandbox_probe_test.go` faz o mesmo
+percurso contra o sandbox e imprime as respostas. Duas execuções, porque a cobrança precisa
+ser marcada como recebida no painel (não há caminho de API documentado para isso aqui, e
+inventar um daria um 404 que parece outra coisa):
+
+```bash
+export ASAAS_SANDBOX_KEY='<chave do sandbox>'
+go test ./internal/payment/ -run TestSandboxRefundProbe -v     # cria a cobrança e para
+
+# marque a cobrança como RECEBIDA no painel do sandbox, então:
+export ASAAS_PROBE_PAYMENT='<id impresso acima>'
+go test ./internal/payment/ -run TestSandboxRefundProbe -v     # devolve e responde
+```
+
+A sonda responde sozinha às perguntas 1 e 3 — ids distintos por devolução, replay da mesma
+chave, e o texto da recusa quando os marcadores erram. A pergunta 2 (o **aviso** carrega o
+id do estorno?) exige o servidor de pé com o webhook do sandbox apontado para ele: a
+resposta está na linha `asaas: forma do aviso de estorno`.
+
 As duas primeiras linhas registram só a **forma** do JSON — os caminhos de chave, sem os
 valores. Payload de pagamento carrega dado do comprador; a estrutura, não.
 
