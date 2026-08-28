@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -15,6 +16,10 @@ import (
 //	export ASAAS_SANDBOX_KEY='<chave do sandbox>'
 //	go test ./internal/payment/ -run TestSandboxRefundProbe -v
 //
+// Também lê do `.env` da raiz do repo, que é onde a credencial já mora — `go test` não
+// carrega .env sozinho, e a diferença entre "pulou porque não configurei" e "pulou porque
+// exportei no outro terminal" custa uma rodada para descobrir.
+//
 // A primeira execução cria a cobrança e para: alguém precisa marcá-la como recebida no
 // painel do sandbox (não existe caminho de API documentado aqui para isso, e inventar um
 // daria um 404 que parece outra coisa). A segunda execução, com a cobrança paga, faz as
@@ -22,11 +27,12 @@ import (
 //
 //	export ASAAS_PROBE_PAYMENT='<id da cobrança já recebida>'
 func TestSandboxRefundProbe(t *testing.T) {
-	key := os.Getenv("ASAAS_SANDBOX_KEY")
+	key, origem := probeEnv("ASAAS_SANDBOX_KEY")
 	if key == "" {
-		t.Skip("ASAAS_SANDBOX_KEY não setada — sonda do sandbox pulada")
+		t.Skip("defina ASAAS_SANDBOX_KEY (no ambiente ou no .env da raiz) — sonda do sandbox pulada")
 	}
-	base := os.Getenv("ASAAS_BASE_URL")
+	t.Logf("chave do sandbox lida de %s", origem)
+	base, _ := probeEnv("ASAAS_BASE_URL")
 	if base == "" {
 		base = "https://api-sandbox.asaas.com"
 	}
@@ -34,7 +40,7 @@ func TestSandboxRefundProbe(t *testing.T) {
 	ctx := context.Background()
 	t.Logf("sandbox em %s", gw.BaseURL())
 
-	payID := os.Getenv("ASAAS_PROBE_PAYMENT")
+	payID, _ := probeEnv("ASAAS_PROBE_PAYMENT")
 	if payID == "" {
 		c, err := gw.CreateCharge(ctx, ChargeRequest{
 			OrderID: "probe", Method: MethodPix, AmountCents: 2000,
@@ -127,4 +133,29 @@ func validCPF() string {
 		digits += fmt.Sprintf("%d", d)
 	}
 	return digits
+}
+
+// probeEnv lê a variável do ambiente e, faltando, do `.env` da raiz do repo. Devolve também
+// de onde veio: pular por falta de configuração e pular por ter exportado no outro terminal
+// são coisas diferentes, e sem dizer qual foi custa uma rodada para descobrir.
+func probeEnv(key string) (value, origem string) {
+	if v := os.Getenv(key); v != "" {
+		return v, "ambiente"
+	}
+	raw, err := os.ReadFile("../../.env")
+	if err != nil {
+		return "", ""
+	}
+	for line := range strings.SplitSeq(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, key+"=") {
+			continue
+		}
+		v := strings.TrimSpace(strings.TrimPrefix(line, key+"="))
+		v = strings.Trim(v, `"'`)
+		if v != "" {
+			return v, ".env"
+		}
+	}
+	return "", ""
 }

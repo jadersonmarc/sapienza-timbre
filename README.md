@@ -361,14 +361,20 @@ percurso contra o sandbox e imprime as respostas. Duas execuções, porque a cob
 ser marcada como recebida no painel (não há caminho de API documentado para isso aqui, e
 inventar um daria um 404 que parece outra coisa):
 
+A chave sai do painel do **sandbox** do Asaas — conta e login separados dos de produção.
+Pode ir no ambiente ou no `.env` da raiz (a sonda lê dos dois, e diz de onde leu).
+
 ```bash
-export ASAAS_SANDBOX_KEY='<chave do sandbox>'
-go test ./internal/payment/ -run TestSandboxRefundProbe -v     # cria a cobrança e para
+ASAAS_SANDBOX_KEY='<chave do sandbox>' \
+  go test ./internal/payment/ -run TestSandboxRefundProbe -v   # cria a cobrança e para
 
 # marque a cobrança como RECEBIDA no painel do sandbox, então:
-export ASAAS_PROBE_PAYMENT='<id impresso acima>'
-go test ./internal/payment/ -run TestSandboxRefundProbe -v     # devolve e responde
+ASAAS_SANDBOX_KEY='<chave>' ASAAS_PROBE_PAYMENT='<id impresso acima>' \
+  go test ./internal/payment/ -run TestSandboxRefundProbe -v   # devolve e responde
 ```
+
+Passar as variáveis na MESMA linha do comando evita o modo de falha mais comum: exportar num
+terminal e rodar o teste noutro, e ler o "pulado" como se fosse defeito da sonda.
 
 A sonda responde sozinha às perguntas 1 e 3 — ids distintos por devolução, replay da mesma
 chave, e o texto da recusa quando os marcadores erram. A pergunta 2 (o **aviso** carrega o
