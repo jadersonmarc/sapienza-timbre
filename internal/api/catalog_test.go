@@ -206,3 +206,47 @@ func assertCurrentLot(t *testing.T, ctx context.Context, pool *pgxpool.Pool, pid
 		t.Fatalf("lote vigente: esperava %s, veio %s", want, got.ID)
 	}
 }
+
+// TestCupomDoProdutor: o produtor cria cupom por porcentagem ou por valor, e o comprador o
+// usa no checkout. O desconto sai do FACE — quem dá o desconto é a casa, não a plataforma.
+func TestCupomDoProdutor(t *testing.T) {
+	ts, pool := setup(t)
+	_, owner := createProducer(t, ts, "Casa Cupom", "owner@cupom.com", "senha1234")
+	pid := producerID(t, ts, owner)
+	ctx := context.Background()
+
+	eventID := createEvent(t, ts, owner, "Show", "shows")
+	_ = createLot(t, ts, owner, eventID, "Lote", 10000, 50, 0)
+	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
+		t.Fatalf("publicar")
+	}
+
+	if code, b := do(t, ts, "POST", "/api/v1/events/"+eventID+"/coupons", bearer(owner),
+		map[string]any{"code": "ESTREIA", "discount_pct": 10, "max_uses": 2}); code != http.StatusCreated {
+		t.Fatalf("criar cupom: %d %v", code, b)
+	}
+
+	// O produtor vê o cupom e o uso — é o que ele vem conferir.
+	code, list := do(t, ts, "GET", "/api/v1/events/"+eventID+"/coupons", bearer(owner), nil)
+	if code != http.StatusOK {
+		t.Fatalf("listar cupons: %d", code)
+	}
+	cs, _ := list["coupons"].([]any)
+	if len(cs) != 1 {
+		t.Fatalf("esperava 1 cupom, veio %v", list["coupons"])
+	}
+
+	// Compra com o cupom: o face cai 10%, e a conveniência acompanha o face menor.
+	res := buyViaSession(t, ts, buyer(t, ts, pool, "buy@cupom.com"), map[string]any{
+		"event_id": eventID, "quantity": 1, "coupon_code": "ESTREIA",
+	}, "pix")
+	confirmWebhook(t, ts, res["asaas_ref"].(string))
+
+	if face := scanInt(t, ctx, pool, pid, `SELECT face_cents FROM orders WHERE event_id=$1`, uuid.MustParse(eventID)); face != 9000 {
+		t.Fatalf("esperava face de 9000 (10%% off de 10000), veio %d", face)
+	}
+	// O uso é contado: sem isso o limite não significa nada.
+	if n := scanInt(t, ctx, pool, pid, `SELECT uses FROM coupons WHERE code='ESTREIA'`); n != 1 {
+		t.Fatalf("esperava 1 uso registrado, veio %d", n)
+	}
+}
