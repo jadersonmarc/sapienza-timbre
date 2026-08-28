@@ -102,10 +102,18 @@ type publicEventDetail struct {
 	Lots    []publicLot    `json:"lots"`
 	Current *uuid.UUID     `json:"current_lot_id,omitempty"`
 	Sectors []publicSector `json:"sectors"`
+	// Producer é quem apresenta o evento. O comprador precisa saber de quem está comprando
+	// antes de pagar, e é isso que a reputação da casa passa a significar alguma coisa.
+	Producer publicProducer `json:"producer"`
 	// HalfPrice diz se ainda cabe meia-entrada e qual a cota do evento. A Lei 12.933/2013,
 	// art. 1º, §1º, obriga a informar isso de forma visível em todos os pontos de venda —
 	// não é enfeite de tela, é obrigação.
 	HalfPrice halfPriceInfo `json:"half_price"`
+}
+
+type publicProducer struct {
+	ID   uuid.UUID `json:"id"`
+	Name string    `json:"name"`
 }
 
 type halfPriceInfo struct {
@@ -116,8 +124,11 @@ type halfPriceInfo struct {
 }
 
 type publicEvent struct {
-	ID                 uuid.UUID  `json:"id"`
-	Title              string     `json:"title"`
+	ID       uuid.UUID `json:"id"`
+	Title    string    `json:"title"`
+	Subtitle *string   `json:"subtitle,omitempty"`
+	// Description vem em TEXTO com marcação simples. A página renderiza a partir de um
+	// conjunto fechado de elementos — nunca injeta o texto como HTML.
 	Description        *string    `json:"description,omitempty"`
 	Category           string     `json:"category"`
 	CoverURL           *string    `json:"cover_url,omitempty"`
@@ -211,6 +222,8 @@ func (s *Server) getPublicEvent(w http.ResponseWriter, r *http.Request) {
 				Notice: l.Notice,
 			})
 		}
+		// Quem apresenta o evento (fora do tenant: o produtor mora em public).
+		detail.Producer = publicProducer{ID: producerID}
 		// Cota de meia: quando acaba, a meia sai de venda e a inteira continua.
 		if hp, e := attest.HalfPrice(r.Context(), tx, eventID); e == nil {
 			detail.HalfPrice = halfPriceInfo{
@@ -259,12 +272,16 @@ func (s *Server) getPublicEvent(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// O produtor mora em `public`, fora do schema do tenant — por isso a leitura é pelo pool
+	// e não dentro da transação acima.
+	_ = s.pool.QueryRow(r.Context(), `SELECT name FROM producers WHERE id=$1`, producerID).
+		Scan(&detail.Producer.Name)
 	writeJSON(w, http.StatusOK, detail)
 }
 
 func toPublicEvent(e catalog.Event) publicEvent {
 	return publicEvent{
-		ID: e.ID, Title: e.Title, Description: e.Description, Category: e.Category,
+		ID: e.ID, Title: e.Title, Subtitle: e.Subtitle, Description: e.Description, Category: e.Category,
 		CoverURL: e.CoverURL, StartsAt: e.StartsAt, EndsAt: e.EndsAt, Address: e.Address,
 		City: e.City, Lat: e.Lat, Lng: e.Lng, AgeRating: e.AgeRating,
 		CancellationPolicy: e.CancellationPolicy, Terms: e.Terms, HasSeatMap: e.HasSeatMap,

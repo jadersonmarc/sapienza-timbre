@@ -35,8 +35,14 @@ var (
 
 // Event é um evento do produtor.
 type Event struct {
-	ID                 uuid.UUID  `json:"id"`
-	Title              string     `json:"title"`
+	ID    uuid.UUID `json:"id"`
+	Title string    `json:"title"`
+	// Subtitle é a linha curta abaixo do título — "turnê de despedida", "com participação
+	// de X". Sanitizado como texto puro: é headline, não parágrafo.
+	Subtitle *string `json:"subtitle,omitempty"`
+	// Description é o texto do produtor sobre o evento. Guardado como TEXTO com marcação
+	// simples (negrito, itálico, lista, link), nunca HTML — a renderização é nossa, a
+	// partir de um conjunto fechado de elementos.
 	Description        *string    `json:"description,omitempty"`
 	Category           string     `json:"category"`
 	CoverURL           *string    `json:"cover_url,omitempty"`
@@ -56,13 +62,13 @@ type Event struct {
 	UpdatedAt          time.Time  `json:"updated_at"`
 }
 
-const eventCols = `id, title, description, category, cover_url, starts_at, ends_at,
+const eventCols = `id, title, subtitle, description, category, cover_url, starts_at, ends_at,
 	address, city, lat, lng, capacity, age_rating, cancellation_policy, terms, has_seat_map,
 	status, created_at, updated_at`
 
 func scanEvent(row pgx.Row) (Event, error) {
 	var e Event
-	err := row.Scan(&e.ID, &e.Title, &e.Description, &e.Category, &e.CoverURL, &e.StartsAt,
+	err := row.Scan(&e.ID, &e.Title, &e.Subtitle, &e.Description, &e.Category, &e.CoverURL, &e.StartsAt,
 		&e.EndsAt, &e.Address, &e.City, &e.Lat, &e.Lng, &e.Capacity, &e.AgeRating,
 		&e.CancellationPolicy, &e.Terms, &e.HasSeatMap, &e.Status, &e.CreatedAt, &e.UpdatedAt)
 	return e, err
@@ -77,12 +83,16 @@ func CreateEvent(ctx context.Context, tx pgx.Tx, e Event) (Event, error) {
 	if err != nil {
 		return Event{}, err
 	}
+	// O texto do produtor é limpo na ESCRITA: o que fica no banco já é seguro para a página,
+	// o e-mail e o card social, sem depender de cada leitor lembrar de escapar.
+	e.Subtitle = SanitizeNotice2(e.Subtitle, MaxSubtitleLen)
+	e.Description = SanitizeRich(e.Description, MaxDescriptionLen)
 	row := tx.QueryRow(ctx, `
-		INSERT INTO events (title, description, category, category_id, cover_url, starts_at, ends_at,
+		INSERT INTO events (title, subtitle, description, category, category_id, cover_url, starts_at, ends_at,
 			address, city, lat, lng, capacity, age_rating, cancellation_policy, terms, has_seat_map)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
 		RETURNING `+eventCols,
-		e.Title, e.Description, slug, catID, e.CoverURL, e.StartsAt, e.EndsAt, e.Address,
+		e.Title, e.Subtitle, e.Description, slug, catID, e.CoverURL, e.StartsAt, e.EndsAt, e.Address,
 		e.City, e.Lat, e.Lng, e.Capacity, e.AgeRating, e.CancellationPolicy, e.Terms, e.HasSeatMap)
 	out, err := scanEvent(row)
 	if err != nil {
@@ -177,23 +187,28 @@ func PatchEvent(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, p EventPatch)
 			return Event{}, err
 		}
 	}
+	// Texto do produtor limpo na ESCRITA, pelo mesmo caminho da criação: o banco nunca
+	// guarda marcação de terceiro, e nenhum leitor precisa lembrar de escapar.
+	p.Subtitle = SanitizeNotice2(p.Subtitle, MaxSubtitleLen)
+	p.Description = SanitizeRich(p.Description, MaxDescriptionLen)
 	// Demais campos simples (nunca category/category_id — esses só via applyCategory).
 	if _, err := tx.Exec(ctx, `
 		UPDATE events SET
 			title = COALESCE($2, title),
-			description = COALESCE($3, description),
-			cover_url = COALESCE($4, cover_url),
-			starts_at = COALESCE($5, starts_at),
-			ends_at = COALESCE($6, ends_at),
-			address = COALESCE($7, address),
-			city = COALESCE($8, city),
-			capacity = COALESCE($9, capacity),
-			age_rating = COALESCE($10, age_rating),
-			cancellation_policy = COALESCE($11, cancellation_policy),
-			terms = COALESCE($12, terms),
+			subtitle = COALESCE($3, subtitle),
+			description = COALESCE($4, description),
+			cover_url = COALESCE($5, cover_url),
+			starts_at = COALESCE($6, starts_at),
+			ends_at = COALESCE($7, ends_at),
+			address = COALESCE($8, address),
+			city = COALESCE($9, city),
+			capacity = COALESCE($10, capacity),
+			age_rating = COALESCE($11, age_rating),
+			cancellation_policy = COALESCE($12, cancellation_policy),
+			terms = COALESCE($13, terms),
 			updated_at = now()
 		WHERE id = $1`,
-		eventID, p.Title, p.Description, p.CoverURL, p.StartsAt, p.EndsAt, p.Address,
+		eventID, p.Title, p.Subtitle, p.Description, p.CoverURL, p.StartsAt, p.EndsAt, p.Address,
 		p.City, p.Capacity, p.AgeRating, p.CancellationPolicy, p.Terms); err != nil {
 		return Event{}, fmt.Errorf("atualizar evento: %w", err)
 	}
@@ -203,6 +218,7 @@ func PatchEvent(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, p EventPatch)
 // EventPatch são os campos alteráveis de um evento (nil = não muda).
 type EventPatch struct {
 	Title              *string
+	Subtitle           *string
 	Description        *string
 	Category           *string
 	CoverURL           *string

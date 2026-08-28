@@ -1,6 +1,9 @@
 package catalog
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestSanitizeNotice: o aviso é texto de terceiro indo para página pública e e-mail. Guardar
 // HTML aqui seria injeção com endereço de entrega — a limpeza é na ESCRITA, para o que está
@@ -60,4 +63,39 @@ func derefOrNil(s *string) any {
 		return nil
 	}
 	return *s
+}
+
+// TestSanitizeRich: a descrição do evento é texto LONGO com marcação simples. As quebras de
+// parágrafo sobrevivem (é nelas que a forma do texto se apoia); HTML, não — o produtor
+// formata com marcação, e quem renderiza somos nós.
+func TestSanitizeRich(t *testing.T) {
+	casos := []struct {
+		nome string
+		in   string
+		want string
+	}{
+		{"parágrafos preservados", "Primeiro.\n\nSegundo.", "Primeiro.\n\nSegundo."},
+		{"lista preservada", "Horários:\n- 19h abertura\n- 20h show", "Horários:\n- 19h abertura\n- 20h show"},
+		{"marcação preservada", "**Estreia** do *novo* álbum", "**Estreia** do *novo* álbum"},
+		{"html removido", "Chegue cedo <script>alert(1)</script>", "Chegue cedo alert(1)"},
+		{"pilha de linhas vazias colapsa", "A.\n\n\n\n\nB.", "A.\n\nB."},
+		{"espaço à direita some", "Linha   \nOutra  ", "Linha\nOutra"},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			got := SanitizeRich(&c.in, MaxDescriptionLen)
+			if got == nil || *got != c.want {
+				t.Fatalf("esperava %q, veio %v", c.want, derefOrNil(got))
+			}
+		})
+	}
+}
+
+// TestSanitizeRichTeto: descrição sem limite é página que não carrega.
+func TestSanitizeRichTeto(t *testing.T) {
+	longo := strings.Repeat("á", MaxDescriptionLen+100)
+	got := SanitizeRich(&longo, MaxDescriptionLen)
+	if got == nil || len([]rune(*got)) > MaxDescriptionLen {
+		t.Fatalf("esperava corte em %d runas", MaxDescriptionLen)
+	}
 }

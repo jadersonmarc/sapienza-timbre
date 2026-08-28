@@ -18,6 +18,7 @@ import (
 
 type createEventReq struct {
 	Title              string   `json:"title"`
+	Subtitle           *string  `json:"subtitle"`
 	Description        *string  `json:"description"`
 	Category           string   `json:"category"`
 	CoverURL           *string  `json:"cover_url"`
@@ -58,7 +59,7 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request, claims *aut
 	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
 		var e error
 		out, e = catalog.CreateEvent(r.Context(), tx, catalog.Event{
-			Title: body.Title, Description: body.Description, Category: body.Category,
+			Title: body.Title, Subtitle: body.Subtitle, Description: body.Description, Category: body.Category,
 			CoverURL: body.CoverURL, StartsAt: starts, EndsAt: ends, Address: body.Address,
 			City: body.City, Lat: body.Lat, Lng: body.Lng, Capacity: body.Capacity, AgeRating: body.AgeRating,
 			CancellationPolicy: body.CancellationPolicy, Terms: body.Terms, HasSeatMap: body.HasSeatMap,
@@ -156,6 +157,7 @@ func (s *Server) publishEvent(w http.ResponseWriter, r *http.Request, claims *au
 
 type patchEventReq struct {
 	Title              *string `json:"title"`
+	Subtitle           *string `json:"subtitle"`
 	Description        *string `json:"description"`
 	Category           *string `json:"category"`
 	CoverURL           *string `json:"cover_url"`
@@ -194,7 +196,7 @@ func (s *Server) patchEvent(w http.ResponseWriter, r *http.Request, claims *auth
 	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
 		var e error
 		out, e = catalog.PatchEvent(r.Context(), tx, id, catalog.EventPatch{
-			Title: body.Title, Description: body.Description, Category: body.Category,
+			Title: body.Title, Subtitle: body.Subtitle, Description: body.Description, Category: body.Category,
 			CoverURL: body.CoverURL, StartsAt: starts, EndsAt: ends, Address: body.Address,
 			City: body.City, Capacity: body.Capacity, AgeRating: body.AgeRating,
 			CancellationPolicy: body.CancellationPolicy, Terms: body.Terms,

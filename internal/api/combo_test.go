@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -248,5 +249,57 @@ func TestAvisoEhPorCategoria(t *testing.T) {
 	b2, _ := lots[1].(map[string]any)["notice"].(string)
 	if a == b2 || a == "" || b2 == "" {
 		t.Fatalf("cada categoria precisa do seu aviso: %q / %q", a, b2)
+	}
+}
+
+// TestTextoDoEventoChegaNaPaginaLimpo: o texto do produtor — subtítulo, descrição e
+// informações importantes — sai na página pública com a marcação preservada e sem HTML. A
+// marcação é renderizada por NÓS; o HTML dele nunca vira marcação nossa.
+func TestTextoDoEventoChegaNaPaginaLimpo(t *testing.T) {
+	ts, _ := setup(t)
+	_, owner := createProducer(t, ts, "Casa Texto", "owner@texto.com", "senha1234")
+
+	code, ev := do(t, ts, "POST", "/api/v1/events", bearer(owner), map[string]any{
+		"title": "Show de Comédia", "category": "shows",
+		"starts_at":   time.Now().Add(30 * 24 * time.Hour).Format(time.RFC3339),
+		"subtitle":    "com participação especial <b>de alguém</b>",
+		"description": "**Estreia** do novo show.\n\n- Abertura 19:00\n- Show 20:00\n\n<script>alert(1)</script>",
+		"terms":       "Não é permitida a entrada de crianças de colo",
+		"age_rating":  "14 anos",
+		"address":     "Av. Automóvel Clube, 3249",
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("criar evento: %d %v", code, ev)
+	}
+	eventID, _ := ev["id"].(string)
+	_ = createLot(t, ts, owner, eventID, "Pista", 5000, 50, 0)
+	if code, _ := do(t, ts, "POST", "/api/v1/events/"+eventID+"/publish", bearer(owner), nil); code != http.StatusOK {
+		t.Fatalf("publicar")
+	}
+
+	code, body := do(t, ts, "GET", "/api/v1/public/events/"+eventID, nil, nil)
+	if code != http.StatusOK {
+		t.Fatalf("evento público: %d", code)
+	}
+	e, _ := body["event"].(map[string]any)
+
+	if e["subtitle"] != "com participação especial de alguém" {
+		t.Fatalf("subtítulo deveria chegar sem HTML, veio %q", e["subtitle"])
+	}
+	desc, _ := e["description"].(string)
+	if !containsAll(desc, "**Estreia**", "- Abertura 19:00") {
+		t.Fatalf("a marcação do produtor precisa sobreviver, veio %q", desc)
+	}
+	if containsAll(desc, "<script") {
+		t.Fatalf("HTML não pode chegar à página, veio %q", desc)
+	}
+	// Os campos que existiam no modelo e nunca apareciam.
+	if e["terms"] == nil || e["age_rating"] != "14 anos" || e["address"] == nil {
+		t.Fatalf("informações importantes, classificação e endereço precisam sair: %v", e)
+	}
+	// Quem apresenta o evento: o comprador precisa saber de quem está comprando.
+	p, _ := body["producer"].(map[string]any)
+	if p["name"] != "Casa Texto" {
+		t.Fatalf("esperava o organizador na página, veio %v", body["producer"])
 	}
 }
