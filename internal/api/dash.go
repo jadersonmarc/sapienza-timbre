@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/jadersonmarc/sapienza-timbre/internal/attest"
 	"github.com/jadersonmarc/sapienza-timbre/internal/auth"
 	"github.com/jadersonmarc/sapienza-timbre/internal/dash"
 	"github.com/jadersonmarc/sapienza-timbre/internal/ledger"
@@ -29,6 +30,7 @@ func (s *Server) dashOverview(w http.ResponseWriter, r *http.Request, claims *au
 		chk    dash.Checkin
 		fin    dash.Finance
 		funnel dash.SessionFunnel
+		half   attest.HalfPriceAllowance
 	)
 	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
 		var e error
@@ -44,7 +46,12 @@ func (s *Server) dashOverview(w http.ResponseWriter, r *http.Request, claims *au
 		if fin, e = dash.EventFinance(r.Context(), tx, eventID); e != nil {
 			return e
 		}
-		funnel, e = dash.EventSessionFunnel(r.Context(), tx, eventID)
+		if funnel, e = dash.EventSessionFunnel(r.Context(), tx, eventID); e != nil {
+			return e
+		}
+		// A cota de meia entra no painel porque ela BARRA venda desde que passou a valer: o
+		// produtor precisa ver quanto resta no mesmo lugar em que acompanha as vendas.
+		half, e = attest.HalfPrice(r.Context(), tx, eventID)
 		return e
 	}); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -52,7 +59,7 @@ func (s *Server) dashOverview(w http.ResponseWriter, r *http.Request, claims *au
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"sales": sales, "occupancy": occ, "checkin": chk, "finance": fin,
-		"session_funnel": funnel,
+		"session_funnel": funnel, "half_price": half,
 	})
 }
 
