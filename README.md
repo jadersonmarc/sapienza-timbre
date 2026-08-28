@@ -383,6 +383,16 @@ que é palpite e por isso só entra quando não há alternativa. O log diz qual 
 A primeira devolução real em produção decide o assunto sem precisar de experimento: se a
 linha da JANELA nunca aparecer, ela pode ser removida.
 
+> **Chave por aplicação não separa webhook.** O webhook do Asaas é configurado por CONTA,
+> não por chave de API: enquanto duas aplicações dividirem a conta, cada uma recebe os
+> eventos da outra, inclusive estorno. Do nosso lado isso é seguro — cobrança fora do
+> `payment_index` é reconhecida com 200 e não move nada (responder erro faria o gateway
+> reenviar para sempre) —, mas vale saber que a separação real é por CONTA.
+>
+> Há um segundo motivo para separar contas: o **período de avaliação regulatória** das
+> subcontas (10 titulares / 60 dias) é da conta inteira. Duas aplicações criando subcontas
+> na mesma conta dividem esse teto e esse relógio.
+
 > **Atenção à configuração do webhook.** O webhook do sandbox desta conta está inscrito só em
 > `PAYMENT_OVERDUE`, `PAYMENT_RECEIVED` e `PAYMENT_CONFIRMED` — **sem `PAYMENT_REFUNDED`**.
 > Com essa lista, uma devolução feita pelo painel ou uma contestação nunca chegariam ao

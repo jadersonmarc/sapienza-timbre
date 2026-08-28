@@ -670,3 +670,37 @@ func TestEcoReconhecidoPelaChave(t *testing.T) {
 		t.Fatalf("devolução feita por fora precisa valer; ativos=%d", n)
 	}
 }
+
+// TestWebhookDeCobrancaAlheiaEhIgnorado: o webhook do gateway é por CONTA, não por
+// aplicação. Enquanto Timbre e console dividirem a mesma conta, cada um recebe os eventos do
+// outro — inclusive estorno. Cobrança que não está no nosso índice precisa ser reconhecida
+// com 200 e não mexer em nada: responder erro faria o gateway reenviar para sempre.
+func TestWebhookDeCobrancaAlheiaEhIgnorado(t *testing.T) {
+	ts, pool := setup(t)
+	_, owner := createProducer(t, ts, "Casa Alheia", "owner@alheia.com", "senha1234")
+	pid := producerID(t, ts, owner)
+	ctx := context.Background()
+	soldEvent(t, ts, pool, owner, pid, 1, "buy@alheia.com", "pix")
+
+	antes := scanInt(t, ctx, pool, pid, `SELECT count(*) FROM tickets WHERE status='active'`)
+
+	for _, tipo := range []map[string]any{
+		{"confirmed": true, "type": "PAYMENT_CONFIRMED"},
+		{"refunded": true, "type": "PAYMENT_REFUNDED"},
+	} {
+		body := map[string]any{"id": "evt_" + uuid.NewString(), "asaas_ref": "pay_de_outra_aplicacao"}
+		for k, v := range tipo {
+			body[k] = v
+		}
+		if code, b := do(t, ts, "POST", "/api/v1/webhooks/asaas", nil, body); code != http.StatusOK {
+			t.Fatalf("evento alheio precisa ser reconhecido com 200 (senão o gateway reenvia para sempre): %d %v", code, b)
+		}
+	}
+
+	if n := scanInt(t, ctx, pool, pid, `SELECT count(*) FROM tickets WHERE status='active'`); n != antes {
+		t.Fatalf("evento de cobrança alheia não pode tocar nos nossos ingressos: %d → %d", antes, n)
+	}
+	if n := scanInt(t, ctx, pool, pid, `SELECT count(*) FROM refunds`); n != 0 {
+		t.Fatalf("evento alheio não pode criar estorno, veio %d", n)
+	}
+}
