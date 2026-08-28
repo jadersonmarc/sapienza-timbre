@@ -112,8 +112,20 @@ func TestSandboxRefundProbe(t *testing.T) {
 		t.Log("  se as duas linhas acima forem false, o texto acima é o marcador que falta em refundRefusalMarkers")
 	}
 
-	t.Log("Ao fim: confira no log do SERVIDOR as linhas 'asaas: forma da resposta de estorno' e")
-	t.Log("'asaas: forma do aviso de estorno' — elas dizem se o id do estorno viaja no webhook.")
+	// ── a cobrança depois das devoluções ────────────────────────────────────
+	// O aviso (webhook) chega num servidor, não aqui. Mas a cobrança consultada DEPOIS das
+	// devoluções mostra se o gateway modela estorno como objeto com id próprio — que é o que
+	// decide se conciliar por id é possível, mesmo que a confirmação final venha do webhook.
+	if raw, err := gw.RawGet(ctx, "/v3/payments/"+payID); err == nil {
+		t.Logf("RESPOSTA 5 — forma da cobrança após as devoluções: %s", ShapeOf(raw))
+		t.Log("  procure um caminho tipo 'refunds[].id' ou 'refunds[].dateCreated': se existir,")
+		t.Log("  o estorno É um objeto com id e a conciliação por id fica ao alcance.")
+	} else {
+		t.Logf("RESPOSTA 5 — não consegui reler a cobrança: %v", err)
+	}
+
+	t.Log("Falta só o AVISO: com o servidor de pé e o webhook do sandbox apontado para ele,")
+	t.Log("a linha 'asaas: forma do aviso de estorno' fecha a última pergunta.")
 }
 
 // validCPF devolve um CPF com dígitos verificadores corretos, para o cadastro exigido pelo

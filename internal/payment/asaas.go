@@ -488,6 +488,12 @@ func (g *AsaasGateway) rawPost(ctx context.Context, path string, body any) ([]by
 	return out, nil
 }
 
+// RawGet devolve o corpo cru de um GET. Existe para a sonda do sandbox inspecionar a FORMA
+// de uma resposta sem que o cliente precise saber ler todos os campos dela.
+func (g *AsaasGateway) RawGet(ctx context.Context, path string) ([]byte, error) {
+	return g.raw(ctx, http.MethodGet, path)
+}
+
 // doAs chama a API no contexto de uma SUBCONTA, identificada pelo walletId. É assim que a
 // plataforma consulta documentos e confirma dados comerciais sem guardar a chave dela.
 func (g *AsaasGateway) doAs(ctx context.Context, walletID, method, path string, body, out any) error {
