@@ -8,6 +8,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/jadersonmarc/sapienza-timbre/internal/audit"
 )
 
 // Quem pediu.
@@ -289,7 +291,7 @@ type RequestEvent struct {
 func RequestHistory(ctx context.Context, tx pgx.Tx, requestID uuid.UUID) ([]RequestEvent, error) {
 	rows, err := tx.Query(ctx, `
 		SELECT at, actor_kind, actor, from_status, to_status, reason
-		  FROM refund_request_events WHERE request_id=$1 ORDER BY at, id`, requestID)
+		  FROM audit_events WHERE request_id=$1 ORDER BY at, id`, requestID)
 	if err != nil {
 		return nil, err
 	}
@@ -305,12 +307,12 @@ func RequestHistory(ctx context.Context, tx pgx.Tx, requestID uuid.UUID) ([]Requ
 	return out, rows.Err()
 }
 
-// logRequest grava a transição. Append-only: decisão tomada não se edita, e uma decisão
-// que muda vira outra linha.
+// logRequest grava a transição na trilha COMUM do tenant — a mesma que registra as ações de
+// ingresso. Duas tabelas para o mesmo propósito seriam dois lugares para procurar quando
+// alguém contesta.
 func logRequest(ctx context.Context, tx pgx.Tx, requestID uuid.UUID, actorKind, actor, from, to, reason string) error {
-	_, err := tx.Exec(ctx, `
-		INSERT INTO refund_request_events (request_id, actor_kind, actor, from_status, to_status, reason)
-		VALUES ($1,$2,$3,$4,$5,$6)`,
-		requestID, actorKind, nilIfEmpty(actor), nilIfEmpty(from), to, nilIfEmpty(reason))
-	return err
+	return audit.Append(ctx, tx, audit.Event{
+		Entity: audit.EntityRefundRequest, RequestID: &requestID,
+		ActorKind: actorKind, Actor: actor, FromStatus: from, ToStatus: to, Reason: reason,
+	})
 }

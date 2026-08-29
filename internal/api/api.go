@@ -236,7 +236,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/public/tokens/{id}/metadata", s.tokenMetadata)
 	mux.HandleFunc("GET /api/v1/public/tokens/{id}", s.tokenView)
 	mux.HandleFunc("POST /api/v1/tickets/{id}/dispute", s.requireOwner(s.disputeTicket))
-	mux.HandleFunc("POST /api/v1/tickets/{id}/reissue", s.requireOwner(s.reissueTicket))
+	// Ações de ingresso individual: é o que o atendimento do dia do evento precisa —
+	// QR que não abre, e-mail digitado errado, ingresso no nome de outra pessoa.
+	mux.HandleFunc("POST /api/v1/tickets/{id}/reissue", s.requireOwner(s.producerReissue))
+	mux.HandleFunc("POST /api/v1/tickets/{id}/transfer-to", s.requireOwner(s.producerTransfer))
+	mux.HandleFunc("GET /api/v1/tickets/{id}/history", s.authed(s.ticketHistory))
 	// Estorno (Fatia 1): o produtor devolve um pedido inteiro ou ingressos escolhidos; o
 	// admin passa por cima das guardas, com motivo obrigatório. A fila de aprovação de
 	// pedido do comprador vem depois — aqui são só as duas portas que movem dinheiro.
@@ -279,6 +283,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/admin/producers/{id}/events/{eventId}/lineup", s.requireAdmin(s.adminLineup))
 	mux.HandleFunc("POST /api/v1/admin/producers/{id}/payouts/mark-paid", s.requireAdmin(s.adminMarkPayoutPaid))
 	mux.HandleFunc("POST /api/v1/admin/producers/{producerId}/orders/{id}/refund", s.requireAdmin(s.adminRefund))
+	mux.HandleFunc("POST /api/v1/admin/producers/{producerId}/tickets/{id}/reissue", s.requireAdmin(s.adminReissue))
+	mux.HandleFunc("POST /api/v1/admin/producers/{producerId}/tickets/{id}/transfer-to", s.requireAdmin(s.adminTransfer))
 	mux.HandleFunc("POST /api/v1/admin/producers/{producerId}/refund-requests/{id}/approve", s.requireAdmin(s.adminDecideRefundRequest(true)))
 	mux.HandleFunc("POST /api/v1/admin/producers/{producerId}/refund-requests/{id}/reject", s.requireAdmin(s.adminDecideRefundRequest(false)))
 	mux.HandleFunc("GET /api/v1/admin/producers", s.requireAdmin(s.listAdminProducers))

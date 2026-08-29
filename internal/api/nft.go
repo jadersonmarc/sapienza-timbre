@@ -100,26 +100,3 @@ func (s *Server) disputeTicket(w http.ResponseWriter, r *http.Request, claims *a
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
-
-// reissueTicket queima o ingresso atual e emite um novo assinado (perda de acesso).
-func (s *Server) reissueTicket(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
-	ticketID, err := uuid.Parse(r.PathValue("id"))
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "id inválido")
-		return
-	}
-	var newID uuid.UUID
-	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
-		var e error
-		newID, e = nft.Reissue(r.Context(), tx, s.signer, claims.ProducerID, ticketID)
-		return e
-	}); err != nil {
-		if errors.Is(err, nft.ErrNotReissuable) {
-			writeErr(w, http.StatusConflict, "ingresso não reemitível")
-			return
-		}
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusCreated, map[string]any{"ticket_id": newID})
-}
