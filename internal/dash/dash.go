@@ -5,6 +5,8 @@ package dash
 
 import (
 	"context"
+	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -211,40 +213,120 @@ func Summary(ctx context.Context, tx pgx.Tx) (ProducerSummary, error) {
 	return s, err
 }
 
-// TicketRow é uma linha da exportação CSV.
+// TicketRow é uma linha da exportação: UM ingresso, não um pedido. Quem exporta está
+// conferindo portaria, cortesia ou devolução — tudo isso acontece por ingresso.
+//
+// NÃO há CPF aqui, nem em coluna nem dentro de outra. O produtor precisa saber a quem
+// entregar e a quem responder, e isso o nome e o e-mail resolvem; o CPF só aumenta o
+// estrago de uma planilha que vaza.
 type TicketRow struct {
-	TicketID string
-	LotName  string
-	Seat     string
-	Status   string
-	Created  string
+	TicketID  string
+	LotName   string
+	Seat      string
+	Status    string
+	Created   string
+	Holder    string // nome de quem porta o ingresso
+	Email     string
+	Kind      string // "venda" ou "cortesia"
+	Category  string // categoria da cortesia, quando for uma
+	HalfPrice string // "sim"/"não"
+	PaidCents int64
+	CheckedIn string // horário do check-in primário, vazio se não entrou
 }
 
-// TicketsForExport lista ingressos do evento para CSV.
-func TicketsForExport(ctx context.Context, tx pgx.Tx, eventID uuid.UUID) ([]TicketRow, error) {
+// ExportFilter recorta a exportação. Zero em tudo = evento inteiro.
+type ExportFilter struct {
+	From   time.Time // emitidos a partir de (inclusive)
+	To     time.Time // emitidos até (inclusive)
+	Status string    // status do ingresso; vazio = todos
+}
+
+// ExportHeader são os títulos das colunas, na ordem em que TicketRow as escreve.
+func ExportHeader() []string {
+	return []string{
+		"ticket_id", "tipo", "categoria_cortesia", "lote", "assento", "status",
+		"meia_entrada", "valor_pago_centavos", "portador", "email", "emitido_em", "entrou_em",
+	}
+}
+
+// Fields devolve a linha na ordem do cabeçalho.
+func (r TicketRow) Fields() []string {
+	return []string{
+		r.TicketID, r.Kind, r.Category, r.LotName, r.Seat, r.Status,
+		r.HalfPrice, strconv.FormatInt(r.PaidCents, 10), r.Holder, r.Email, r.Created, r.CheckedIn,
+	}
+}
+
+// StreamTicketsForExport percorre os ingressos do evento chamando fn por linha.
+//
+// Streaming, não fatia: um evento grande passa de dezenas de milhares de ingressos, e montar
+// tudo em memória antes de escrever é o que transforma exportação em incidente. Assim a
+// resposta começa a sair na primeira linha e o custo não cresce com o tamanho do evento.
+func StreamTicketsForExport(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, f ExportFilter, fn func(TicketRow) error) error {
 	rows, err := tx.Query(ctx, `
 		SELECT t.id::text, COALESCE(l.name,''),
 		       COALESCE(se.name,'') || CASE WHEN s.row_label IS NOT NULL THEN ' '||s.row_label||s.number ELSE '' END,
-		       t.status, to_char(t.created_at, 'YYYY-MM-DD"T"HH24:MI:SS')
+		       t.status, to_char(t.created_at, 'YYYY-MM-DD"T"HH24:MI:SS'),
+		       COALESCE(g.name, t.attendee_name, ''),
+		       COALESCE(t.attendee_email, ''),
+		       CASE WHEN t.order_id IS NULL THEN 'cortesia' ELSE 'venda' END,
+		       COALESCE(cc.slug, ''),
+		       CASE WHEN t.half_price THEN 'sim' ELSE 'não' END,
+		       COALESCE(oi.unit_price_cents, 0),
+		       COALESCE(to_char(ci.entered_at, 'YYYY-MM-DD"T"HH24:MI:SS'), '')
 		  FROM tickets t
 		  LEFT JOIN lots l ON l.id = t.lot_id
 		  LEFT JOIN seats s ON s.id = t.seat_id
 		  LEFT JOIN sectors se ON se.id = s.sector_id
+		  LEFT JOIN guest_list_entries g ON g.ticket_id = t.id
+		  LEFT JOIN courtesy_categories cc ON cc.id = g.courtesy_category_id
+		  -- unit_price_cents é POR unidade: um item cobre várias entradas do mesmo lote e
+		  -- mesma condição de meia, e todas custaram o mesmo. Casar por (pedido, lote, meia)
+		  -- dá o preço certo sem inventar rateio.
+		  LEFT JOIN LATERAL (
+		        SELECT i.unit_price_cents FROM order_items i
+		         WHERE i.order_id = t.order_id AND i.lot_id = t.lot_id
+		           AND i.half_price = t.half_price
+		         LIMIT 1) oi ON t.order_id IS NOT NULL
+		  LEFT JOIN LATERAL (
+		        SELECT c.entered_at FROM checkins c
+		         WHERE c.ticket_id = t.id AND NOT c.is_reentry
+		         ORDER BY c.entered_at LIMIT 1) ci ON true
 		 WHERE t.event_id = $1
-		 ORDER BY t.created_at`, eventID)
+		   AND ($2::timestamptz IS NULL OR t.created_at >= $2)
+		   AND ($3::timestamptz IS NULL OR t.created_at <= $3)
+		   AND ($4::text IS NULL OR t.status = $4)
+		 ORDER BY t.created_at, t.id`,
+		eventID, nilTime(f.From), nilTime(f.To), nilStr(f.Status))
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer rows.Close()
-	var out []TicketRow
 	for rows.Next() {
 		var r TicketRow
-		if err := rows.Scan(&r.TicketID, &r.LotName, &r.Seat, &r.Status, &r.Created); err != nil {
-			return nil, err
+		if err := rows.Scan(&r.TicketID, &r.LotName, &r.Seat, &r.Status, &r.Created,
+			&r.Holder, &r.Email, &r.Kind, &r.Category, &r.HalfPrice, &r.PaidCents, &r.CheckedIn); err != nil {
+			return err
 		}
-		out = append(out, r)
+		if err := fn(r); err != nil {
+			return err
+		}
 	}
-	return out, rows.Err()
+	return rows.Err()
+}
+
+func nilTime(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
+}
+
+func nilStr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 // PlatformSummary é o painel administrativo consolidado (plataforma).

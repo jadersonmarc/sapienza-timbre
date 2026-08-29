@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -93,13 +94,67 @@ func TestDashboardReflectsSale(t *testing.T) {
 		t.Fatalf("checkin após admissão: esperava 1, veio %v", chk)
 	}
 
-	// CSV exporta os ingressos.
+	// CSV exporta os ingressos, um por linha.
 	code, csvBody := rawGet(t, ts, "/api/v1/dash/events/"+eventID+"/export.csv", owner)
-	if code != http.StatusOK || !strings.HasPrefix(csvBody, "ticket_id,lote,assento,status,emitido_em") {
+	header := "ticket_id,tipo,categoria_cortesia,lote,assento,status,meia_entrada,valor_pago_centavos,portador,email,emitido_em,entrou_em"
+	if code != http.StatusOK || !strings.HasPrefix(csvBody, header) {
 		t.Fatalf("csv: %d, %q", code, csvBody)
 	}
 	if lines := strings.Count(strings.TrimSpace(csvBody), "\n"); lines != 2 { // header + 2 - 1
 		t.Fatalf("csv esperava 2 ingressos, linhas=%d", lines)
+	}
+	// Um dos dois já entrou: a coluna de portaria precisa distinguir os dois.
+	if strings.Count(csvBody, ",venda,") != 2 {
+		t.Fatalf("os dois ingressos são de venda: %q", csvBody)
+	}
+	if !strings.Contains(csvBody, ",5000,") {
+		t.Fatalf("valor por ingresso ausente: %q", csvBody)
+	}
+	// Filtro por status recorta; status inexistente devolve só o cabeçalho.
+	_, vazio := rawGet(t, ts, "/api/v1/dash/events/"+eventID+"/export.csv?status=cancelled", owner)
+	if strings.TrimSpace(vazio) != header {
+		t.Fatalf("filtro por status devia esvaziar: %q", vazio)
+	}
+	// Recorte por período que termina ontem não pega venda de hoje.
+	ontem := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+	_, antigo := rawGet(t, ts, "/api/v1/dash/events/"+eventID+"/export.csv?to="+ontem, owner)
+	if strings.TrimSpace(antigo) != header {
+		t.Fatalf("filtro por data devia esvaziar: %q", antigo)
+	}
+	// A exportação leva dado para fora: fica na trilha.
+	if n := scanInt(t, ctx, pool, pid, `
+		SELECT count(*) FROM audit_events WHERE entity='export'`); n != 3 {
+		t.Fatalf("esperava 3 exportações na trilha, veio %d", n)
+	}
+}
+
+// TestExportaCortesiaComCategoriaSemCPF: a exportação é por ingresso e diz de qual
+// categoria a cortesia é — e NÃO leva CPF, que é o dado que transforma planilha vazada em
+// estrago. O CPF do convidado é gravado no cadastro e não sai por aqui.
+func TestExportaCortesiaComCategoriaSemCPF(t *testing.T) {
+	ts, pool := setup(t)
+	_, owner := createProducer(t, ts, "Casa Export", "owner@export.com", "senha1234")
+	pid := producerID(t, ts, owner)
+	ctx := context.Background()
+	eventID := createEvent(t, ts, owner, "Show Export", "shows")
+	lotID := createLot(t, ts, owner, eventID, "Lote", 5000, 50, 0)
+	cat := courtesyCategoryID(t, ctx, pool, pid, "imprensa")
+
+	if code, b := do(t, ts, "POST", "/api/v1/events/"+eventID+"/guests", bearer(owner),
+		map[string]any{"name": "Repórter", "cpf": "39053344705", "lot_id": lotID,
+			"courtesy_category_id": cat}); code != http.StatusCreated {
+		t.Fatalf("emitir cortesia: %d %v", code, b)
+	}
+
+	_, csvBody := rawGet(t, ts, "/api/v1/dash/events/"+eventID+"/export.csv", owner)
+	if !strings.Contains(csvBody, ",cortesia,imprensa,") {
+		t.Fatalf("cortesia precisa sair com a categoria: %q", csvBody)
+	}
+	if !strings.Contains(csvBody, "Repórter") {
+		t.Fatalf("o produtor precisa saber a quem entregar: %q", csvBody)
+	}
+	if strings.Contains(csvBody, "39053344705") {
+		t.Fatalf("CPF não pode sair na exportação: %q", csvBody)
 	}
 }
 

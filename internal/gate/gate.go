@@ -6,6 +6,8 @@ package gate
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"time"
 
@@ -222,6 +224,86 @@ func seatInfo(ctx context.Context, tx pgx.Tx, seatID uuid.UUID) (SeatInfo, error
 }
 
 func nilStr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+// ── aparelhos da portaria ────────────────────────────────────────────────────
+
+// Device é um aparelho que já sincronizou com o servidor.
+type Device struct {
+	DeviceID       string    `json:"device_id"`
+	KeyFingerprint string    `json:"key_fingerprint"`
+	Gate           string    `json:"gate"`
+	Operator       string    `json:"operator"`
+	CheckinsSynced int64     `json:"checkins_synced"`
+	FirstSeenAt    time.Time `json:"first_seen_at"`
+	LastSyncAt     time.Time `json:"last_sync_at"`
+	KeyCurrent     bool      `json:"key_current"`
+}
+
+// KeyFingerprint reduz a chave pública a uma impressão curta e comparável.
+//
+// Sobre o base64 exatamente como ele trafega, e não sobre os bytes decodificados: assim a
+// portaria calcula a mesma coisa no navegador, sem precisar decodificar nada para conferir
+// se está com a chave certa.
+func KeyFingerprint(publicKeyB64 string) string {
+	if publicKeyB64 == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(publicKeyB64))
+	return hex.EncodeToString(sum[:])[:12]
+}
+
+// TouchDevice registra a passagem do aparelho: quando falou, com qual chave e quantos
+// check-ins entregou. Roda na mesma transação do sync — aparelho que não conseguiu
+// entregar nada não vira "sincronizado agora".
+func TouchDevice(ctx context.Context, tx pgx.Tx, deviceID, fingerprint, gate, operator string, synced int) error {
+	if deviceID == "" {
+		return nil
+	}
+	_, err := tx.Exec(ctx, `
+		INSERT INTO gate_devices (device_id, key_fingerprint, last_gate, last_operator, checkins_synced)
+		VALUES ($1,$2,$3,$4,$5)
+		ON CONFLICT (device_id) DO UPDATE SET
+			key_fingerprint = COALESCE(NULLIF(EXCLUDED.key_fingerprint,''), gate_devices.key_fingerprint),
+			last_gate       = COALESCE(NULLIF(EXCLUDED.last_gate,''), gate_devices.last_gate),
+			last_operator   = COALESCE(NULLIF(EXCLUDED.last_operator,''), gate_devices.last_operator),
+			checkins_synced = gate_devices.checkins_synced + EXCLUDED.checkins_synced,
+			last_sync_at    = now()`,
+		deviceID, nilIfEmpty(fingerprint), nilIfEmpty(gate), nilIfEmpty(operator), synced)
+	return err
+}
+
+// ListDevices lista os aparelhos, do que sincronizou há mais tempo para o mais recente —
+// o de cima é o que tem mais chance de estar desatualizado na hora da porta.
+func ListDevices(ctx context.Context, tx pgx.Tx, currentFingerprint string) ([]Device, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT device_id, COALESCE(key_fingerprint,''), COALESCE(last_gate,''),
+		       COALESCE(last_operator,''), checkins_synced, first_seen_at, last_sync_at
+		  FROM gate_devices ORDER BY last_sync_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Device{}
+	for rows.Next() {
+		var d Device
+		if err := rows.Scan(&d.DeviceID, &d.KeyFingerprint, &d.Gate, &d.Operator,
+			&d.CheckinsSynced, &d.FirstSeenAt, &d.LastSyncAt); err != nil {
+			return nil, err
+		}
+		// Impressão vazia = aparelho de uma versão anterior do app, que ainda não informa a
+		// chave. Não é "está com a chave certa": é "não sabemos".
+		d.KeyCurrent = d.KeyFingerprint != "" && d.KeyFingerprint == currentFingerprint
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+func nilIfEmpty(s string) *string {
 	if s == "" {
 		return nil
 	}

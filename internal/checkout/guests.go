@@ -25,10 +25,11 @@ func IssueCourtesy(ctx context.Context, tx pgx.Tx, em Emitter, eventID uuid.UUID
 		return uuid.Nil, fmt.Errorf("evento sem lote para cortesia: %w", err)
 	}
 
-	if _, err := tx.Exec(ctx, `
+	var guestID uuid.UUID
+	if err := tx.QueryRow(ctx, `
 		INSERT INTO guest_list_entries (event_id, name, cpf, lot_id, seat_id, courtesy_category_id, status)
-		VALUES ($1,$2,$3,$4,$5,$6,'issued')`,
-		eventID, name, nilIfEmpty(cpf), lot, seatID, categoryID); err != nil {
+		VALUES ($1,$2,$3,$4,$5,$6,'issued') RETURNING id`,
+		eventID, name, nilIfEmpty(cpf), lot, seatID, categoryID).Scan(&guestID); err != nil {
 		return uuid.Nil, fmt.Errorf("registrar convidado: %w", err)
 	}
 
@@ -42,6 +43,13 @@ func IssueCourtesy(ctx context.Context, tx pgx.Tx, em Emitter, eventID uuid.UUID
 	}
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("emitir cortesia: %w", err)
+	}
+
+	// Liga convidado e ingresso. Sem isso, quem lê o ingresso não chega na categoria — e a
+	// categoria é o que a comprovação de público publica.
+	if _, err := tx.Exec(ctx, `
+		UPDATE guest_list_entries SET ticket_id=$2 WHERE id=$1`, guestID, ticketID); err != nil {
+		return uuid.Nil, fmt.Errorf("ligar cortesia ao ingresso: %w", err)
 	}
 
 	if seatID != nil {

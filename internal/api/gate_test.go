@@ -160,3 +160,55 @@ func TestGateRequiresCheckinPermission(t *testing.T) {
 		t.Fatalf("sem checkin: esperava 403, veio %d", code)
 	}
 }
+
+// TestAparelhoComChaveVelhaAparece: a portaria valida offline com a chave embarcada, então
+// o aparelho que ficou para trás recusa ingresso legítimo com a mesma cara de um falso. O
+// painel precisa apontar isso ANTES da fila da porta.
+func TestAparelhoComChaveVelhaAparece(t *testing.T) {
+	ts, _ := setup(t)
+	_, owner := createProducer(t, ts, "Casa Portaria", "owner@portaria.com", "senha1234")
+
+	// Aparelho que se anuncia sem nada na fila — é assim que ele entra na lista antes do
+	// evento, e não só quando entrega o primeiro check-in.
+	if code, b := do(t, ts, "POST", "/api/v1/gate/sync", bearer(owner),
+		map[string]any{"checkins": []any{}, "device_id": "tablet-A", "gate": "Portão 1",
+			"key_fingerprint": "chaveantiga1"}); code != http.StatusOK {
+		t.Fatalf("sync do aparelho: %d %v", code, b)
+	}
+
+	code, body := do(t, ts, "GET", "/api/v1/gate/devices", bearer(owner), nil)
+	if code != http.StatusOK {
+		t.Fatalf("listar aparelhos: %d %v", code, body)
+	}
+	atual, _ := body["current_fingerprint"].(string)
+	if atual == "" {
+		t.Fatalf("a impressão da chave vigente é o que serve de referência: %v", body)
+	}
+	devs, _ := body["devices"].([]any)
+	if len(devs) != 1 {
+		t.Fatalf("esperava 1 aparelho, veio %v", devs)
+	}
+	d, _ := devs[0].(map[string]any)
+	if d["key_current"] != false {
+		t.Fatalf("aparelho com chave antiga precisa aparecer como atrasado: %v", d)
+	}
+	if d["last_sync_at"] == nil || d["gate"] != "Portão 1" {
+		t.Fatalf("última sincronização e portão precisam vir: %v", d)
+	}
+
+	// Mesmo aparelho volta com a chave vigente: para de ser apontado.
+	if code, _ := do(t, ts, "POST", "/api/v1/gate/sync", bearer(owner),
+		map[string]any{"checkins": []any{}, "device_id": "tablet-A",
+			"key_fingerprint": atual}); code != http.StatusOK {
+		t.Fatalf("re-sync")
+	}
+	_, body = do(t, ts, "GET", "/api/v1/gate/devices", bearer(owner), nil)
+	devs, _ = body["devices"].([]any)
+	d, _ = devs[0].(map[string]any)
+	if d["key_current"] != true {
+		t.Fatalf("aparelho atualizado não pode continuar apontado: %v", d)
+	}
+	if len(devs) != 1 {
+		t.Fatalf("o mesmo aparelho não pode virar dois: %v", devs)
+	}
+}

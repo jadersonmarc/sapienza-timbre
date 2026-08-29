@@ -95,6 +95,12 @@ type gateSyncItem struct {
 
 type gateSyncReq struct {
 	Checkins []gateSyncItem `json:"checkins"`
+	// Impressão da chave pública que o aparelho tem embarcada. Vem no corpo do sync porque
+	// é a única conversa que a portaria tem com o servidor — e é aqui que dá para descobrir
+	// que um aparelho ficou para trás ANTES de ele recusar um ingresso legítimo na fila.
+	DeviceID       string `json:"device_id"`
+	KeyFingerprint string `json:"key_fingerprint"`
+	Gate           string `json:"gate"`
 }
 
 // gateSync reconcilia um lote de check-ins feitos offline. Idempotente por client_uid;
@@ -122,10 +128,43 @@ func (s *Server) gateSync(w http.ResponseWriter, r *http.Request, claims *auth.C
 	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
 		var e error
 		results, e = gate.Sync(r.Context(), tx, s.signer.Verifier(), claims.ProducerID, items)
-		return e
+		if e != nil {
+			return e
+		}
+		// O aparelho vem no corpo, mas o app antigo só o manda dentro de cada check-in —
+		// aceitar as duas formas evita que um aparelho não atualizado suma da lista.
+		dev := body.DeviceID
+		gateName := body.Gate
+		if dev == "" && len(body.Checkins) > 0 {
+			dev = body.Checkins[0].DeviceID
+			if gateName == "" {
+				gateName = body.Checkins[0].Gate
+			}
+		}
+		return gate.TouchDevice(r.Context(), tx, dev, body.KeyFingerprint, gateName,
+			claims.Subject, len(items))
 	}); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"results": results})
+}
+
+// gateDevices lista os aparelhos da portaria: quando cada um sincronizou pela última vez e
+// com qual chave. Serve para o produtor descobrir o aparelho desatualizado no dia anterior,
+// e não na fila da porta.
+func (s *Server) gateDevices(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
+	current := gate.KeyFingerprint(s.signer.PublicKeyB64())
+	var devices []gate.Device
+	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
+		var e error
+		devices, e = gate.ListDevices(r.Context(), tx, current)
+		return e
+	}); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"devices": devices, "current_fingerprint": current,
+	})
 }

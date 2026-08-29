@@ -78,12 +78,28 @@ function deviceId() {
 
 // ── sync ─────────────────────────────────────────────────────────────────────
 async function sync() {
-  if (!queue.length || !navigator.onLine) { renderQueue(); return; }
+  // Sincroniza mesmo com a fila vazia: é assim que o aparelho se anuncia ao painel e diz
+  // com qual chave está, ANTES do dia do evento. Aparelho que só aparece quando tem
+  // check-in para entregar só é descoberto desatualizado na fila da porta.
+  if (!navigator.onLine) { renderQueue(); return; }
   try {
-    const r = await api('POST', '/api/v1/gate/sync', { checkins: queue });
+    const r = await api('POST', '/api/v1/gate/sync', {
+      checkins: queue, device_id: deviceId(), gate: $('gateName').value || 'G1',
+      key_fingerprint: await keyFingerprint(),
+    });
     if (r && Array.isArray(r.results)) { queue = []; setJSON(K.queue, queue); renderQueue(); }
   } catch (e) { console.warn('sync falhou', e); }
 }
+// Impressão da chave que ESTE aparelho tem embarcada. Vai junto do sync para o painel
+// conseguir apontar o aparelho que ficou com a chave velha — ele recusa ingresso legítimo
+// com a mesma cara de quem recusa um falso.
+async function keyFingerprint() {
+  const pub = localStorage.getItem(K.pub);
+  if (!pub || !crypto.subtle) return '';
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(pub));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, 12);
+}
+
 function renderQueue() { $('queue').textContent = queue.length ? `${queue.length} check-in(s) na fila` : 'fila vazia · tudo sincronizado'; }
 
 // ── API ──────────────────────────────────────────────────────────────────────

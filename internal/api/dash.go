@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/jadersonmarc/sapienza-timbre/internal/attest"
+	"github.com/jadersonmarc/sapienza-timbre/internal/audit"
 	"github.com/jadersonmarc/sapienza-timbre/internal/auth"
 	"github.com/jadersonmarc/sapienza-timbre/internal/dash"
 	"github.com/jadersonmarc/sapienza-timbre/internal/ledger"
@@ -242,28 +243,78 @@ func (s *Server) resendNotification(w http.ResponseWriter, r *http.Request, clai
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "notification_id": newID})
 }
 
-// dashExportCSV exporta os ingressos do evento em CSV.
+// dashExportCSV exporta os ingressos do evento em CSV, uma linha por ingresso.
+//
+// A resposta é STREAMING: a query percorre o cursor e cada linha vai para a rede na hora.
+// Não existe fila nem arquivo intermediário porque não há o que esperar — o custo não cresce
+// com o tamanho do evento, e um link para um arquivo que precisaria ser guardado em algum
+// lugar seria um mecanismo novo (armazenamento, expiração, permissão de leitura) para
+// resolver um problema que o streaming já não tem.
+//
+// Por consequência, o erro no meio da varredura chega DEPOIS do cabeçalho 200. Fecha-se a
+// linha com um marcador de erro em vez de fingir que o arquivo terminou: planilha truncada
+// em silêncio é pior que planilha que se acusa incompleta.
+//
+// A exportação leva dado de comprador para fora do sistema, então ela é registrada na
+// trilha — quem exportou, quando, de qual evento e com qual recorte.
 func (s *Server) dashExportCSV(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
 	eventID, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "id inválido")
 		return
 	}
-	var tickets []dash.TicketRow
-	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
-		var e error
-		tickets, e = dash.TicketsForExport(r.Context(), tx, eventID)
-		return e
-	}); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
+	q := r.URL.Query()
+	var f dash.ExportFilter
+	f.Status = q.Get("status")
+	if v := q.Get("from"); v != "" {
+		if t, e := time.Parse("2006-01-02", v); e == nil {
+			f.From = t
+		}
 	}
+	if v := q.Get("to"); v != "" {
+		if t, e := time.Parse("2006-01-02", v); e == nil {
+			// Data final é INCLUSIVA: quem digita 31/08 quer o dia 31 inteiro.
+			f.To = t.Add(24*time.Hour - time.Second)
+		}
+	}
+
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-	w.Header().Set("Content-Disposition", "attachment; filename=ingressos.csv")
+	w.Header().Set("Content-Disposition", `attachment; filename="ingressos.csv"`)
 	cw := csv.NewWriter(w)
-	_ = cw.Write([]string{"ticket_id", "lote", "assento", "status", "emitido_em"})
-	for _, t := range tickets {
-		_ = cw.Write([]string{t.TicketID, t.LotName, t.Seat, t.Status, t.Created})
+	_ = cw.Write(dash.ExportHeader())
+	flusher, _ := w.(http.Flusher)
+
+	n := 0
+	err = s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
+		if e := dash.StreamTicketsForExport(r.Context(), tx, eventID, f, func(row dash.TicketRow) error {
+			if e := cw.Write(row.Fields()); e != nil {
+				return e
+			}
+			n++
+			if n%500 == 0 {
+				cw.Flush()
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+			return nil
+		}); e != nil {
+			return e
+		}
+		// A trilha entra na MESMA transação da leitura: exportação que falhou no meio não
+		// deixa registro de uma entrega que não aconteceu inteira.
+		return audit.Append(r.Context(), tx, audit.Event{
+			Entity: audit.EntityExport, ActorKind: audit.ActorProducer, Actor: claims.Subject,
+			ToStatus: "exported",
+			Details: map[string]any{
+				"event_id": eventID.String(), "rows": n,
+				"from": q.Get("from"), "to": q.Get("to"), "status": f.Status,
+			},
+		})
+	})
+	if err != nil {
+		// Cabeçalho já foi. Marca a planilha como incompleta em vez de terminar calado.
+		_ = cw.Write([]string{"ERRO", "exportação interrompida — refaça", err.Error()})
 	}
 	cw.Flush()
 }
