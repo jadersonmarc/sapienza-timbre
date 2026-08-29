@@ -275,3 +275,67 @@ func writeTicketActionErr(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 	}
 }
+
+// reclassifyCourtesy troca a categoria de uma cortesia já emitida.
+//
+// A categoria não é etiqueta: o atestado publica cortesia POR categoria e confronta com o
+// compromisso declarado. Emitir na categoria errada e não poder corrigir significa publicar
+// uma comprovação de público errada — e o atestado não se edita, se republica.
+func (s *Server) reclassifyCourtesy(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
+	guestID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "cortesia inválida")
+		return
+	}
+	var body struct {
+		CourtesyCategoryID string `json:"courtesy_category_id"`
+		Reason             string `json:"reason"`
+	}
+	if err := decode(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, "corpo inválido")
+		return
+	}
+	categoryID, err := uuid.Parse(body.CourtesyCategoryID)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "informe a categoria")
+		return
+	}
+
+	var antes, depois string
+	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
+		if e := tx.QueryRow(r.Context(), `
+			SELECT COALESCE(cc.slug,'sem categoria') FROM guest_list_entries g
+			  LEFT JOIN courtesy_categories cc ON cc.id = g.courtesy_category_id
+			 WHERE g.id=$1`, guestID).Scan(&antes); e != nil {
+			return e
+		}
+		// Só categoria ATIVA: reclassificar para uma arquivada recriaria o problema que o
+		// arquivamento resolve.
+		if e := tx.QueryRow(r.Context(), `
+			SELECT slug FROM courtesy_categories WHERE id=$1 AND active`, categoryID).Scan(&depois); e != nil {
+			if errors.Is(e, pgx.ErrNoRows) {
+				return errCategoriaInativa
+			}
+			return e
+		}
+		if _, e := tx.Exec(r.Context(), `
+			UPDATE guest_list_entries SET courtesy_category_id=$2 WHERE id=$1`, guestID, categoryID); e != nil {
+			return e
+		}
+		return audit.Append(r.Context(), tx, audit.Event{
+			Entity: audit.EntityCourtesy, ActorKind: audit.ActorProducer, Actor: claims.Subject,
+			FromStatus: antes, ToStatus: depois, Reason: body.Reason,
+			Details: map[string]any{"cortesia": guestID.String()},
+		})
+	}); err != nil {
+		if errors.Is(err, errCategoriaInativa) {
+			writeErr(w, http.StatusBadRequest, "categoria inexistente ou arquivada")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "de": antes, "para": depois})
+}
+
+var errCategoriaInativa = errors.New("categoria inativa")

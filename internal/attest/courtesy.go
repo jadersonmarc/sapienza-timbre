@@ -59,9 +59,16 @@ func CreateCategory(ctx context.Context, tx pgx.Tx, slug, name string, sortOrder
 }
 
 // UpdateCategory atualiza nome/ordem/ativo de uma categoria.
-func UpdateCategory(ctx context.Context, tx pgx.Tx, id uuid.UUID, name string, sortOrder int, active bool) error {
+//
+// Os três campos são opcionais e o nil preserva o que está gravado: arquivar uma categoria
+// manda só `active`, e o nome dela não pode ir junto para vazio no caminho.
+func UpdateCategory(ctx context.Context, tx pgx.Tx, id uuid.UUID, name *string, sortOrder *int, active *bool) error {
 	_, err := tx.Exec(ctx, `
-		UPDATE courtesy_categories SET name=$2, sort_order=$3, active=$4 WHERE id=$1`,
+		UPDATE courtesy_categories
+		   SET name       = COALESCE($2, name),
+		       sort_order = COALESCE($3, sort_order),
+		       active     = COALESCE($4, active)
+		 WHERE id = $1`,
 		id, name, sortOrder, active)
 	return err
 }

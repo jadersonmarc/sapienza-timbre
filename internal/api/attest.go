@@ -74,16 +74,13 @@ func (s *Server) patchCourtesyCategory(w http.ResponseWriter, r *http.Request, c
 		writeErr(w, http.StatusBadRequest, "corpo inválido")
 		return
 	}
+	// Só o que veio no corpo muda: arquivar manda `active` sozinho.
+	var name *string
+	if body.Name != "" {
+		name = &body.Name
+	}
 	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
-		order := 0
-		if body.SortOrder != nil {
-			order = *body.SortOrder
-		}
-		active := true
-		if body.Active != nil {
-			active = *body.Active
-		}
-		return attest.UpdateCategory(r.Context(), tx, id, body.Name, order, active)
+		return attest.UpdateCategory(r.Context(), tx, id, name, body.SortOrder, body.Active)
 	}); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

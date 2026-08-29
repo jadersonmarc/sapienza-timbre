@@ -192,6 +192,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/courtesy-categories", s.authed(s.listCourtesyCategories))
 	mux.HandleFunc("POST /api/v1/courtesy-categories", s.requireOwner(s.createCourtesyCategory))
 	mux.HandleFunc("PATCH /api/v1/courtesy-categories/{id}", s.requireOwner(s.patchCourtesyCategory))
+	mux.HandleFunc("POST /api/v1/guests/{id}/category", s.requireOwner(s.reclassifyCourtesy))
 	// Compromissos declarados do evento (contrapartida).
 	mux.HandleFunc("POST /api/v1/events/{id}/commitments", s.requireOwner(s.createCommitment))
 	mux.HandleFunc("GET /api/v1/events/{id}/commitments", s.authed(s.listCommitments))

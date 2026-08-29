@@ -266,19 +266,27 @@ func (s *Server) listGuests(w http.ResponseWriter, r *http.Request, claims *auth
 		CPF    *string   `json:"cpf,omitempty"`
 		SeatID *string   `json:"seat_id,omitempty"`
 		Status string    `json:"status"`
+		// A categoria vem junto porque é por ela que o atestado conta a cortesia — e é o que
+		// a tela precisa para reclassificar e para somar por categoria.
+		CategoryID   *string `json:"courtesy_category_id,omitempty"`
+		CategorySlug string  `json:"courtesy_category,omitempty"`
 	}
 	var out []guest
 	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
 		rows, e := tx.Query(r.Context(), `
-			SELECT id, name, cpf, seat_id::text, status
-			  FROM guest_list_entries WHERE event_id=$1 ORDER BY created_at`, eventID)
+			SELECT g.id, g.name, g.cpf, g.seat_id::text, g.status,
+			       g.courtesy_category_id::text, COALESCE(cc.slug,'')
+			  FROM guest_list_entries g
+			  LEFT JOIN courtesy_categories cc ON cc.id = g.courtesy_category_id
+			 WHERE g.event_id=$1 ORDER BY g.created_at`, eventID)
 		if e != nil {
 			return e
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var g guest
-			if e := rows.Scan(&g.ID, &g.Name, &g.CPF, &g.SeatID, &g.Status); e != nil {
+			if e := rows.Scan(&g.ID, &g.Name, &g.CPF, &g.SeatID, &g.Status,
+				&g.CategoryID, &g.CategorySlug); e != nil {
 				return e
 			}
 			out = append(out, g)
