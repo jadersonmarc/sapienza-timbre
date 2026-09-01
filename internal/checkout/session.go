@@ -120,6 +120,11 @@ func selectionChanged(items SessionItems, req Request) bool {
 	if items.Quantity != req.Quantity || items.HalfPriceQty != req.HalfPriceQty {
 		return true
 	}
+	// Trocar de tipo de ingresso é trocar a seleção. Com lotes simultâneos, quem voltou e
+	// escolheu o camarote não pode retomar a sessão da pista.
+	if req.LotID != uuid.Nil && req.LotID != items.LotID {
+		return true
+	}
 	if !strings.EqualFold(items.CouponCode, req.CouponCode) {
 		return true
 	}

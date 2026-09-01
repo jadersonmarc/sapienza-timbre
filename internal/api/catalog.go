@@ -260,6 +260,11 @@ type createLotReq struct {
 	// Notice é o aviso desta categoria. Chega como texto do produtor e é sanitizado antes
 	// de gravar — o que sai daqui já é seguro para página e e-mail.
 	Notice *string `json:"notice"`
+	// Availability: 'sequential' (default) entra na fila de virada; 'always' é vendido por
+	// conta própria — é o lote simultâneo e a categoria avulsa.
+	Availability string `json:"availability"`
+	// TurnTrigger é o que encerra um lote da fila: 'either' (default), 'sellout' ou 'date'.
+	TurnTrigger string `json:"turn_trigger"`
 }
 
 func (s *Server) createLot(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
@@ -294,11 +299,11 @@ func (s *Server) createLot(w http.ResponseWriter, r *http.Request, claims *auth.
 			EventID: eventID, Name: body.Name, PriceCents: body.PriceCents, Quantity: body.Quantity,
 			StartsAt: starts, EndsAt: ends, SortOrder: body.SortOrder,
 			MinPurchaseQuantity: body.MinPurchaseQuantity, MaxPurchaseQuantity: body.MaxPurchaseQuantity,
-			Notice: body.Notice,
+			Notice: body.Notice, Availability: body.Availability, TurnTrigger: body.TurnTrigger,
 		})
 		return e
 	}); err != nil {
-		if errors.Is(err, catalog.ErrBadPurchaseRange) {
+		if errors.Is(err, catalog.ErrBadPurchaseRange) || errors.Is(err, catalog.ErrBadLotMode) {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -459,4 +464,35 @@ func (s *Server) listCoupons(w http.ResponseWriter, r *http.Request, claims *aut
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"coupons": out})
+}
+
+// patchLot edita um lote. Existe porque criar deixou de ser a única coisa que se faz com um
+// tipo de ingresso: mudar o preço, a quantidade, o modo de oferta ou o gatilho de virada é
+// rotina, e sem esta rota o produtor só tinha "+ Lote" — e usava adicionar como se fosse
+// salvar.
+func (s *Server) patchLot(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "id inválido")
+		return
+	}
+	var body catalog.LotPatch
+	if err := decode(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, "corpo inválido")
+		return
+	}
+	var out catalog.Lot
+	err = s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
+		var e error
+		out, e = catalog.UpdateLot(r.Context(), tx, id, body)
+		return e
+	})
+	switch {
+	case errors.Is(err, catalog.ErrBadPurchaseRange), errors.Is(err, catalog.ErrBadLotMode):
+		writeErr(w, http.StatusBadRequest, err.Error())
+	case err != nil:
+		writeErr(w, http.StatusInternalServerError, err.Error())
+	default:
+		writeJSON(w, http.StatusOK, out)
+	}
 }

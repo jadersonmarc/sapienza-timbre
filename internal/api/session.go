@@ -34,7 +34,12 @@ func sessionPublic(s checkout.Session) map[string]any {
 
 // createSessionReq é a seleção + o anon_token do navegador (identifica sessões pré-acesso).
 type createSessionReq struct {
-	EventID      uuid.UUID   `json:"event_id"`
+	EventID uuid.UUID `json:"event_id"`
+	// LotID é a ESCOLHA do comprador entre os tipos de ingresso à venda. Vazio = o vigente,
+	// que é o caminho de quem entra pelo link do evento com um lote só. Com lotes
+	// simultâneos ("Pista" e "Camarote" abertos ao mesmo tempo) ele deixa de ser opcional
+	// na prática: sem ele, a venda sairia sempre do primeiro da lista.
+	LotID        uuid.UUID   `json:"lot_id"`
 	Quantity     int         `json:"quantity"`
 	SeatIDs      []uuid.UUID `json:"seat_ids"`
 	HalfPriceQty int         `json:"half_price_qty"`
@@ -62,7 +67,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	}
 	ip := clientIP(r)
 	req := checkout.Request{
-		EventID: body.EventID, Quantity: body.Quantity, SeatIDs: body.SeatIDs,
+		EventID: body.EventID, LotID: body.LotID, Quantity: body.Quantity, SeatIDs: body.SeatIDs,
 		HalfPriceQty: body.HalfPriceQty, CouponCode: body.CouponCode, CampaignID: body.CampaignID,
 	}
 	var sess checkout.Session

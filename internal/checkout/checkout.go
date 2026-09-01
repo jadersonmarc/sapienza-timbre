@@ -127,7 +127,7 @@ func reserve(ctx context.Context, tx pgx.Tx, req Request) (catalog.Lot, *uuid.UU
 	if req.HalfPriceQty < 0 || req.HalfPriceQty > req.Quantity {
 		return catalog.Lot{}, nil, ErrBadRequest
 	}
-	lot, err := reserveCurrentLot(ctx, tx, req.EventID, req.Quantity)
+	lot, err := reserveChosenLot(ctx, tx, req.EventID, req.LotID, req.Quantity)
 	if err != nil {
 		return catalog.Lot{}, nil, err
 	}
@@ -290,7 +290,7 @@ func finalizeOrder(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, pr
 
 // Quote calcula a decomposição de preço (face + conveniência) SEM reservar nem criar
 // ordem — para a tela de checkout mostrar o total e recalcular quando o comprador troca o
-// método (§4.3). Resolve o lote vigente só para precificar.
+// método (§4.3). Usa o lote escolhido, ou o vigente quando não houve escolha.
 func Quote(ctx context.Context, tx pgx.Tx, producerID uuid.UUID, req Request) (pricing.Breakdown, error) {
 	if req.Quantity <= 0 {
 		return pricing.Breakdown{}, ErrBadRequest
@@ -298,7 +298,7 @@ func Quote(ctx context.Context, tx pgx.Tx, producerID uuid.UUID, req Request) (p
 	if req.HalfPriceQty < 0 || req.HalfPriceQty > req.Quantity {
 		return pricing.Breakdown{}, ErrBadRequest
 	}
-	lot, err := catalog.CurrentLot(ctx, tx, req.EventID)
+	lot, err := resolveLot(ctx, tx, req.EventID, req.LotID)
 	if errors.Is(err, catalog.ErrNoCurrentLot) {
 		return pricing.Breakdown{}, ErrLotUnavailable
 	}
@@ -322,16 +322,22 @@ func Quote(ctx context.Context, tx pgx.Tx, producerID uuid.UUID, req Request) (p
 	return pricing.Compute(face, req.Method, installments, req.Fees)
 }
 
-// reserveCurrentLot resolve o lote vigente do evento e reserva `qty` nele, tolerando a
-// virada que aconteça entre resolver e reservar (Correção 2). Só reserva o LOTE (trava a
-// linha via UPDATE) — o assento, se houver, é travado depois pelo chamador (ordem
-// lote→assento). ReserveFromLot falha por zero linhas (não por CHECK), então a tx segue
-// utilizável e o retry roda DENTRO dela. Converge quando re-resolver devolve o MESMO
-// lote (esgotamento genuíno para a quantidade pedida) ou pelo limite de tentativas.
-func reserveCurrentLot(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, qty int) (catalog.Lot, error) {
+// reserveChosenLot reserva `qty` no lote ESCOLHIDO pelo comprador ou, sem escolha, no lote
+// vigente do evento.
+//
+// A escolha existe porque lotes simultâneos convivem: "Pista" e "Camarote" estão os dois
+// abertos, e resolver sempre o primeiro venderia o errado. Sem escolha, o comportamento é o
+// de sempre — o vigente —, que é o caminho de quem compra pelo link do evento.
+//
+// Tolera a virada que aconteça entre resolver e reservar. Só reserva o LOTE (trava a linha
+// via UPDATE) — o assento, se houver, é travado depois pelo chamador (ordem lote→assento).
+// ReserveFromLot falha por zero linhas (não por CHECK), então a tx segue utilizável e o retry
+// roda DENTRO dela. Converge quando re-resolver devolve o MESMO lote (esgotamento genuíno
+// para a quantidade pedida) ou pelo limite de tentativas.
+func reserveChosenLot(ctx context.Context, tx pgx.Tx, eventID, lotID uuid.UUID, qty int) (catalog.Lot, error) {
 	var lastID uuid.UUID
 	for attempt := 0; attempt < maxLotResolveAttempts; attempt++ {
-		lot, err := catalog.CurrentLot(ctx, tx, eventID)
+		lot, err := resolveLot(ctx, tx, eventID, lotID)
 		if errors.Is(err, catalog.ErrNoCurrentLot) {
 			return catalog.Lot{}, ErrLotUnavailable
 		}
@@ -347,12 +353,21 @@ func reserveCurrentLot(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, qty in
 		}
 		// Esgotou entre resolver e reservar. Mesmo lote duas vezes = esgotamento
 		// genuíno (não cabe a quantidade neste lote); lote diferente = virou, tenta o próximo.
-		if lot.ID == lastID {
+		// Com lote escolhido não há próximo: o comprador pediu aquele.
+		if lot.ID == lastID || lotID != uuid.Nil {
 			return catalog.Lot{}, ErrInsufficientStock
 		}
 		lastID = lot.ID
 	}
 	return catalog.Lot{}, ErrInsufficientStock
+}
+
+// resolveLot devolve o lote escolhido (se ainda estiver disponível) ou o vigente.
+func resolveLot(ctx context.Context, tx pgx.Tx, eventID, lotID uuid.UUID) (catalog.Lot, error) {
+	if lotID != uuid.Nil {
+		return catalog.EligibleLot(ctx, tx, eventID, lotID)
+	}
+	return catalog.CurrentLot(ctx, tx, eventID)
 }
 
 // ConfirmPayment confirma um pagamento (idempotente): emite ingressos, marca ordem

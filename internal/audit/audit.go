@@ -20,6 +20,9 @@ const (
 	EntityTicket        = "ticket"
 	EntityCourtesy      = "courtesy"
 	EntityExport        = "export"
+	// EntityEvent é a configuração do evento que precisa de responsável: hoje, a cota de
+	// meia-entrada abaixo do que a lei pede.
+	EntityEvent = "event"
 )
 
 // Quem agiu.
@@ -35,6 +38,7 @@ type Event struct {
 	Entity     string         `json:"entity"`
 	RequestID  *uuid.UUID     `json:"request_id,omitempty"`
 	TicketID   *uuid.UUID     `json:"ticket_id,omitempty"`
+	EventID    *uuid.UUID     `json:"event_id,omitempty"`
 	ActorKind  string         `json:"actor_kind"`
 	Actor      string         `json:"actor,omitempty"`
 	FromStatus string         `json:"from_status,omitempty"`
@@ -54,10 +58,10 @@ func Append(ctx context.Context, tx pgx.Tx, e Event) error {
 		}
 	}
 	_, err := tx.Exec(ctx, `
-		INSERT INTO audit_events (entity, request_id, ticket_id, actor_kind, actor,
+		INSERT INTO audit_events (entity, request_id, ticket_id, event_id, actor_kind, actor,
 		                          from_status, to_status, reason, details)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-		e.Entity, e.RequestID, e.TicketID, e.ActorKind, nilIfEmpty(e.Actor),
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		e.Entity, e.RequestID, e.TicketID, e.EventID, e.ActorKind, nilIfEmpty(e.Actor),
 		nilIfEmpty(e.FromStatus), e.ToStatus, nilIfEmpty(e.Reason), details)
 	return err
 }
@@ -93,4 +97,29 @@ func nilIfEmpty(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// EventHistory devolve a trilha de configuração de um evento, em ordem. É onde fica a
+// escolha da cota de meia-entrada: valor, data e quem escolheu.
+func EventHistory(ctx context.Context, tx pgx.Tx, eventID uuid.UUID) ([]Event, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT entity, actor_kind, COALESCE(actor,''), COALESCE(from_status,''), to_status,
+		       COALESCE(reason,''), details, at
+		  FROM audit_events WHERE event_id=$1 ORDER BY at, id`, eventID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Event{}
+	for rows.Next() {
+		var e Event
+		var raw []byte
+		if err := rows.Scan(&e.Entity, &e.ActorKind, &e.Actor, &e.FromStatus, &e.ToStatus,
+			&e.Reason, &raw, &e.At); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(raw, &e.Details)
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }

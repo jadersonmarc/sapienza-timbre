@@ -116,11 +116,16 @@ type publicProducer struct {
 	Name string    `json:"name"`
 }
 
+// halfPriceInfo é o que a Lei 12.933/2013 manda expor: o TOTAL de meia do evento e quanto
+// ainda há. O vendido e o estoque de inteira continuam de fora.
 type halfPriceInfo struct {
 	Available bool `json:"available"`
 	Quota     int  `json:"quota"`
 	Granted   int  `json:"granted"`
 	Remaining int  `json:"remaining"`
+	// Mode diz se a meia tem cota própria ('quota') ou segue o estoque do lote pai
+	// ('linked'). Sem isso, "quota igual à capacidade" pareceria número inventado.
+	Mode string `json:"mode"`
 }
 
 type publicEvent struct {
@@ -159,6 +164,10 @@ type publicLot struct {
 	// Notice é o aviso desta categoria, já sanitizado na escrita: a página o renderiza
 	// como TEXTO, nunca como HTML.
 	Notice *string `json:"notice,omitempty"`
+	// OnSale diz se ESTE lote pode ser comprado agora. Com lotes simultâneos não há um
+	// vigente só, e a página precisa distinguir "à venda" de "ainda vai abrir" sem deduzir
+	// a fila do lado dela.
+	OnSale bool `json:"on_sale"`
 }
 
 type publicSector struct {
@@ -213,13 +222,23 @@ func (s *Server) getPublicEvent(w http.ResponseWriter, r *http.Request) {
 		if e != nil {
 			return e
 		}
+		// Quais estão à venda AGORA: o topo da fila mais todos os independentes. Com lotes
+		// simultâneos a lista deixa de ter um vencedor só, e é o comprador que escolhe.
+		abertos, e := catalog.AvailableLots(r.Context(), tx, eventID)
+		if e != nil {
+			return e
+		}
+		aberto := map[uuid.UUID]bool{}
+		for _, l := range abertos {
+			aberto[l.ID] = true
+		}
 		for _, l := range lots {
 			detail.Lots = append(detail.Lots, publicLot{
 				ID: l.ID, Name: l.Name, PriceCents: l.PriceCents,
 				Available: l.Quantity - l.SoldCount - l.HeldCount,
 				StartsAt:  l.StartsAt, EndsAt: l.EndsAt, SortOrder: l.SortOrder,
 				MinPurchaseQuantity: l.MinPurchaseQuantity, MaxPurchaseQuantity: l.MaxPurchaseQuantity,
-				Notice: l.Notice,
+				Notice: l.Notice, OnSale: aberto[l.ID],
 			})
 		}
 		// Quem apresenta o evento (fora do tenant: o produtor mora em public).
@@ -227,15 +246,14 @@ func (s *Server) getPublicEvent(w http.ResponseWriter, r *http.Request) {
 		// Cota de meia: quando acaba, a meia sai de venda e a inteira continua.
 		if hp, e := attest.HalfPrice(r.Context(), tx, eventID); e == nil {
 			detail.HalfPrice = halfPriceInfo{
-				Available: hp.Available(), Quota: hp.Quota, Granted: hp.Granted, Remaining: hp.Remaining,
+				Available: hp.Available(), Quota: hp.Quota, Granted: hp.Granted,
+				Remaining: hp.Remaining, Mode: hp.Mode,
 			}
 		} else {
 			return e
 		}
-		if cur, e := catalog.CurrentLot(r.Context(), tx, eventID); e == nil {
-			detail.Current = &cur.ID
-		} else if !errors.Is(e, catalog.ErrNoCurrentLot) {
-			return e
+		if len(abertos) > 0 {
+			detail.Current = &abertos[0].ID
 		}
 		sectors, e := catalog.ListSectors(r.Context(), tx, eventID)
 		if e != nil {

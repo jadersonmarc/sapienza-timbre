@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/jadersonmarc/sapienza-timbre/internal/attest"
+	"github.com/jadersonmarc/sapienza-timbre/internal/audit"
 	"github.com/jadersonmarc/sapienza-timbre/internal/auth"
 	"github.com/jadersonmarc/sapienza-timbre/internal/chain"
 )
@@ -431,4 +432,83 @@ func nilStr(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+type halfPriceReq struct {
+	// Mode: "quota" (cota própria) ou "linked" (a meia segue o estoque do lote pai).
+	Mode string `json:"mode"`
+	// TargetType/TargetValue só valem no modo cota: "percent" com 40 = 40% da capacidade.
+	TargetType  string `json:"target_type"`
+	TargetValue string `json:"target_value"`
+}
+
+// putHalfPrice grava a configuração de meia-entrada do evento.
+//
+// 40% é o DEFAULT do sistema, não uma trava: a Lei 12.933/2013 obriga o produtor, e recusar
+// a configuração dele não o faz cumprir a lei — só o impede de operar. Abaixo disso a
+// resposta traz o aviso que a tela mostra, e a escolha entra na trilha com valor, data e
+// usuário. É o que existe para responder "quem decidiu isso" seis meses depois.
+func (s *Server) putHalfPrice(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
+	eventID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "id inválido")
+		return
+	}
+	var body halfPriceReq
+	if err := decode(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, "corpo inválido")
+		return
+	}
+	if body.Mode == "" {
+		body.Mode = attest.ModeQuota
+	}
+	var out attest.HalfPriceAllowance
+	err = s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
+		var e error
+		if out, e = attest.SetHalfPrice(r.Context(), tx, eventID, body.Mode, body.TargetType, body.TargetValue); e != nil {
+			return e
+		}
+		return audit.Append(r.Context(), tx, audit.Event{
+			Entity: audit.EntityEvent, EventID: &eventID,
+			ActorKind: audit.ActorProducer, Actor: claims.Subject,
+			ToStatus: "half_price_set",
+			Details: map[string]any{
+				"mode": out.Mode, "target_type": body.TargetType, "target_value": body.TargetValue,
+				"quota": out.Quota, "legal_quota": out.LegalQuota, "below_legal": out.BelowLegal,
+			},
+		})
+	})
+	switch {
+	case errors.Is(err, attest.ErrClosed):
+		writeErr(w, http.StatusConflict, "evento já fechado")
+	case err != nil:
+		writeErr(w, http.StatusBadRequest, err.Error())
+	default:
+		resp := map[string]any{"half_price": out}
+		if out.BelowLegal {
+			resp["warning"] = "Esta cota está abaixo dos 40% que a Lei 12.933/2013 exige. " +
+				"O cumprimento da lei é responsabilidade do produtor, e a escolha ficou registrada."
+		}
+		writeJSON(w, http.StatusOK, resp)
+	}
+}
+
+// halfPriceHistory devolve a trilha da configuração de meia do evento: quem escolheu, quando
+// e quanto. Sem ela, "quem decidiu vender 10% de meia" é pergunta sem resposta.
+func (s *Server) halfPriceHistory(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
+	eventID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "id inválido")
+		return
+	}
+	var events []audit.Event
+	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
+		var e error
+		events, e = audit.EventHistory(r.Context(), tx, eventID)
+		return e
+	}); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": events})
 }

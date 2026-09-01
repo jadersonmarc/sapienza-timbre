@@ -276,9 +276,16 @@ type Lot struct {
 	MaxPurchaseQuantity *int `json:"max_purchase_quantity,omitempty"`
 	// Notice é o aviso do produtor para ESTA categoria — "acomodações por ordem de
 	// chegada", "não recomendado para menores de 12". Texto puro, sanitizado na escrita.
-	Notice    *string   `json:"notice,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Notice *string `json:"notice,omitempty"`
+	// Availability: 'sequential' entra na fila de virada (só o primeiro elegível é
+	// oferecido); 'always' é oferecido por conta própria — é o lote simultâneo e a
+	// categoria avulsa.
+	Availability string `json:"availability"`
+	// TurnTrigger é o que ENCERRA um lote da fila, e portanto o que abre o próximo:
+	// 'either' (o que vier primeiro), 'sellout' (só esgotando) ou 'date' (só na data).
+	TurnTrigger string    `json:"turn_trigger"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // ErrPurchaseRange é a quantidade fora da faixa do lote.
@@ -301,13 +308,14 @@ func (l Lot) CheckPurchaseQuantity(qty int) error {
 
 const lotCols = `id, event_id, name, price_cents, quantity, sold_count, held_count,
 	starts_at, ends_at, sort_order, min_purchase_quantity, max_purchase_quantity, notice,
-	created_at, updated_at`
+	availability, turn_trigger, created_at, updated_at`
 
 func scanLot(row pgx.Row) (Lot, error) {
 	var l Lot
 	err := row.Scan(&l.ID, &l.EventID, &l.Name, &l.PriceCents, &l.Quantity, &l.SoldCount,
 		&l.HeldCount, &l.StartsAt, &l.EndsAt, &l.SortOrder,
-		&l.MinPurchaseQuantity, &l.MaxPurchaseQuantity, &l.Notice, &l.CreatedAt, &l.UpdatedAt)
+		&l.MinPurchaseQuantity, &l.MaxPurchaseQuantity, &l.Notice,
+		&l.Availability, &l.TurnTrigger, &l.CreatedAt, &l.UpdatedAt)
 	return l, err
 }
 
@@ -319,14 +327,23 @@ func CreateLot(ctx context.Context, tx pgx.Tx, l Lot) (Lot, error) {
 	if l.MaxPurchaseQuantity != nil && *l.MaxPurchaseQuantity < l.MinPurchaseQuantity {
 		return Lot{}, ErrBadPurchaseRange
 	}
+	if l.Availability == "" {
+		l.Availability = AvailabilitySequential
+	}
+	if l.TurnTrigger == "" {
+		l.TurnTrigger = TriggerEither
+	}
+	if err := validLotMode(l); err != nil {
+		return Lot{}, err
+	}
 	l.Notice = SanitizeNotice(l.Notice)
 	row := tx.QueryRow(ctx, `
 		INSERT INTO lots (event_id, name, price_cents, quantity, starts_at, ends_at, sort_order,
-		                  min_purchase_quantity, max_purchase_quantity, notice)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		                  min_purchase_quantity, max_purchase_quantity, notice, availability, turn_trigger)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
 		RETURNING `+lotCols,
 		l.EventID, l.Name, l.PriceCents, l.Quantity, l.StartsAt, l.EndsAt, l.SortOrder,
-		l.MinPurchaseQuantity, l.MaxPurchaseQuantity, l.Notice)
+		l.MinPurchaseQuantity, l.MaxPurchaseQuantity, l.Notice, l.Availability, l.TurnTrigger)
 	out, err := scanLot(row)
 	if err != nil {
 		return Lot{}, fmt.Errorf("criar lote: %w", err)
@@ -357,29 +374,214 @@ func GetLot(ctx context.Context, tx pgx.Tx, id uuid.UUID) (Lot, error) {
 	return scanLot(tx.QueryRow(ctx, `SELECT `+lotCols+` FROM lots WHERE id = $1`, id))
 }
 
-// CurrentLot resolve o lote VIGENTE do evento: o primeiro (por sort_order) dentro da
-// janela de datas e com capacidade restante (sold_count+held_count < quantity). Uma
-// única consulta cobre a virada por DATA e por ESGOTAMENTO — não há estado a escrever.
+// Modos de oferta e gatilhos de virada de um lote.
+const (
+	// AvailabilitySequential: o lote entra na fila de virada.
+	AvailabilitySequential = "sequential"
+	// AvailabilityAlways: o lote é oferecido por conta própria — simultâneo ou avulso.
+	AvailabilityAlways = "always"
+
+	// TriggerEither encerra o lote no que vier primeiro: esgotar ou a data de fim.
+	TriggerEither = "either"
+	// TriggerSellout encerra só por esgotamento; a data de fim é ignorada.
+	TriggerSellout = "sellout"
+	// TriggerDate encerra só na data: esgotar antes NÃO adianta a virada.
+	TriggerDate = "date"
+)
+
+// ErrBadLotMode é modo de oferta ou gatilho desconhecido.
+var ErrBadLotMode = errors.New("catalog: modo de oferta ou gatilho de virada desconhecido")
+
+func validLotMode(l Lot) error {
+	switch l.Availability {
+	case AvailabilitySequential, AvailabilityAlways:
+	default:
+		return fmt.Errorf("%w: %q", ErrBadLotMode, l.Availability)
+	}
+	switch l.TurnTrigger {
+	case TriggerEither, TriggerSellout, TriggerDate:
+		return nil
+	default:
+		return fmt.Errorf("%w: %q", ErrBadLotMode, l.TurnTrigger)
+	}
+}
+
+// aberto diz se o lote está dentro da janela de datas dele agora.
+func (l Lot) aberto(now time.Time) bool {
+	if l.StartsAt != nil && l.StartsAt.After(now) {
+		return false
+	}
+	// Com gatilho por esgotamento, a data de fim não encerra nada: o lote fica de pé até
+	// acabar. É o produtor dizendo "vende até acabar", e a data ali é só informativa.
+	if l.TurnTrigger != TriggerSellout && l.EndsAt != nil && !l.EndsAt.After(now) {
+		return false
+	}
+	return true
+}
+
+// temSaldo diz se cabe pelo menos uma compra mínima no lote. Saldo menor que o mínimo por
+// compra é lote ESGOTADO: sobrar 1 lugar num ingresso duplo significa que aquele lote acabou,
+// e continuar oferecendo levaria o comprador a uma recusa no fim do checkout.
+func (l Lot) temSaldo() bool {
+	return l.Quantity-l.SoldCount-l.HeldCount >= l.MinPurchaseQuantity
+}
+
+// AvailableLots devolve TODOS os lotes que o comprador pode comprar agora, em ordem.
+//
+// São duas ofertas somadas:
+//   - a fila (availability='sequential'): entra só o primeiro elegível, que é a virada
+//     progressiva — e o gatilho de cada lote decide o que o encerra;
+//   - os independentes (availability='always'): cada um por si, enquanto tiver janela e
+//     saldo. É com eles que "Pista" e "Camarote" convivem no mesmo evento.
+//
+// A varredura acontece em Go, e não numa consulta só, porque o gatilho 'date' precisa PARAR
+// a fila: um lote esgotado que só encerra na data não deixa o próximo abrir antes dela. Isso
+// não cabe num filtro linha a linha.
+func AvailableLots(ctx context.Context, tx pgx.Tx, eventID uuid.UUID) ([]Lot, error) {
+	all, err := ListLots(ctx, tx, eventID)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	var out []Lot
+	filaResolvida := false
+	for _, l := range all {
+		if l.Availability == AvailabilityAlways {
+			if l.aberto(now) && l.temSaldo() {
+				out = append(out, l)
+			}
+			continue
+		}
+		if filaResolvida || !l.aberto(now) {
+			continue
+		}
+		if l.temSaldo() {
+			out = append(out, l)
+			filaResolvida = true
+			continue
+		}
+		// Esgotado. Com gatilho por DATA, o próximo não abre antes dela: a fila para aqui e
+		// o evento fica sem lote sequencial à venda até a virada prometida.
+		if l.TurnTrigger == TriggerDate {
+			filaResolvida = true
+		}
+	}
+	return out, nil
+}
+
+// CurrentLot resolve o lote vigente do evento — o primeiro dos disponíveis. Continua sendo
+// o default de quem compra sem escolher (pista, link direto do evento).
 // ErrNoCurrentLot se nenhum for elegível.
 func CurrentLot(ctx context.Context, tx pgx.Tx, eventID uuid.UUID) (Lot, error) {
-	row := tx.QueryRow(ctx, `SELECT `+lotCols+` FROM lots
-		 WHERE event_id = $1
-		   AND (starts_at IS NULL OR starts_at <= now())
-		   AND (ends_at IS NULL OR ends_at > now())
-		   -- Saldo menor que o mínimo por compra é lote ESGOTADO: sobrar 1 lugar num
-		   -- ingresso duplo significa que aquele lote acabou, e continuar oferecendo
-		   -- levaria o comprador a uma recusa no fim do checkout.
-		   AND quantity - sold_count - held_count >= min_purchase_quantity
-		 ORDER BY sort_order, created_at
-		 LIMIT 1`, eventID)
-	lot, err := scanLot(row)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Lot{}, ErrNoCurrentLot
-	}
+	lots, err := AvailableLots(ctx, tx, eventID)
 	if err != nil {
 		return Lot{}, fmt.Errorf("resolver lote vigente: %w", err)
 	}
-	return lot, nil
+	if len(lots) == 0 {
+		return Lot{}, ErrNoCurrentLot
+	}
+	return lots[0], nil
+}
+
+// EligibleLot devolve o lote ESCOLHIDO pelo comprador, se ele estiver disponível agora.
+// Existe porque com lotes simultâneos a escolha é do comprador, e aceitar qualquer id
+// deixaria vender de um lote encerrado por quem chamasse a API direto.
+func EligibleLot(ctx context.Context, tx pgx.Tx, eventID, lotID uuid.UUID) (Lot, error) {
+	lots, err := AvailableLots(ctx, tx, eventID)
+	if err != nil {
+		return Lot{}, err
+	}
+	for _, l := range lots {
+		if l.ID == lotID {
+			return l, nil
+		}
+	}
+	return Lot{}, ErrNoCurrentLot
+}
+
+// UpdateLot altera um lote. Os campos nulos preservam o que está gravado — salvar o nome não
+// pode apagar a faixa de compra no caminho.
+func UpdateLot(ctx context.Context, tx pgx.Tx, id uuid.UUID, p LotPatch) (Lot, error) {
+	cur, err := GetLot(ctx, tx, id)
+	if err != nil {
+		return Lot{}, err
+	}
+	next := cur
+	if p.Name != nil {
+		next.Name = *p.Name
+	}
+	if p.PriceCents != nil {
+		next.PriceCents = *p.PriceCents
+	}
+	if p.Quantity != nil {
+		next.Quantity = *p.Quantity
+	}
+	if p.StartsAt != nil {
+		next.StartsAt = p.StartsAt
+	}
+	if p.EndsAt != nil {
+		next.EndsAt = p.EndsAt
+	}
+	if p.SortOrder != nil {
+		next.SortOrder = *p.SortOrder
+	}
+	if p.MinPurchaseQuantity != nil {
+		next.MinPurchaseQuantity = *p.MinPurchaseQuantity
+	}
+	if p.MaxPurchaseQuantity != nil {
+		next.MaxPurchaseQuantity = p.MaxPurchaseQuantity
+	}
+	if p.Notice != nil {
+		next.Notice = SanitizeNotice(p.Notice)
+	}
+	if p.Availability != nil {
+		next.Availability = *p.Availability
+	}
+	if p.TurnTrigger != nil {
+		next.TurnTrigger = *p.TurnTrigger
+	}
+	if next.MinPurchaseQuantity <= 0 {
+		next.MinPurchaseQuantity = 1
+	}
+	if next.MaxPurchaseQuantity != nil && *next.MaxPurchaseQuantity < next.MinPurchaseQuantity {
+		return Lot{}, ErrBadPurchaseRange
+	}
+	if err := validLotMode(next); err != nil {
+		return Lot{}, err
+	}
+	// Reduzir a quantidade abaixo do que já foi vendido/segurado deixaria o lote em estado
+	// impossível — e o CHECK do schema recusaria de um jeito ilegível.
+	if next.Quantity < cur.SoldCount+cur.HeldCount {
+		return Lot{}, fmt.Errorf("%w: já há %d ingressos vendidos ou reservados neste lote",
+			ErrBadPurchaseRange, cur.SoldCount+cur.HeldCount)
+	}
+	row := tx.QueryRow(ctx, `
+		UPDATE lots SET name=$2, price_cents=$3, quantity=$4, starts_at=$5, ends_at=$6,
+		                sort_order=$7, min_purchase_quantity=$8, max_purchase_quantity=$9,
+		                notice=$10, availability=$11, turn_trigger=$12, updated_at=now()
+		 WHERE id=$1 RETURNING `+lotCols,
+		id, next.Name, next.PriceCents, next.Quantity, next.StartsAt, next.EndsAt, next.SortOrder,
+		next.MinPurchaseQuantity, next.MaxPurchaseQuantity, next.Notice, next.Availability, next.TurnTrigger)
+	out, err := scanLot(row)
+	if err != nil {
+		return Lot{}, fmt.Errorf("atualizar lote: %w", err)
+	}
+	return out, nil
+}
+
+// LotPatch é a edição parcial de um lote: o nulo preserva o que está gravado.
+type LotPatch struct {
+	Name                *string    `json:"name"`
+	PriceCents          *int64     `json:"price_cents"`
+	Quantity            *int       `json:"quantity"`
+	StartsAt            *time.Time `json:"starts_at"`
+	EndsAt              *time.Time `json:"ends_at"`
+	SortOrder           *int       `json:"sort_order"`
+	MinPurchaseQuantity *int       `json:"min_purchase_quantity"`
+	MaxPurchaseQuantity *int       `json:"max_purchase_quantity"`
+	Notice              *string    `json:"notice"`
+	Availability        *string    `json:"availability"`
+	TurnTrigger         *string    `json:"turn_trigger"`
 }
 
 // ReserveFromLot segura `qty` unidades no lote (held_count += qty), de forma atômica: o

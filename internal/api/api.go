@@ -130,6 +130,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/events/{id}/lots", s.requireOwner(s.createLot))
 	mux.HandleFunc("GET /api/v1/events/{id}/lots", s.authed(s.listLots))
 	mux.HandleFunc("GET /api/v1/events/{id}/lots/current", s.authed(s.currentLot))
+	mux.HandleFunc("PATCH /api/v1/lots/{id}", s.requireOwner(s.patchLot))
 	mux.HandleFunc("POST /api/v1/venue-templates", s.requireOwner(s.createVenueTemplate))
 	mux.HandleFunc("GET /api/v1/venue-templates", s.authed(s.listVenueTemplates))
 	mux.HandleFunc("POST /api/v1/events/{id}/coupons", s.requireOwner(s.createCoupon))
@@ -194,6 +195,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/events/{id}/commitments", s.requireOwner(s.createCommitment))
 	mux.HandleFunc("GET /api/v1/events/{id}/commitments", s.authed(s.listCommitments))
 	mux.HandleFunc("DELETE /api/v1/commitments/{id}", s.requireOwner(s.deleteCommitment))
+	// Meia-entrada: 40% é o default, não trava. Abaixo disso o produtor recebe o aviso e a
+	// escolha fica na trilha com valor, data e usuário.
+	mux.HandleFunc("PUT /api/v1/events/{id}/half-price", s.requireOwner(s.putHalfPrice))
+	mux.HandleFunc("GET /api/v1/events/{id}/half-price/history", s.authed(s.halfPriceHistory))
 	// Fechamento e atestação.
 	mux.HandleFunc("POST /api/v1/events/{id}/close", s.requireOwner(s.closeEvent))
 	mux.HandleFunc("POST /api/v1/events/{id}/attestations/{attId}/anchor", s.requireOwner(s.reanchorEvent))
