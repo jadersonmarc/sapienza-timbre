@@ -12,8 +12,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/jadersonmarc/sapienza-timbre/internal/chain"
-	"github.com/jadersonmarc/sapienza-timbre/internal/ledger"
-	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
 	"github.com/jadersonmarc/sapienza-timbre/internal/ticketing"
 )
 
@@ -37,23 +35,8 @@ func orderOf(t *testing.T, ctx context.Context, pool *pgxpool.Pool, pid, eventID
 	return id
 }
 
-// netDue é o que a plataforma ainda deve ao produtor. Negativo é dívida do produtor.
-func netDue(t *testing.T, ctx context.Context, pool *pgxpool.Pool, pid uuid.UUID) int64 {
-	t.Helper()
-	var v int64
-	inTenant(t, ctx, pool, pid, func(tx pgx.Tx) {
-		n, err := ledger.NetDue(ctx, tx)
-		if err != nil {
-			t.Fatalf("net due: %v", err)
-		}
-		v = n
-	})
-	return v
-}
-
-// seedCardSale monta, direto no schema, uma venda de cartão JÁ LIQUIDADA pelo caminho
-// centralizado (sem split): é o único jeito de exercitar a retenção com dinheiro que a
-// plataforma está de fato segurando, já que a venda pela API sempre sai com split.
+// seedCardSale monta, direto no schema, uma venda de cartão já paga. Existe para os testes
+// que precisam de um pedido pago sem passar pelo caminho inteiro de compra.
 func seedCardSale(t *testing.T, ctx context.Context, pool *pgxpool.Pool, pid uuid.UUID) (uuid.UUID, string) {
 	t.Helper()
 	var eventID, lotID, orderID, paymentID uuid.UUID
@@ -66,18 +49,16 @@ func seedCardSale(t *testing.T, ctx context.Context, pool *pgxpool.Pool, pid uui
 			VALUES ($1,'Lote 1',5000,100,1) RETURNING id`, eventID).Scan(&lotID))
 		must(t, tx.QueryRow(ctx, `INSERT INTO orders (event_id, buyer_email, total_cents, face_cents,
 			platform_fee_cents, processing_fee_cents, status)
-			VALUES ($1,'cartao@retencao.com',5600,5000,500,100,'paid') RETURNING id`, eventID).Scan(&orderID))
+			VALUES ($1,'cartao@venda.com',5600,5000,500,100,'paid') RETURNING id`, eventID).Scan(&orderID))
 		execT(t, ctx, tx, `INSERT INTO order_items (order_id, lot_id, quantity, unit_price_cents, half_price)
 			VALUES ($1,$2,1,5000,false)`, orderID, lotID)
 		must(t, tx.QueryRow(ctx, `INSERT INTO payments (order_id, method, amount_cents, status, asaas_ref)
 			VALUES ($1,'credit_card',5600,'confirmed',$2) RETURNING id`, orderID, "fake_seed_"+orderID.String()).Scan(&paymentID))
 		execT(t, ctx, tx, `INSERT INTO tickets (event_id, lot_id, order_id, transferable_after, status)
 			VALUES ($1,$2,$3, now(), 'active')`, eventID, lotID, orderID)
-		// Razão da venda centralizada: repasse liberado, retenção presa por 60 dias.
-		execT(t, ctx, tx, `INSERT INTO ledger_entries (event_id, order_id, payment_id, kind, amount_cents, available_at, settled_by)
-			VALUES ($1,$2,$3,'repasse',5000, now(), 'platform'),
-			       ($1,$2,$3,'taxa',600, now(), 'platform'),
-			       ($1,$2,$3,'retencao',250, now() + interval '60 days', 'platform')`, eventID, orderID, paymentID)
+		execT(t, ctx, tx, `INSERT INTO ledger_entries (event_id, order_id, payment_id, kind, amount_cents, available_at)
+			VALUES ($1,$2,$3,'repasse',5000, NULL),
+			       ($1,$2,$3,'taxa',600, now())`, eventID, orderID, paymentID)
 	})
 	return eventID, orderID.String()
 }
@@ -271,80 +252,6 @@ func TestRefundPartialsCloseWithoutLostCent(t *testing.T) {
 	}
 }
 
-// TestRefundReversesSplitNotSettled: split ainda não liquidado é cancelado junto com a
-// cobrança — não há o que puxar do produtor.
-func TestRefundReversesSplitNotSettled(t *testing.T) {
-	ts, pool := setup(t)
-	_, owner := createProducer(t, ts, "Casa Split", "owner@split.com", "senha1234")
-	pid := producerID(t, ts, owner)
-	ctx := context.Background()
-	eventID, _, _ := soldEvent(t, ts, pool, owner, pid, 1, "buy@split.com", "pix")
-
-	// A venda nasce com o repasse PENDING (o gateway ainda não liquidou).
-	if s := scanStr(t, ctx, pool, pid, `SELECT split_status FROM split_transfers LIMIT 1`); s != "PENDING" {
-		t.Fatalf("esperava split PENDING antes do estorno, veio %s", s)
-	}
-
-	orderID := orderOf(t, ctx, pool, pid, eventID)
-	if code, body := do(t, ts, "POST", "/api/v1/orders/"+orderID+"/refund", bearer(owner),
-		map[string]any{"reason": "antes de liquidar"}); code != http.StatusOK {
-		t.Fatalf("estorno: %d %v", code, body)
-	}
-
-	if s := scanStr(t, ctx, pool, pid, `SELECT split_status FROM split_transfers LIMIT 1`); s != "REFUNDED" {
-		t.Fatalf("esperava split REFUNDED, veio %s", s)
-	}
-	if s := scanStr(t, ctx, pool, pid, `SELECT source FROM split_refunds LIMIT 1`); s != "not_settled" {
-		t.Fatalf("esperava origem not_settled, veio %s", s)
-	}
-	// Repasse e estorno saem os dois de NetDue: o dinheiro nunca esteve com a plataforma.
-	if n := netDue(t, ctx, pool, pid); n != 0 {
-		t.Fatalf("esperava NetDue 0 (nada com a plataforma), veio %d", n)
-	}
-}
-
-// TestRefundWithoutBalanceLeavesDebt: a subconta não cobre, o comprador é estornado assim
-// mesmo e o produtor fica devendo. É o cenário do produtor pequeno que já sacou — se o
-// comprador ficasse sem o dinheiro, não haveria resposta para ele.
-func TestRefundWithoutBalanceLeavesDebt(t *testing.T) {
-	ts, pool, gw := setupWithGateway(t)
-	_, owner := createProducer(t, ts, "Casa Devedora", "owner@devedora.com", "senha1234")
-	pid := producerID(t, ts, owner)
-	ctx := context.Background()
-	eventID, _, ref := soldEvent(t, ts, pool, owner, pid, 1, "buy@devedora.com", "pix")
-
-	// O gateway recusa por saldo: o produtor já sacou.
-	gw.FailRefund(ref, payment.ErrRefundInsufficientFunds)
-
-	orderID := orderOf(t, ctx, pool, pid, eventID)
-	code, body := do(t, ts, "POST", "/api/v1/orders/"+orderID+"/refund", bearer(owner),
-		map[string]any{"reason": "sem saldo"})
-	if code != http.StatusOK {
-		t.Fatalf("estorno: %d %v", code, body)
-	}
-	if body["covered_by_platform"] != true {
-		t.Fatalf("esperava estorno coberto pela plataforma, veio %v", body)
-	}
-	// O ingresso é queimado de qualquer forma: o comprador recebeu o dinheiro.
-	if n := scanInt(t, ctx, pool, pid, `SELECT count(*) FROM tickets WHERE status='burned'`); n != 1 {
-		t.Fatalf("esperava ingresso queimado, veio %d", n)
-	}
-	if s := scanStr(t, ctx, pool, pid, `SELECT source FROM split_refunds LIMIT 1`); s != "platform_covered" {
-		t.Fatalf("esperava origem platform_covered, veio %s", s)
-	}
-	// A dívida aparece no razão e trava o próximo repasse.
-	if n := netDue(t, ctx, pool, pid); n >= 0 {
-		t.Fatalf("esperava saldo devedor (NetDue negativo), veio %d", n)
-	}
-	code, dash := do(t, ts, "GET", "/api/v1/dash/payouts", bearer(owner), nil)
-	if code != http.StatusOK {
-		t.Fatalf("dash payouts: %d", code)
-	}
-	if dash["debt_cents"] == nil {
-		t.Fatalf("esperava saldo devedor no painel, veio %v", dash)
-	}
-}
-
 // TestRefundIdempotentOnDoubleFire: duplo clique vira um estorno só no gateway. A garantia
 // é do índice único em refund_tickets, não de checagem da aplicação.
 func TestRefundIdempotentOnDoubleFire(t *testing.T) {
@@ -483,102 +390,6 @@ func TestRefundAfterCloseRepublishesAttestation(t *testing.T) {
 	// A v1 continua acessível: correção é versão nova, nunca edição.
 	if code, b := do(t, ts, "GET", "/api/v1/public/attestations/"+firstID, nil, nil); code != http.StatusOK {
 		t.Fatalf("v1 deveria continuar acessível, veio %d %v", code, b)
-	}
-}
-
-// TestSplitSaleDoesNotCreatePayout (0.4): venda liquidada por split não pode virar payout
-// a pagar — o gateway já entregou o face na própria cobrança. Antes, o razão contava a
-// mesma venda duas vezes e a fila mandava transferir de novo.
-func TestSplitSaleDoesNotCreatePayout(t *testing.T) {
-	ts, pool := setup(t)
-	_, owner := createProducer(t, ts, "Casa Split Payout", "owner@splitpayout.com", "senha1234")
-	pid := producerID(t, ts, owner)
-	ctx := context.Background()
-	soldEvent(t, ts, pool, owner, pid, 1, "buy@splitpayout.com", "pix")
-
-	// O repasse existe como receita do produtor...
-	if v := ledgerSum(t, ctx, pool, pid, "repasse"); v != 5000 {
-		t.Fatalf("esperava repasse 5000 no razão, veio %d", v)
-	}
-	// ...e é marcado como entregue pelo gateway.
-	if s := scanStr(t, ctx, pool, pid, `SELECT settled_by FROM ledger_entries WHERE kind='repasse' LIMIT 1`); s != "split" {
-		t.Fatalf("esperava settled_by=split, veio %s", s)
-	}
-	// ...mas a plataforma não deve nada.
-	if n := netDue(t, ctx, pool, pid); n != 0 {
-		t.Fatalf("esperava NetDue 0 para venda com split, veio %d", n)
-	}
-}
-
-// TestRefundUndoesRetention (0.1): a retenção de 5%/60d do cartão é DESFEITA no estorno.
-// Sem isso, NetDue continuaria subtraindo a reserva de uma venda que não existe mais e o
-// produtor ficaria com saldo negativo por dinheiro que ninguém deve.
-func TestRefundUndoesRetention(t *testing.T) {
-	ts, pool := setup(t)
-	_, owner := createProducerWithoutWallet(t, ts, "Casa Retencao", "owner@retencao.com", "senha1234")
-	pid := producerID(t, ts, owner)
-	ctx := context.Background()
-
-	// Sem subconta o produtor não abre venda pelo caminho normal; a venda é montada
-	// direto no schema para exercitar o razão centralizado (retenção com dinheiro NOSSO).
-	eventID, orderID := seedCardSale(t, ctx, pool, pid)
-
-	if v := ledgerSum(t, ctx, pool, pid, "retencao"); v != 250 {
-		t.Fatalf("esperava retenção de 250 (5%% de 5000), veio %d", v)
-	}
-	// Com a retenção presa, o líquido é face − retenção.
-	if n := netDue(t, ctx, pool, pid); n != 4750 {
-		t.Fatalf("esperava NetDue 4750 antes do estorno, veio %d", n)
-	}
-
-	if code, body := do(t, ts, "POST", "/api/v1/orders/"+orderID+"/refund", bearer(owner),
-		map[string]any{"reason": "cartão estornado dentro dos 60 dias"}); code != http.StatusOK {
-		t.Fatalf("estorno: %d %v", code, body)
-	}
-
-	if v := ledgerSum(t, ctx, pool, pid, "retencao"); v != 0 {
-		t.Fatalf("a retenção deveria ficar zerada após o estorno, saldo %d", v)
-	}
-	if n := netDue(t, ctx, pool, pid); n != 0 {
-		t.Fatalf("esperava NetDue 0 após estorno total, veio %d — a retenção não foi desfeita", n)
-	}
-	_ = eventID
-}
-
-// TestRefundReversesSplitSettled: split JÁ LIQUIDADO é o caso comum e o único em que o
-// dinheiro precisa voltar de fora — o gateway puxa da subconta do produtor ao estornar a
-// cobrança. Sem este teste, a origem mais frequente da reversão ficava sem prova.
-func TestRefundReversesSplitSettled(t *testing.T) {
-	ts, pool := setup(t)
-	_, owner := createProducer(t, ts, "Casa Liquidada", "owner@liquidada.com", "senha1234")
-	pid := producerID(t, ts, owner)
-	ctx := context.Background()
-	eventID, _, ref := soldEvent(t, ts, pool, owner, pid, 1, "buy@liquidada.com", "pix")
-
-	// O gateway liquida o repasse na subconta do produtor.
-	splitWebhook(t, ts, ref, "split_liq", "PAYMENT_SPLIT_DONE", "")
-	if s := scanStr(t, ctx, pool, pid, `SELECT split_status FROM split_transfers LIMIT 1`); s != "DONE" {
-		t.Fatalf("esperava split DONE antes do estorno, veio %s", s)
-	}
-
-	orderID := orderOf(t, ctx, pool, pid, eventID)
-	code, body := do(t, ts, "POST", "/api/v1/orders/"+orderID+"/refund", bearer(owner),
-		map[string]any{"reason": "depois de liquidar"})
-	if code != http.StatusOK {
-		t.Fatalf("estorno: %d %v", code, body)
-	}
-	if body["covered_by_platform"] != false {
-		t.Fatalf("a subconta cobriu; não era para a plataforma cobrir: %v", body)
-	}
-	if s := scanStr(t, ctx, pool, pid, `SELECT source FROM split_refunds LIMIT 1`); s != "producer" {
-		t.Fatalf("esperava origem producer, veio %s", s)
-	}
-	// Dinheiro que saiu da subconta do produtor: nem repasse nem estorno pesam em NetDue.
-	if n := netDue(t, ctx, pool, pid); n != 0 {
-		t.Fatalf("esperava NetDue 0 (as duas pontas se cancelam), veio %d", n)
-	}
-	if s := scanStr(t, ctx, pool, pid, `SELECT split_status FROM split_transfers LIMIT 1`); s != "REFUNDED" {
-		t.Fatalf("pedido inteiro estornado deveria fechar o repasse em REFUNDED, veio %s", s)
 	}
 }
 

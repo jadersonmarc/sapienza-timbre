@@ -16,10 +16,9 @@ type payoutAccountReq struct {
 	HolderTaxID string `json:"holder_tax_id"`
 }
 
-// payoutAccount grava para onde a plataforma transfere a parte do produtor. É o caminho de
-// lançamento: enquanto a divisão automática na venda não estiver em uso, a plataforma
-// recebe o total e repassa depois — e para isso basta uma chave Pix, sem abertura de conta
-// no gateway.
+// payoutAccount grava para onde a plataforma transfere a parte do produtor. A bilheteria
+// recebe o total e repassa depois da realização do evento, e para isso basta uma chave Pix:
+// o produtor não abre conta no gateway.
 //
 // O titular da chave é conferido contra o documento informado: transferir para chave de
 // terceiro embaralha a responsabilidade fiscal de quem recebeu.
@@ -44,37 +43,27 @@ func (s *Server) payoutAccount(w http.ResponseWriter, r *http.Request, claims *a
 // payoutAccountStatus diz se o produtor já pode receber (e como). O painel usa para avisar
 // antes de o produtor esbarrar no guarda de publicação.
 func (s *Server) payoutAccountStatus(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
-	prod, err := store.GetProducer(r.Context(), s.pool, claims.ProducerID)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
 	acc, err := store.GetPayoutAccount(r.Context(), s.pool, claims.ProducerID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	split := prod.AsaasWalletID != nil && *prod.AsaasWalletID != ""
 	writeJSON(w, http.StatusOK, map[string]any{
-		"configured": split || acc.PixKey != "",
-		// mode diz COMO o produtor recebe: 'split' cai direto na conta dele na venda;
-		// 'payout' é transferência nossa depois. A tela fala diferente em cada caso.
-		"mode":         payoutMode(split, acc.PixKey != ""),
+		"configured": acc.PixKey != "",
+		// Só existe um modo: a bilheteria retém e transfere depois do evento. O campo
+		// continua no corpo porque o painel o lê; o que sumiu foi o outro valor possível.
+		"mode":         payoutMode(acc.PixKey != ""),
 		"pix_key":      maskPixKey(acc.PixKey),
 		"pix_key_type": acc.PixKeyType,
 		"holder_name":  acc.HolderName,
 	})
 }
 
-func payoutMode(split, pix bool) string {
-	switch {
-	case split:
-		return "split"
-	case pix:
+func payoutMode(pix bool) string {
+	if pix {
 		return "payout"
-	default:
-		return "none"
 	}
+	return "none"
 }
 
 // maskPixKey esconde o miolo da chave: confirma para o produtor que é a dele sem exibir o

@@ -7,7 +7,7 @@ qualquer um, falsificável por ninguém.
 Backend em Go, data plane no espírito Control/Data da suíte Sapienza. Reusa o
 `sapienza-kit` para tenancy. Roda no seu **próprio** Postgres.
 
-> **O que este produto é.** Venda (Pix e cartão, com split direto ao produtor), emissão
+> **O que este produto é.** Venda (Pix e cartão), emissão
 > assinada, portaria offline, estorno em todas as suas formas, e **prova de público**: o
 > fechamento do evento gera um registro canônico agregado, sem dado pessoal, assinado e
 > verificável publicamente.
@@ -69,11 +69,10 @@ curl -sX POST localhost:8082/api/v1/collaborators -H "Authorization: Bearer $TOK
 | `TIMBRE_ENC_KEY` | não | reservado (AES por-tenant), não usado na 1.1 |
 | `ASAAS_API_KEY` | não | gateway (Etapa 1.4); vazio = stub |
 
-## Split de pagamento (repasse ao produtor)
+## Preço e repasse ao produtor
 
-O comprador paga **face + conveniência**. O produtor recebe o **face limpo**, dividido na
-própria cobrança pelo gateway. A margem do Timbre é a conveniência menos a tarifa do
-gateway — 10% do face, para todo produtor.
+O comprador paga **face + conveniência**. O produtor recebe o **face limpo**. A margem do
+Timbre é a conveniência menos a tarifa do gateway — 10% do face, para todo produtor.
 
 O preço sai de uma fórmula fechada, porque a tarifa percentual do gateway incide sobre o
 valor cobrado, que já contém a conveniência:
@@ -81,53 +80,62 @@ valor cobrado, que já contém a conveniência:
     V = (F × (1 + p) + b) / (1 − a)
 
 `F` face · `p` taxa de plataforma (10%) · `a` e `b` a tarifa do gateway para o método e a
-faixa de parcelamento. `V` arredonda **para cima**: um centavo a menos deixaria o líquido
-abaixo do face e o gateway recusaria o split. As tarifas vêm de `GET /v3/myAccount/fees`,
-com cache e a última tabela persistida como contingência — nenhum valor de tarifa é
-chumbado no código.
+faixa de parcelamento. As tarifas vêm de `GET /v3/myAccount/fees`, com cache e a última
+tabela persistida como contingência — nenhum valor de tarifa é chumbado no código.
 
-### Conta do produtor
+### A bilheteria retém e repassa depois do evento
 
-A conta de recebimento (subconta padrão — **não é BaaS, não é conta escrow**) pertence ao
-produtor e é reusada em todos os eventos dele. Estados:
+**Não há split.** A cobrança nasce inteira na conta da plataforma, e o repasse ao produtor
+acontece **depois da realização do evento** — o mesmo modelo de Sympla, Ingresso.com e
+Eventim. O motivo é um só: se o evento não acontece, o dinheiro precisa estar com quem vai
+devolver.
 
-    sem_conta → criada_aguardando_docs → em_analise → aprovada | reprovada
+O produtor **não tem conta no gateway**. O único cadastro que ele faz é a chave Pix de
+recebimento, e é ela que a publicação do evento exige — abrir venda sem destino para o
+dinheiro deixa o repasse sem para onde ir, em silêncio, na hora de pagar.
 
-Evento pode ser criado, editado e configurado em qualquer estado. **Só abrir venda exige
-`aprovada`** — o produtor monta o evento enquanto a análise corre. A `apiKey` da subconta é
-descartada na criação: o split não precisa dela e não há coluna para guardá-la.
+### A obrigação de repasse
 
-### Antes da primeira subconta em PRODUÇÃO
+`event_payouts` tem uma linha por evento. O razão continua sendo contabilidade (o que
+aconteceu); isto é **obrigação**: quanto, a quem e até quando.
 
-A criação de subcontas via API abre um **período de avaliação regulatória**: no máximo
-**10 subcontas de titulares distintos** e **60 dias corridos** contados da primeira. Ao
-estourar, criação e emissão são bloqueadas.
+| campo | o que é |
+|---|---|
+| `gross_face_cents` | soma das faces vendidas |
+| `refunded_face_cents` | faces estornadas |
+| `platform_fee_cents` | a conveniência — é da plataforma, não entra no líquido |
+| `gateway_fee_cents` | tarifa retida nas devoluções, conforme `refund_gateway_fee_bearer` |
+| `net_due_cents` | o que o produtor recebe |
+| `due_at` | vencimento, contado da realização |
 
-> **Não crie a primeira subconta em produção antes de a documentação da avaliação
-> regulatória estar pronta para envio.** O relógio começa na primeira criação, não quando
-> você estiver pronto. Em Sandbox o limite é de 20 por dia e não atrapalha os testes.
+    accruing → pending → paid
+       ↘ on_hold ↗        ↘ cancelled
 
-O código alerta ao chegar em 7 subcontas e recusa a criação no teto.
+Enquanto o evento não acontece a linha fica `accruing` e cada venda ou estorno a atualiza.
+A **realização** não depende de ninguém clicar em nada: `status='finished'` antecipa, e
+`COALESCE(ends_at, starts_at)` no passado resolve o resto. Aí ela vira `pending`, com
+`due_at = realização + payout_delay_days`.
 
-### Confirmação anual de dados comerciais
+`payout_delay_days` é parâmetro **por produtor com sobrescrita por evento**
+(`payout_settings`, mesmo desenho da política de devolução), default 7 no banco. Mudar o
+prazo reescreve os vencimentos já gravados — deixar as datas antigas de pé mostraria ao
+produtor uma promessa que ninguém mais tem.
 
-Exigência regulatória: sem confirmar, a subconta perde o uso da API. A data vem do gateway
-(`commercialInfoExpiration`) e é atualizada por **webhook**
-(`ACCOUNT_STATUS_COMMERCIAL_INFO_EXPIRING_SOON`) — não por polling, porque o campo só muda
-uma vez por ano e consulta proativa gasta rate limit à toa.
+Motivos de `on_hold` são **lista fechada**, com ator e data registrados: `evento_cancelado`,
+`disputa_aberta`, `verificacao_bancaria`, `decisao_admin`. Reter dinheiro de alguém por um
+motivo que não está em lugar nenhum é decisão que ninguém consegue revisar depois — e o
+produtor lê o texto correspondente no painel dele. A retenção por falta de chave Pix o
+próprio sistema põe e tira.
 
-### Divergência na liquidação
+### A execução bancária NÃO existe
 
-A cobrança é criada semanas antes de ser paga. Se a tabela de tarifas mudar nesse intervalo,
-um valor de split que passou na criação pode divergir na liquidação: o gateway bloqueia o
-valor e dá **2 dias úteis** para ajustar. É cenário esperado, não defeito — vira alerta
-operacional, e o repasse fica `BLOCKED`. Passado o prazo, `CANCELLED` e resolução manual.
+Não há transferência, saque, validação de titularidade de conta nem antifraude de dados
+bancários. O que existe é **cálculo, registro e exibição**. Marcar como pago é ação manual do
+admin, com a referência da transferência — sem ela, "pago" vira palavra contra palavra na
+primeira divergência.
 
-### Antecipação de recebíveis
-
-Se a conta do Timbre passar a usar antecipação de recebíveis, o split é recusado com
-`RECEIVABLE_UNIT_AFFECTED_BY_EXTERNAL_CONTRACTUAL_EFFECT`. O motivo da recusa fica gravado
-em `split_transfers.refusal_reason`.
+Também não há adiantamento antes do evento: ele reintroduziria exatamente o risco que a
+retenção elimina.
 
 ### Line-up
 
@@ -141,17 +149,18 @@ devolve a conveniência. Ninguém lucra com cancelamento. A tarifa que o gateway
 volta e é custo da plataforma — registrada em `refunds.gateway_fee_cents` para o custo real
 aparecer, nunca escondida no valor do produtor.
 
-O razão recebe **três** lançamentos, espelhando as três linhas da venda:
+O razão recebe **dois** lançamentos, espelhando as duas linhas da venda:
 
 | kind | valor | quem devolve |
 |---|---|---|
-| `estorno` | `-face` | produtor |
-| `estorno_taxa` | `-conveniência` | plataforma |
-| `retencao` | `-proporcional` | desfaz a reserva de contestação da parte estornada |
+| `estorno` | `-face` | sai do resultado do produtor |
+| `estorno_taxa` | `-conveniência` | sai da receita da plataforma |
 
-A terceira é a que passa despercebida: `NetDue` **subtrai** a retenção de 5% enquanto ela
-está retida. Sem desfazê-la, uma venda estornada dentro dos 60 dias deixaria o produtor com
-saldo negativo por uma venda que não existe mais.
+Separados porque quem devolve cada parte é diferente — juntá-los foi o erro que descontava
+do produtor os 10% que nunca foram dele.
+
+Não há mais reserva de contestação de 5%/60d sobre o repasse do produtor: com a bilheteria
+retendo o valor até depois do evento, a reserva é da plataforma por construção.
 
 ### Duas fases, e por quê
 
@@ -176,26 +185,22 @@ portaria. O valor por ingresso sai do preço do item que ele ocupa, ajustado par
 **exatamente** o face do pedido — o cupom desconta o pedido, não o item, e dividir o total
 deixaria centavo sobrando.
 
-### Reversão do repasse
+### O que o estorno faz com o repasse
 
-De onde o dinheiro sai decide quem fica devendo (registrado em `split_refunds.source`):
+Devolve dinheiro que **está na conta da plataforma**. Abate `refunded_face_cents` do repasse
+do evento e pronto: não puxa valor de conta de terceiro, não gera saldo devedor e não abate
+de repasse futuro. O cenário "o produtor já sacou" deixou de existir — ele não saca antes do
+evento.
 
-| Situação | Origem | Efeito |
-|---|---|---|
-| Split ainda não liquidado | `not_settled` | o estorno da cobrança cancela o split junto |
-| Venda centralizada | `platform_balance` | o dinheiro nunca saiu da plataforma |
-| Split liquidado, subconta cobre | `producer` | o gateway puxa da subconta do produtor |
-| Split liquidado, sem saldo | `platform_covered` | a plataforma cobre e o produtor fica devendo |
+**Exceção, e só ela:** estorno depois de o repasse já ter sido **liquidado**. O dinheiro saiu
+e o comprador precisa ser devolvido assim mesmo, então vira **crédito a recuperar**
+(`recoverable_credits`), registrado e visível para o produtor e para o admin. Nada é abatido
+automaticamente: não há repasse futuro garantido, e um desconto silencioso no evento seguinte
+é o tipo de número que ninguém aceita.
 
-**O comprador é estornado mesmo quando a subconta não cobre.** Deixar alguém sem o dinheiro
-porque o produtor já sacou não é opção. A dívida vira `NetDue` negativo e sai dos próximos
-repasses sozinho — `SettleDue` não materializa payout com líquido negativo — e aparece no
-painel do produtor com a lista de estornos que a compõem. Acima de `RefundDebtAlertCents`
-(provisório: R$ 500) o produtor aparece como alerta no painel da plataforma.
-
-`split_transfers` tem uma linha por PEDIDO, então o parcial nunca a sobrescreve: a reversão
-é registrada por ingresso em `split_refunds`, e `split_status` só vai a `REFUNDED` quando não
-sobra face no pedido.
+Cancelamento de evento é onde o modelo mais ajuda: o dinheiro está com a plataforma, o
+estorno em massa não depende de recuperar nada de ninguém, e o repasse do evento vai para
+`cancelled`.
 
 ### Guardas
 
@@ -388,10 +393,6 @@ linha da JANELA nunca aparecer, ela pode ser removida.
 > eventos da outra, inclusive estorno. Do nosso lado isso é seguro — cobrança fora do
 > `payment_index` é reconhecida com 200 e não move nada (responder erro faria o gateway
 > reenviar para sempre) —, mas vale saber que a separação real é por CONTA.
->
-> Há um segundo motivo para separar contas: o **período de avaliação regulatória** das
-> subcontas (10 titulares / 60 dias) é da conta inteira. Duas aplicações criando subcontas
-> na mesma conta dividem esse teto e esse relógio.
 
 > **Atenção à configuração do webhook.** O webhook do sandbox desta conta está inscrito só em
 > `PAYMENT_OVERDUE`, `PAYMENT_RECEIVED` e `PAYMENT_CONFIRMED` — **sem `PAYMENT_REFUNDED`**.

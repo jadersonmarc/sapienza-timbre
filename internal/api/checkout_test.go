@@ -32,14 +32,13 @@ func scanInt(t *testing.T, ctx context.Context, pool *pgxpool.Pool, pid uuid.UUI
 	return v
 }
 
-// TestCheckoutPixStandingCycle é o "pronto quando" da Etapa 1.4: uma compra em Pix
-// percorre o ciclo completo e o split aparece corretamente registrado.
+// TestCheckoutPixStandingCycle: uma compra em Pix percorre o ciclo completo — cobrança
+// INTEIRA na conta da bilheteria, razão lançado e obrigação de repasse acumulando.
 func TestCheckoutPixStandingCycle(t *testing.T) {
 	ts, pool := setup(t)
 	_, owner := createProducer(t, ts, "Casa Pix", "owner@pix.com", "senha1234")
 	pid := producerID(t, ts, owner)
 	ctx := context.Background()
-	// Nível default = iniciante: taxa 15% menos rebate 10% da taxa → líquido 13,5%.
 
 	eventID := createEvent(t, ts, owner, "Show Pix", "shows")
 	_ = createLot(t, ts, owner, eventID, "Lote 1", 5000, 100, 0)
@@ -92,8 +91,16 @@ func TestCheckoutPixStandingCycle(t *testing.T) {
 	if repasse := scanInt(t, ctx, pool, pid, `SELECT amount_cents FROM ledger_entries WHERE kind='repasse'`); repasse != 10000 {
 		t.Fatalf("esperava repasse 10000 (face limpo), veio %d", repasse)
 	}
-	if pc := scanInt(t, ctx, pool, pid, `SELECT (split->>'platform_cents')::int FROM payments LIMIT 1`); pc != 1110 {
-		t.Fatalf("esperava split platform_cents 1110 (conveniência), veio %d", pc)
+	// A obrigação de repasse nasce ACUMULANDO: o evento ainda não aconteceu, e o valor fica
+	// com a bilheteria até lá. O líquido do produtor é o face, sem a conveniência.
+	if s := scanText(t, ctx, pool, pid, `SELECT status FROM event_payouts LIMIT 1`); s != "accruing" {
+		t.Fatalf("esperava repasse acumulando antes do evento, veio %q", s)
+	}
+	if v := scanInt(t, ctx, pool, pid, `SELECT net_due_cents FROM event_payouts LIMIT 1`); v != 10000 {
+		t.Fatalf("esperava líquido 10000 (o face), veio %d", v)
+	}
+	if v := scanInt(t, ctx, pool, pid, `SELECT platform_fee_cents FROM event_payouts LIMIT 1`); v != 1000 {
+		t.Fatalf("esperava conveniência 1000 para a plataforma, veio %d", v)
 	}
 
 	// Idempotência: reenviar o webhook não duplica ingressos.

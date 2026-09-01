@@ -346,7 +346,7 @@ func (s *Server) paySession(w http.ResponseWriter, r *http.Request, subjectID uu
 			}
 		}
 		res, e = checkout.PaySession(r.Context(), tx, s.seams.Payment, checkout.Producer{
-			ID: prod.ID, RetentionPct: prod.RetentionPct, AsaasWalletID: prod.AsaasWalletID,
+			ID: prod.ID, RetentionPct: prod.RetentionPct,
 		}, sess, req)
 		return e
 	})

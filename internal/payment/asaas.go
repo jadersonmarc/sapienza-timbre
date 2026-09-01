@@ -13,8 +13,9 @@ import (
 	"time"
 )
 
-// AsaasGateway é o cliente HTTP real do Asaas (Pix e cartão, com split no ato). É
-// usado quando ASAAS_API_KEY está setado; caso contrário o default é o FakeGateway.
+// AsaasGateway é o cliente HTTP real do Asaas (Pix e cartão). É usado quando
+// ASAAS_API_KEY está setado; caso contrário o default é o FakeGateway. A cobrança nasce
+// INTEIRA na conta da plataforma: não há recebedor secundário.
 // Best-effort: validar contra o sandbox do Asaas antes de produção.
 type AsaasGateway struct {
 	apiKey  string
@@ -81,7 +82,7 @@ func (g *AsaasGateway) do(ctx context.Context, method, path string, body any, ou
 	return nil
 }
 
-// CreateCharge cria o cliente e a cobrança no Asaas, com split, e busca o Pix.
+// CreateCharge cria o cliente e a cobrança no Asaas e busca o Pix.
 func (g *AsaasGateway) CreateCharge(ctx context.Context, req ChargeRequest) (Charge, error) {
 	// 1. Cliente (idempotente por CPF seria melhor; aqui cria sempre).
 	var cust struct {
@@ -139,24 +140,6 @@ func (g *AsaasGateway) CreateCharge(ctx context.Context, req ChargeRequest) (Cha
 	}
 	if req.ExternalReference != "" {
 		payload["externalReference"] = req.ExternalReference
-	}
-	if len(req.Split) > 0 {
-		split := make([]map[string]any, 0, len(req.Split))
-		for _, s := range req.Split {
-			item := map[string]any{"walletId": s.WalletID}
-			// Parcelado usa totalFixedValue: com fixedValue o recebedor levaria o valor
-			// A CADA parcela, ou seja, o face multiplicado pelo número de parcelas.
-			if req.Method == MethodCard && req.Installments > 1 {
-				item["totalFixedValue"] = reais(s.FixedCents)
-			} else {
-				item["fixedValue"] = reais(s.FixedCents)
-			}
-			if s.ExternalReference != "" {
-				item["externalReference"] = s.ExternalReference
-			}
-			split = append(split, item)
-		}
-		payload["splits"] = split
 	}
 
 	var pay struct {
@@ -288,24 +271,6 @@ type asaasWebhook struct {
 			Value       float64 `json:"value"`
 		} `json:"refunds"`
 	} `json:"payment"`
-	Split struct {
-		ID     string `json:"id"`
-		Status string `json:"status"`
-	} `json:"split"`
-	// additionalInfo traz o split que originou o evento — uma cobrança pode ter vários.
-	AdditionalInfo struct {
-		SplitID       string `json:"splitId"`
-		WalletID      string `json:"walletId"`
-		RefusalReason string `json:"refusalReason"`
-	} `json:"additionalInfo"`
-	Account struct {
-		WalletID                 string `json:"walletId"`
-		Status                   string `json:"status"`
-		CommercialInfoExpiration *struct {
-			IsExpired     bool   `json:"isExpired"`
-			ScheduledDate string `json:"scheduledDate"`
-		} `json:"commercialInfoExpiration"`
-	} `json:"account"`
 }
 
 // HandleWebhook decodifica e normaliza o webhook do Asaas.
@@ -322,40 +287,10 @@ func (g *AsaasGateway) HandleWebhook(_ context.Context, payload []byte) (Webhook
 			refundKeys = append(refundKeys, r.Description)
 		}
 	}
-	evt := WebhookEvent{
+	return WebhookEvent{
 		ID: e.ID, AsaasRef: e.Payment.ID, Type: e.Event, RefundKeys: refundKeys,
 		Confirmed: confirmed, Refunded: refunded,
-		SplitID:       e.AdditionalInfo.SplitID,
-		RefusalReason: e.AdditionalInfo.RefusalReason,
-		WalletID:      firstNonEmpty(e.Account.WalletID, e.AdditionalInfo.WalletID),
-		AccountStatus: e.Account.Status,
-	}
-	if e.Account.CommercialInfoExpiration != nil && e.Account.CommercialInfoExpiration.ScheduledDate != "" {
-		if t, err := time.Parse("2006-01-02", e.Account.CommercialInfoExpiration.ScheduledDate); err == nil {
-			evt.CommercialInfoExpiresAt = &t
-		}
-	}
-	evt.SplitStatus = splitStatusFor(e.Event, e.Split.Status)
-	return evt, nil
-}
-
-// splitStatusFor traduz o evento de split para o status que guardamos. O bloqueio por
-// divergência não é status do gateway — é nosso, porque tem prazo para resolver e precisa
-// aparecer como trabalho pendente e não como log.
-func splitStatusFor(event, status string) string {
-	switch event {
-	case "PAYMENT_SPLIT_DONE":
-		return "DONE"
-	case "PAYMENT_SPLIT_DIVERGENCE_BLOCK":
-		return "BLOCKED"
-	case "PAYMENT_SPLIT_DIVERGENCE_BLOCK_FINISHED":
-		return "CANCELLED"
-	case "PAYMENT_SPLIT_CANCELLED":
-		return "CANCELLED"
-	case "PAYMENT_SPLIT_REFUSED":
-		return "REFUSED"
-	}
-	return status
+	}, nil
 }
 
 func firstNonEmpty(vals ...string) string {
@@ -383,41 +318,6 @@ func nonEmpty(s, fallback string) string {
 	return s
 }
 
-// CreateAccount abre a subconta do produtor no Asaas (o serviço hoje se chama BaaS —
-// antigo "white label"; o endpoint segue /v3/accounts). Devolve só o walletId:
-// é o destinatário do split. A resposta traz também a chave de API da subconta — ela NÃO é
-// guardada, porque operar em nome do produtor não é necessário para dividir a venda, e
-// custodiar credencial de terceiro é responsabilidade que não vale assumir de graça.
-func (g *AsaasGateway) CreateAccount(ctx context.Context, in AccountInput) (Account, error) {
-	payload := map[string]any{
-		"name":          in.Name,
-		"email":         in.Email,
-		"cpfCnpj":       in.TaxID,
-		"mobilePhone":   in.MobilePhone,
-		"incomeValue":   reais(in.IncomeCents),
-		"address":       in.Address,
-		"addressNumber": in.AddressNumber,
-		"province":      in.Province,
-		"postalCode":    in.PostalCode,
-	}
-	if in.CompanyType != "" {
-		payload["companyType"] = in.CompanyType
-	} else if in.BirthDate != "" {
-		payload["birthDate"] = in.BirthDate
-	}
-	var out struct {
-		WalletID string `json:"walletId"`
-		ID       string `json:"id"`
-	}
-	if err := g.do(ctx, http.MethodPost, "/v3/accounts", payload, &out); err != nil {
-		return Account{}, fmt.Errorf("criar conta de recebimento: %w", err)
-	}
-	if out.WalletID == "" {
-		return Account{}, fmt.Errorf("gateway não devolveu a carteira da conta criada")
-	}
-	return Account{WalletID: out.WalletID}, nil
-}
-
 // Fees busca a tabela de tarifas vigente da conta. Guarda a resposta crua junto: é ela que
 // vai para o snapshot de auditoria da venda.
 func (g *AsaasGateway) Fees(ctx context.Context) (Fees, error) {
@@ -426,45 +326,6 @@ func (g *AsaasGateway) Fees(ctx context.Context) (Fees, error) {
 		return Fees{}, err
 	}
 	return parseAsaasFees(raw)
-}
-
-// AccountDocuments lista as pendências de documentação de uma subconta e o link de
-// onboarding de cada uma. A consulta usa a chave da PLATAFORMA com o cabeçalho da subconta
-// alvo — a chave da subconta é descartada na criação de propósito.
-func (g *AsaasGateway) AccountDocuments(ctx context.Context, walletID string) (AccountDocuments, error) {
-	var out struct {
-		Data []struct {
-			ID            string `json:"id"`
-			Type          string `json:"type"`
-			Status        string `json:"status"`
-			OnboardingURL string `json:"onboardingUrl"`
-		} `json:"data"`
-	}
-	if err := g.doAs(ctx, walletID, http.MethodGet, "/v3/myAccount/documents", nil, &out); err != nil {
-		return AccountDocuments{}, err
-	}
-	docs := AccountDocuments{}
-	for _, d := range out.Data {
-		docs.Items = append(docs.Items, AccountDocument{
-			ID: d.ID, Type: d.Type, Status: d.Status, OnboardingURL: d.OnboardingURL,
-		})
-	}
-	return docs, nil
-}
-
-// ConfirmCommercialInfo submete a confirmação anual de dados comerciais da subconta.
-func (g *AsaasGateway) ConfirmCommercialInfo(ctx context.Context, walletID string, in AccountInput) error {
-	payload := map[string]any{
-		"name": in.Name, "email": in.Email, "cpfCnpj": in.TaxID, "mobilePhone": in.MobilePhone,
-		"incomeValue": reais(in.IncomeCents), "address": in.Address, "addressNumber": in.AddressNumber,
-		"province": in.Province, "postalCode": in.PostalCode,
-	}
-	if in.CompanyType != "" {
-		payload["companyType"] = in.CompanyType
-	} else if in.BirthDate != "" {
-		payload["birthDate"] = in.BirthDate
-	}
-	return g.doAs(ctx, walletID, http.MethodPost, "/v3/myAccount/commercialInfo", payload, nil)
 }
 
 // raw faz a chamada e devolve o corpo sem decodificar (para guardar o original).
@@ -523,39 +384,6 @@ func (g *AsaasGateway) rawPost(ctx context.Context, path string, body any) ([]by
 // de uma resposta sem que o cliente precise saber ler todos os campos dela.
 func (g *AsaasGateway) RawGet(ctx context.Context, path string) ([]byte, error) {
 	return g.raw(ctx, http.MethodGet, path)
-}
-
-// doAs chama a API no contexto de uma SUBCONTA, identificada pelo walletId. É assim que a
-// plataforma consulta documentos e confirma dados comerciais sem guardar a chave dela.
-func (g *AsaasGateway) doAs(ctx context.Context, walletID, method, path string, body, out any) error {
-	var buf bytes.Buffer
-	if body != nil {
-		if err := json.NewEncoder(&buf).Encode(body); err != nil {
-			return err
-		}
-	}
-	req, err := http.NewRequestWithContext(ctx, method, g.baseURL+path, &buf)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("access_token", g.apiKey)
-	if walletID != "" {
-		req.Header.Set("asaas-account", walletID)
-	}
-	resp, err := g.http.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 500))
-		return fmt.Errorf("asaas %s %s: status %d: %s", method, path, resp.StatusCode, clip(strings.TrimSpace(string(detail))))
-	}
-	if out != nil {
-		return json.NewDecoder(resp.Body).Decode(out)
-	}
-	return nil
 }
 
 // clip limita o corpo de erro que entra em log/mensagem: o suficiente para diagnosticar,

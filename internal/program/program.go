@@ -1,5 +1,5 @@
 // Package program lança a venda no razão: repasse ao produtor, taxa da plataforma, custo de
-// processamento, retenção do cartão e a participação do originador.
+// processamento e a participação do originador.
 //
 // O PROGRAMA DE NÍVEIS FOI EXTINTO. A taxa é 10% do face para todo produtor, calculada num
 // ponto só (pricing.PlatformFeeCents). Não existe rebate, tabela de níveis nem taxa efetiva
@@ -39,9 +39,13 @@ func SetOrigination(ctx context.Context, pool *pgxpool.Pool, producerID, origina
 	return err
 }
 
-// SettleLedger apura a venda (usa a data da ordem = data da venda) e lança o razão:
-// taxa (líquido da plataforma), repasse ao produtor (D+2), retenção 5% por 60d no cartão
-// e a participação do originador (inerte enquanto a participação for 0). Sob WithTenant.
+// SettleLedger apura a venda e lança o razão: taxa (receita da plataforma), repasse ao
+// produtor, custo de processamento e a participação do originador (inerte enquanto a
+// participação for 0). Sob WithTenant.
+//
+// NÃO EXISTE MAIS retenção de 5%/60d como reserva de contestação do produtor. Com a
+// bilheteria retendo o valor até depois do evento, a reserva é da plataforma por
+// construção: o dinheiro não saiu de lá para ser reservado.
 func SettleLedger(ctx context.Context, tx pgx.Tx, producerID, orderID, paymentID uuid.UUID) error {
 	var eventID uuid.UUID
 	var total, face, platformFee, processing int64
@@ -55,47 +59,23 @@ func SettleLedger(ctx context.Context, tx pgx.Tx, producerID, orderID, paymentID
 	if face == 0 && total > 0 {
 		return fmt.Errorf("%w (ordem %s)", ErrNoFace, orderID)
 	}
-	var method string
-	_ = tx.QueryRow(ctx, `SELECT method FROM payments WHERE id=$1`, paymentID).Scan(&method)
-
-	var endsAt *time.Time
-	_ = tx.QueryRow(ctx, `SELECT ends_at FROM events WHERE id=$1`, eventID).Scan(&endsAt)
-	repasseAt := time.Now().Add(2 * 24 * time.Hour)
-	if endsAt != nil {
-		repasseAt = endsAt.Add(2 * 24 * time.Hour)
-	}
-
-	// Quem entrega o face ao produtor: o gateway, quando a venda saiu com split para a
-	// subconta dele, ou a plataforma, por transferência posterior. A linha do razão é a
-	// mesma nos dois casos — muda só quem já pagou, e é isso que impede a fila de repasse
-	// de mandar pagar de novo um valor que o gateway entregou na própria cobrança.
-	settledBy := "platform"
-	var splitRef *string
-	if err := tx.QueryRow(ctx, `SELECT asaas_payment_id FROM split_transfers WHERE order_id=$1`, orderID).Scan(&splitRef); err == nil && splitRef != nil && *splitRef != "" {
-		settledBy = "split"
-	}
-
-	// Modelo Sympla (§4.3): três linhas por venda —
-	//   repasse       = valor de FACE ao produtor (D+2)
+	// Modelo de bilheteria: três linhas por venda —
+	//   repasse       = valor de FACE ao produtor
 	//   taxa          = taxa de plataforma (receita da Sapienza)
 	//   processamento = custo de adquirência repassado (0 enquanto provisório)
-	if _, err := tx.Exec(ctx, `INSERT INTO ledger_entries (event_id, order_id, payment_id, kind, amount_cents, available_at, settled_by) VALUES ($1,$2,$3,'repasse',$4,$5,$6)`, eventID, orderID, paymentID, face, repasseAt, settledBy); err != nil {
+	//
+	// available_at fica NULO de propósito. QUANDO o produtor recebe deixou de ser
+	// propriedade da linha do razão e passou a ser a obrigação de repasse do evento
+	// (event_payouts.due_at): o razão diz o que aconteceu, a obrigação diz até quando. Duas
+	// datas para a mesma promessa é como elas divergem.
+	if _, err := tx.Exec(ctx, `INSERT INTO ledger_entries (event_id, order_id, payment_id, kind, amount_cents) VALUES ($1,$2,$3,'repasse',$4)`, eventID, orderID, paymentID, face); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO ledger_entries (event_id, order_id, payment_id, kind, amount_cents, available_at, settled_by) VALUES ($1,$2,$3,'taxa',$4, now(), $5)`, eventID, orderID, paymentID, platformFee, settledBy); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO ledger_entries (event_id, order_id, payment_id, kind, amount_cents, available_at) VALUES ($1,$2,$3,'taxa',$4, now())`, eventID, orderID, paymentID, platformFee); err != nil {
 		return err
 	}
 	if processing > 0 {
-		if _, err := tx.Exec(ctx, `INSERT INTO ledger_entries (event_id, order_id, payment_id, kind, amount_cents, available_at, settled_by) VALUES ($1,$2,$3,'processamento',$4, now(), $5)`, eventID, orderID, paymentID, processing, settledBy); err != nil {
-			return err
-		}
-	}
-	// Retenção antifraude no cartão — PROVISÓRIO (5% do FACE, 60d): trava parte do repasse.
-	// Só morde o que a plataforma está segurando: com split, o face já saiu na cobrança e
-	// não há o que reter (a linha fica registrada, marcada, e NetDue a ignora).
-	if method == "credit_card" {
-		ret := int64(math.Round(float64(face) * 0.05))
-		if _, err := tx.Exec(ctx, `INSERT INTO ledger_entries (event_id, order_id, payment_id, kind, amount_cents, available_at, settled_by) VALUES ($1,$2,$3,'retencao',$4, now() + interval '60 days', $5)`, eventID, orderID, paymentID, ret, settledBy); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO ledger_entries (event_id, order_id, payment_id, kind, amount_cents, available_at) VALUES ($1,$2,$3,'processamento',$4, now())`, eventID, orderID, paymentID, processing); err != nil {
 			return err
 		}
 	}

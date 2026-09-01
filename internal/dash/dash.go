@@ -93,11 +93,14 @@ func CheckinProgress(ctx context.Context, tx pgx.Tx, eventID uuid.UUID) (Checkin
 }
 
 // Finance resume o financeiro do evento.
+//
+// Não há mais linha de retenção: a reserva de contestação de 5%/60d sobre o repasse do
+// produtor deixou de existir quando a bilheteria passou a reter o valor até depois do
+// evento. A reserva é da plataforma por construção — o dinheiro não saiu de lá.
 type Finance struct {
-	GrossCents    int64 `json:"gross_cents"`
-	TaxaCents     int64 `json:"taxa_cents"`
-	RepasseCents  int64 `json:"repasse_cents"`  // receita líquida do produtor
-	RetencaoCents int64 `json:"retencao_cents"` // reserva de contestação (cartão)
+	GrossCents   int64 `json:"gross_cents"`
+	TaxaCents    int64 `json:"taxa_cents"`
+	RepasseCents int64 `json:"repasse_cents"` // receita líquida do produtor
 	// EstornoCents é o que voltou do PRODUTOR (face devolvido); EstornoTaxaCents é o que
 	// voltou da PLATAFORMA (conveniência). Somados, dão o que o comprador recebeu de volta.
 	// Separados porque quem devolve cada parte é diferente, e juntá-los foi exatamente o
@@ -132,8 +135,6 @@ func EventFinance(ctx context.Context, tx pgx.Tx, eventID uuid.UUID) (Finance, e
 			f.TaxaCents = amount
 		case "repasse":
 			f.RepasseCents = amount
-		case "retencao":
-			f.RetencaoCents = amount
 		case "estorno":
 			f.EstornoCents = amount
 		case "estorno_taxa":

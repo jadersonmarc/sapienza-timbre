@@ -1,5 +1,5 @@
 // Package checkout orquestra a compra: valida lote, reserva (hold de assentos ou
-// estoque de pista), aplica cupom e meia-entrada, calcula o split, cria ordem/itens/
+// estoque de pista), aplica cupom e meia-entrada, precifica, cria ordem/itens/
 // pagamento e chama o gateway. O webhook (idempotente) confirma o pagamento, emite os
 // ingressos e escreve o razão (ledger). Todas as funções recebem uma pgx.Tx já
 // escopada por tenancy.WithTenant.
@@ -7,7 +7,6 @@ package checkout
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -54,9 +53,8 @@ var errHalfPriceSoldOut = fmt.Errorf(
 
 // Producer carrega o que o checkout precisa do produtor (billing).
 type Producer struct {
-	ID            uuid.UUID
-	RetentionPct  float64 // percentual retido pela plataforma sobre o total
-	AsaasWalletID *string
+	ID           uuid.UUID
+	RetentionPct float64 // percentual retido pela plataforma sobre o total
 }
 
 // Request é o pedido de compra.
@@ -101,12 +99,6 @@ type Result struct {
 	PixCode             string    `json:"pix_code,omitempty"`
 	// InvoiceURL leva o comprador à página de pagamento do gateway (caminho do cartão).
 	InvoiceURL string `json:"invoice_url,omitempty"`
-}
-
-type splitInfo struct {
-	ProducerCents  int64  `json:"producer_cents"`
-	PlatformCents  int64  `json:"platform_cents"`
-	ProducerWallet string `json:"producer_wallet,omitempty"`
 }
 
 // StartCheckout valida, reserva, precifica, cria ordem/pagamento e cria a cobrança no
@@ -215,15 +207,6 @@ func finalizeOrder(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, pr
 		return Result{}, fmt.Errorf("%w: parcelamento indisponível para este valor", ErrBadRequest)
 	}
 
-	// Split: o produtor recebe o FACE; a plataforma fica com a taxa de conveniência (a
-	// adquirência deduz o processamento do total no ato).
-	wallet := ""
-	if prod.AsaasWalletID != nil {
-		wallet = *prod.AsaasWalletID
-	}
-	split := splitInfo{ProducerCents: bd.FaceCents, PlatformCents: bd.ConvenienceFeeCents, ProducerWallet: wallet}
-	splitJSON, _ := json.Marshal(split)
-
 	// Ordem: total_cents = o que o comprador paga; guardamos a decomposição para o razão/estorno.
 	var orderID uuid.UUID
 	var subjectID *uuid.UUID
@@ -251,12 +234,13 @@ func finalizeOrder(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, pr
 		}
 	}
 
-	// Pagamento (pending).
+	// Pagamento (pending). A decomposição do preço mora na ORDEM (face/taxa/processamento);
+	// o pagamento guarda só o que o comprador paga.
 	var paymentID uuid.UUID
 	if err := tx.QueryRow(ctx, `
-		INSERT INTO payments (order_id, method, installments, amount_cents, status, split)
-		VALUES ($1,$2,$3,$4,'pending',$5::jsonb) RETURNING id`,
-		orderID, req.Method, installments, bd.TotalCents, string(splitJSON),
+		INSERT INTO payments (order_id, method, installments, amount_cents, status)
+		VALUES ($1,$2,$3,$4,'pending') RETURNING id`,
+		orderID, req.Method, installments, bd.TotalCents,
 	).Scan(&paymentID); err != nil {
 		return Result{}, fmt.Errorf("criar pagamento: %w", err)
 	}
@@ -271,46 +255,18 @@ func finalizeOrder(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, pr
 		return Result{}, fmt.Errorf("indexar pedido: %w", err)
 	}
 
-	// Cobrança no gateway pelo TOTAL; o split entrega o FACE limpo ao produtor. O Timbre
-	// não se declara no split: o emissor recebe o líquido não distribuído.
-	var splitItems []payment.SplitItem
-	if prod.AsaasWalletID != nil && *prod.AsaasWalletID != "" && bd.FaceCents > 0 {
-		// Antes de cobrar: o líquido tem de cobrir o face. Se não cobrir, o gateway
-		// bloqueia o split por divergência na LIQUIDAÇÃO — semanas depois, com o dinheiro
-		// preso e dois dias úteis para resolver. Falhar aqui é muito mais barato.
-		tarifa, err := pricing.GatewayFeeCents(bd.TotalCents, req.Method, installments, req.Fees)
-		if err != nil {
-			return Result{}, fmt.Errorf("%w: %s", ErrBadRequest, err.Error())
-		}
-		if bd.TotalCents-tarifa < bd.FaceCents {
-			return Result{}, fmt.Errorf(
-				"%w: cobrança de %d não cobre o repasse de %d após a tarifa estimada de %d",
-				ErrBadRequest, bd.TotalCents, bd.FaceCents, tarifa)
-		}
-		splitItems = []payment.SplitItem{{
-			WalletID:          *prod.AsaasWalletID,
-			FixedCents:        bd.FaceCents,
-			ExternalReference: "timbre:repasse:" + orderID.String(),
-		}}
-	}
+	// Cobrança no gateway pelo TOTAL, INTEIRA na conta da bilheteria. Não há recebedor
+	// secundário: o repasse ao produtor acontece depois da realização do evento, porque se
+	// o evento não acontece o dinheiro precisa estar com quem vai devolver.
 	charge, err := gw.CreateCharge(ctx, payment.ChargeRequest{
 		OrderID: orderID.String(), Method: req.Method, AmountCents: bd.TotalCents, Installments: installments,
 		ExternalReference: "timbre:order:" + orderID.String(),
 		BuyerName:         req.BuyerName, BuyerEmail: req.BuyerEmail, BuyerCPF: req.BuyerCPF,
-		BuyerPhone: req.BuyerPhone, Split: splitItems,
-		Card: req.Card, Holder: req.Holder, RemoteIP: req.RemoteIP,
+		BuyerPhone: req.BuyerPhone,
+		Card:       req.Card, Holder: req.Holder, RemoteIP: req.RemoteIP,
 	})
 	if err != nil {
 		return Result{}, fmt.Errorf("criar cobrança: %w", err)
-	}
-
-	// Repasse combinado com o produtor, com a tabela de tarifas usada no cálculo. Fica
-	// PENDING até o gateway liquidar o split e avisar por webhook.
-	if len(splitItems) > 0 {
-		if err := recordSplitTransfer(ctx, tx, orderID, prod.ID, req.EventID, bd, req.Method,
-			installments, charge.AsaasRef, req.Fees); err != nil {
-			return Result{}, err
-		}
 	}
 
 	// Grava a referência e o índice público (webhook global → tenant).

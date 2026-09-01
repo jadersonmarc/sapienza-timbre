@@ -29,7 +29,6 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
 	"github.com/jadersonmarc/sapienza-timbre/internal/producer"
 	"github.com/jadersonmarc/sapienza-timbre/internal/store"
-	"github.com/jadersonmarc/sapienza-timbre/internal/subaccount"
 	"github.com/jadersonmarc/sapienza-timbre/internal/ticketing"
 )
 
@@ -43,8 +42,6 @@ type Seams struct {
 	// Fees serve a tabela de tarifas do gateway ao cálculo de preço. Nunca é opcional no
 	// caminho de venda: sem ela o preço sairia com tarifa arbitrada.
 	Fees *fees.Service
-	// Subaccounts cuida da conta de recebimento do produtor (destinatária do split).
-	Subaccounts *subaccount.Service
 }
 
 // Server guarda as dependências da API.
@@ -119,8 +116,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/events/{id}/publish", s.requireOwner(s.publishEvent))
 	mux.HandleFunc("GET /api/v1/events/{id}/lineup", s.requireOwner(s.getLineup))
 	mux.HandleFunc("PUT /api/v1/events/{id}/lineup", s.requireOwner(s.setLineup))
-	mux.HandleFunc("GET /api/v1/producer/receiving-account", s.requireOwner(s.receivingAccountStatus))
-	mux.HandleFunc("POST /api/v1/producer/receiving-account", s.requireOwner(s.receivingAccount))
+	// Conta de recebimento: só a chave Pix. O produtor não tem conta no gateway — a
+	// bilheteria recebe o total e transfere depois da realização do evento.
 	mux.HandleFunc("GET /api/v1/producer/payout-account", s.requireOwner(s.payoutAccountStatus))
 	mux.HandleFunc("POST /api/v1/producer/payout-account", s.requireOwner(s.payoutAccount))
 	mux.HandleFunc("POST /api/v1/events/{id}/submit-review", s.requireOwner(s.transitionEvent("pending_review")))
@@ -273,9 +270,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/admin/me", s.requireAdmin(s.adminMe))
 	mux.HandleFunc("GET /api/v1/admin/summary", s.requireAdmin(s.adminSummary))
 	mux.HandleFunc("GET /api/v1/admin/payouts", s.requireAdmin(s.adminPayouts))
-	mux.HandleFunc("GET /api/v1/admin/subaccounts", s.requireAdmin(s.adminSubaccounts))
-	mux.HandleFunc("POST /api/v1/admin/producers/{id}/subaccount/sync-documents", s.requireAdmin(s.adminSyncDocuments))
-	mux.HandleFunc("GET /api/v1/admin/splits", s.requireAdmin(s.adminSplits))
+	// Retenção do repasse: motivo de lista fechada, com ator registrado.
+	mux.HandleFunc("GET /api/v1/admin/payouts/hold-reasons", s.requireAdmin(s.adminHoldReasons))
+	mux.HandleFunc("POST /api/v1/admin/producers/{id}/payouts/hold", s.requireAdmin(s.adminHoldPayout(true)))
+	mux.HandleFunc("POST /api/v1/admin/producers/{id}/payouts/release", s.requireAdmin(s.adminHoldPayout(false)))
+	mux.HandleFunc("GET /api/v1/admin/producers/{id}/payout-delay", s.requireAdmin(s.adminPayoutDelay))
+	mux.HandleFunc("PUT /api/v1/admin/producers/{id}/payout-delay", s.requireAdmin(s.adminPayoutDelay))
 	mux.HandleFunc("GET /api/v1/admin/sales", s.requireAdmin(s.adminSearchSales))
 	mux.HandleFunc("GET /api/v1/admin/refund-jobs/failed", s.requireAdmin(s.adminFailedRefunds))
 	mux.HandleFunc("GET /api/v1/admin/notifications/failed", s.requireAdmin(s.adminFailedNotifications))

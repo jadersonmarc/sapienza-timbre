@@ -33,7 +33,7 @@ Control Plane / Data Plane da Margot. Mais um app no Coolify, no mesmo VPS.
 ## Decisões técnicas (fechadas)
 
 Go + pgx/v5 (à mão, sem sqlc). PostgreSQL. Next.js no console/admin (etapas futuras).
-Asaas com split no ato da venda. Ed25519 para assinatura do ingresso. Base + ERC-1155.
+Asaas: a cobrança nasce inteira na conta da bilheteria e o repasse ao produtor acontece depois da realização do evento (sem split). Ed25519 para assinatura do ingresso. Base + ERC-1155.
 Carteira invisível por MPC, sem custódia de chave pela plataforma. Hold de assento no
 Postgres (nunca Redis como fonte de verdade). Contrato em rede mínimo e imutável.
 
@@ -53,7 +53,7 @@ Postgres (nunca Redis como fonte de verdade). Contrato em rede mínimo e imutáv
 
 ## Módulos (pacotes num binário, não microserviços)
 
-`catalog, pricing, inventory, checkout, ticketing, gate, chain, ledger, presence,
+`catalog, pricing, inventory, checkout, ticketing, gate, chain, payout, presence,
 audience, partners, console`. A operação é de uma pessoa.
 
 ## Interfaces centrais (padrão WhatsAppDriver da Margot)

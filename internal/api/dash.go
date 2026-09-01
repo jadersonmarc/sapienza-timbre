@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/csv"
 	"net/http"
 	"time"
@@ -13,8 +12,9 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/audit"
 	"github.com/jadersonmarc/sapienza-timbre/internal/auth"
 	"github.com/jadersonmarc/sapienza-timbre/internal/dash"
-	"github.com/jadersonmarc/sapienza-timbre/internal/ledger"
 	"github.com/jadersonmarc/sapienza-timbre/internal/notify"
+	"github.com/jadersonmarc/sapienza-timbre/internal/payout"
+	"github.com/jadersonmarc/sapienza-timbre/internal/store"
 )
 
 // dashOverview devolve, em uma chamada, o que o painel do produtor mostra em tempo
@@ -32,6 +32,7 @@ func (s *Server) dashOverview(w http.ResponseWriter, r *http.Request, claims *au
 		fin    dash.Finance
 		funnel dash.SessionFunnel
 		half   attest.HalfPriceAllowance
+		pay    payout.Payout
 	)
 	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
 		var e error
@@ -50,6 +51,13 @@ func (s *Server) dashOverview(w http.ResponseWriter, r *http.Request, claims *au
 		if funnel, e = dash.EventSessionFunnel(r.Context(), tx, eventID); e != nil {
 			return e
 		}
+		// O repasse entra aqui porque é a pergunta que o produtor faz junto com "quanto
+		// vendi": com a bilheteria retendo até depois do evento, não mostrar quanto ele tem
+		// a receber e quando faz o modelo ser indistinguível de "a plataforma está com o meu
+		// dinheiro e não me explica nada". Recalculado na leitura — o extrato é em tempo real.
+		if pay, e = payout.Recompute(r.Context(), tx, eventID); e != nil {
+			return e
+		}
 		// A cota de meia entra no painel porque ela BARRA venda desde que passou a valer: o
 		// produtor precisa ver quanto resta no mesmo lugar em que acompanha as vendas.
 		half, e = attest.HalfPrice(r.Context(), tx, eventID)
@@ -60,7 +68,7 @@ func (s *Server) dashOverview(w http.ResponseWriter, r *http.Request, claims *au
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"sales": sales, "occupancy": occ, "checkin": chk, "finance": fin,
-		"session_funnel": funnel, "half_price": half,
+		"session_funnel": funnel, "half_price": half, "payout": pay,
 	})
 }
 
@@ -78,89 +86,64 @@ func (s *Server) dashSummary(w http.ResponseWriter, r *http.Request, claims *aut
 	writeJSON(w, http.StatusOK, sum)
 }
 
-type payoutRow struct {
-	ID           uuid.UUID  `json:"id"`
-	AmountCents  int64      `json:"amount_cents"`
-	Status       string     `json:"status"`
-	ScheduledFor *time.Time `json:"scheduled_for,omitempty"`
-	SentAt       *time.Time `json:"sent_at,omitempty"`
-}
-
-// dashPayouts mostra o extrato de repasses: o líquido disponível agora e os payouts.
+// dashPayouts é o extrato de repasses do produtor: cada evento, quanto ele tem a receber,
+// quando, e em que pé está.
+//
+// Sem esta tela o modelo de retenção é indistinguível de "a plataforma está com o meu
+// dinheiro e não me explica nada" — que é exatamente a suspeita que uma bilheteria precisa
+// não merecer.
 func (s *Server) dashPayouts(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
-	var netDue int64
-	var payouts []payoutRow
-	var debts []refundDebtRow
+	var rows []payout.Payout
+	var credits []recoverableCredit
 	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
-		var e error
-		if netDue, e = ledger.NetDue(r.Context(), tx); e != nil {
-			return e
-		}
-		rows, e := tx.Query(r.Context(), `SELECT id, amount_cents, status, scheduled_for, sent_at FROM payouts ORDER BY created_at DESC`)
+		// Recalcula antes de listar: o produtor abre esta tela justamente depois de uma
+		// venda ou de um estorno, e um número velho aqui é pior que número nenhum.
+		ids, e := payout.EventIDs(r.Context(), tx)
 		if e != nil {
 			return e
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var p payoutRow
-			if e := rows.Scan(&p.ID, &p.AmountCents, &p.Status, &p.ScheduledFor, &p.SentAt); e != nil {
+		for _, id := range ids {
+			if _, e := payout.Recompute(r.Context(), tx, id); e != nil {
 				return e
 			}
-			payouts = append(payouts, p)
 		}
-		if e := rows.Err(); e != nil {
+		if rows, e = payout.List(r.Context(), tx); e != nil {
 			return e
 		}
-		debts, e = coveredRefunds(r.Context(), tx)
+		credits, e = openCredits(r.Context(), tx)
 		return e
 	}); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// Saldo devedor é NetDue negativo: estorno que a subconta do produtor não cobriu e a
-	// plataforma pagou ao comprador. Vem com a lista que o compõe — dívida sem a origem à
-	// vista é o tipo de número que ninguém aceita.
-	resp := map[string]any{"net_due_cents": netDue, "payouts": payouts}
-	if netDue < 0 {
-		resp["debt_cents"] = -netDue
-		resp["debt_refunds"] = debts
-	}
-	writeJSON(w, http.StatusOK, resp)
-}
-
-// refundDebtRow é um estorno que a plataforma cobriu no lugar do produtor.
-type refundDebtRow struct {
-	ID         uuid.UUID `json:"id"`
-	OrderID    uuid.UUID `json:"order_id"`
-	EventTitle string    `json:"event_title"`
-	TotalCents int64     `json:"total_cents"`
-	Reason     *string   `json:"reason"`
-	CreatedAt  time.Time `json:"created_at"`
-}
-
-// coveredRefunds lista os estornos cobertos pela plataforma — o que forma o saldo devedor.
-func coveredRefunds(ctx context.Context, tx pgx.Tx) ([]refundDebtRow, error) {
-	rows, err := tx.Query(ctx, `
-		SELECT DISTINCT r.id, r.order_id, e.title, r.total_cents, r.reason, r.created_at
-		  FROM refunds r
-		  JOIN split_refunds sr ON sr.refund_id = r.id AND sr.source = 'platform_covered'
-		  JOIN orders o ON o.id = r.order_id
-		  JOIN events e ON e.id = o.event_id
-		 WHERE r.status = 'confirmed'
-		 ORDER BY r.created_at DESC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []refundDebtRow
-	for rows.Next() {
-		var d refundDebtRow
-		if err := rows.Scan(&d.ID, &d.OrderID, &d.EventTitle, &d.TotalCents, &d.Reason, &d.CreatedAt); err != nil {
-			return nil, err
+	var pending, upcoming, paid int64
+	for _, p := range rows {
+		switch p.Status {
+		case payout.StatusPending:
+			pending += p.NetDueCents
+		case payout.StatusAccruing:
+			// Ainda não venceu porque o evento não aconteceu. Somar junto com o vencido
+			// diria ao produtor que ele tem a receber hoje o que só recebe depois da festa.
+			upcoming += p.NetDueCents
+		case payout.StatusPaid:
+			paid += p.NetDueCents
 		}
-		out = append(out, d)
 	}
-	return out, rows.Err()
+	acc, err := store.GetPayoutAccount(r.Context(), s.pool, claims.ProducerID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"payouts":             rows,
+		"pending_cents":       pending,
+		"upcoming_cents":      upcoming,
+		"paid_cents":          paid,
+		"destination_missing": acc.PixKey == "",
+		// Créditos a recuperar: estorno que chegou depois de o repasse ter sido pago. O
+		// produtor vê porque a cobrança vai chegar nele — e chegar de surpresa é pior.
+		"recoverable_credits": credits,
+	})
 }
 
 // dashNotifications mostra os envios de um evento (ingressos) — quantos foram, quantos

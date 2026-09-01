@@ -17,6 +17,7 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/checkout"
 	"github.com/jadersonmarc/sapienza-timbre/internal/notify"
 	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
+	"github.com/jadersonmarc/sapienza-timbre/internal/payout"
 )
 
 type refundReq struct {
@@ -32,10 +33,11 @@ type refundResp struct {
 	FaceCents        int64     `json:"face_cents"`
 	ConvenienceCents int64     `json:"convenience_cents"`
 	TotalCents       int64     `json:"total_cents"`
-	// CoveredByPlatform é o caso em que a subconta do produtor não cobriu: o comprador foi
-	// estornado assim mesmo e o produtor ficou devendo.
-	CoveredByPlatform bool       `json:"covered_by_platform"`
-	RequestID         *uuid.UUID `json:"request_id,omitempty"`
+	// RecoverableCreditCents é o caso de EXCEÇÃO: o estorno chegou depois de o repasse do
+	// evento já ter sido pago. O comprador foi devolvido assim mesmo, e a plataforma passa a
+	// ter crédito contra o produtor — registrado e visível, nunca abatido sozinho.
+	RecoverableCreditCents int64      `json:"recoverable_credit_cents,omitempty"`
+	RequestID              *uuid.UUID `json:"request_id,omitempty"`
 }
 
 // producerRefund estorna um pedido (owner do produtor). Guarda de entrada registrada vale:
@@ -125,6 +127,7 @@ func (s *Server) handleRefund(w http.ResponseWriter, r *http.Request, producerID
 func (s *Server) runRefund(ctx context.Context, producerID uuid.UUID, in checkout.RefundInput,
 	requestID *uuid.UUID) (refundResp, error) {
 	var prepared checkout.PreparedRefund
+	var credit int64
 	if err := s.withTenant(ctx, producerID, func(tx pgx.Tx) error {
 		// O pedido vai a 'processing' na MESMA transação que reserva os ingressos: uma
 		// segunda aprovação clicada enquanto a primeira está em voo não pode virar um
@@ -146,7 +149,6 @@ func (s *Server) runRefund(ctx context.Context, producerID uuid.UUID, in checkou
 	}
 
 	// ── fase 2: fora de transação ────────────────────────────────────────────
-	var covered bool
 	_, err := s.seams.Payment.Refund(ctx, payment.RefundRequest{
 		AsaasRef:   prepared.AsaasRef,
 		ValueCents: prepared.TotalCents,
@@ -167,13 +169,6 @@ func (s *Server) runRefund(ctx context.Context, producerID uuid.UUID, in checkou
 			slog.Error("soltar estorno em espera", "refund", prepared.ID, "err", e)
 		}
 		return refundResp{}, fmt.Errorf("%w: %s", checkout.ErrRefundBusy, err.Error())
-	case errors.Is(err, payment.ErrRefundInsufficientFunds):
-		// A subconta do produtor não cobre. O comprador é estornado assim mesmo — a
-		// plataforma cobre e o produtor fica devendo, e a dívida sai dos próximos repasses.
-		// Deixar o comprador sem o dinheiro porque o produtor sacou não é opção.
-		covered = true
-		slog.Warn("estorno coberto pela plataforma", "refund", prepared.ID, "produtor", producerID,
-			"valor", prepared.TotalCents)
 	default:
 		cause := err.Error()
 		if e := s.withTenant(ctx, producerID, func(tx pgx.Tx) error {
@@ -196,7 +191,13 @@ func (s *Server) runRefund(ctx context.Context, producerID uuid.UUID, in checkou
 		if e := checkout.MarkRefundSent(ctx, tx, prepared.ID, ""); e != nil {
 			return e
 		}
-		if e := checkout.CompleteRefund(ctx, tx, prepared.ID, covered); e != nil {
+		var e error
+		if credit, e = checkout.CompleteRefund(ctx, tx, prepared.ID); e != nil {
+			return e
+		}
+		// O estorno mudou o líquido do evento. Recalcular aqui, na mesma transação, é o que
+		// mantém o extrato do produtor verdadeiro sem depender da varredura horária.
+		if _, e := payout.Recompute(ctx, tx, eventOf(ctx, tx, prepared.OrderID)); e != nil {
 			return e
 		}
 		if requestID != nil {
@@ -219,7 +220,7 @@ func (s *Server) runRefund(ctx context.Context, producerID uuid.UUID, in checkou
 	return refundResp{
 		ID: prepared.ID, Scope: prepared.Scope, Tickets: len(prepared.Lines),
 		FaceCents: prepared.FaceCents, ConvenienceCents: prepared.ConvenienceCents,
-		TotalCents: prepared.TotalCents, CoveredByPlatform: covered,
+		TotalCents: prepared.TotalCents, RecoverableCreditCents: credit,
 	}, nil
 }
 
@@ -310,4 +311,13 @@ func writeRefundErr(w http.ResponseWriter, err error) {
 	default:
 		writeErr(w, http.StatusInternalServerError, err.Error())
 	}
+}
+
+// eventOf devolve o evento de um pedido. Erro aqui vira uuid.Nil, que o Recompute trata como
+// evento inexistente — o estorno já aconteceu, e falhar a resposta por causa do extrato
+// seria trocar um problema de exibição por um de dinheiro.
+func eventOf(ctx context.Context, tx pgx.Tx, orderID uuid.UUID) uuid.UUID {
+	var id uuid.UUID
+	_ = tx.QueryRow(ctx, `SELECT event_id FROM orders WHERE id=$1`, orderID).Scan(&id)
+	return id
 }

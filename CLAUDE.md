@@ -20,10 +20,17 @@ verificável OFFLINE na portaria (só com a chave pública). Repo novo, **não**
 - Transferência, revenda, teto de revenda e royalty existem em **custódia de plataforma**,
   sem depender de cadeia nenhuma.
 
-**Pagamento:** Asaas, com split direto ao produtor na própria cobrança. Sem Escrow, sem
-BaaS. **Só Pix e cartão — boleto não existe no produto.** A taxa de plataforma é **10% flat
-para todo produtor**: o programa de níveis foi extinto, e não existe rebate, tabela de
-níveis nem taxa efetiva por produtor.
+**Pagamento:** Asaas. A **bilheteria retém e repassa depois do evento** — a cobrança nasce
+inteira na conta da plataforma e o repasse ao produtor vence alguns dias após a realização.
+**Não existe split, nem subconta de produtor no gateway**: se o evento não acontece, o
+dinheiro precisa estar com quem vai devolver. Sem Escrow, sem BaaS. **Só Pix e cartão —
+boleto não existe no produto.** A taxa de plataforma é **10% flat para todo produtor**: o
+programa de níveis foi extinto, e não existe rebate, tabela de níveis nem taxa efetiva por
+produtor.
+
+**A execução bancária do repasse NÃO existe**: nada transfere, saca ou valida titularidade de
+conta. O produto calcula, registra e exibe a obrigação; marcar como pago é ação manual do
+admin, com comprovante. Não há adiantamento antes do evento.
 
 
 ## Arquitetura (alinhamento pós-frontend)
@@ -73,10 +80,10 @@ make compose-up     # sobe Postgres próprio + binário
 - `internal/store` — pgx à mão (control plane em `public`).
 - `internal/catalog` — eventos/lotes/cupons (1.2) + setores/assentos/preços (1.3).
 - `internal/inventory` — motor de reserva: Hold/Release/Confirm + varredura de expiração (1.3).
-- `internal/payment` — PaymentGateway: FakeGateway (default) e AsaasGateway (HTTP, split).
-- `internal/checkout` — compra: sessão de checkout, webhook idempotente, split, razão,
-  cortesias; e todo o ciclo de ESTORNO (política, pedido com quatro trilhas, execução total
-  ou parcial, reversão do repasse, cancelamento de evento com devolução em massa).
+- `internal/payment` — PaymentGateway: FakeGateway (default) e AsaasGateway (HTTP).
+- `internal/checkout` — compra: sessão de checkout, webhook idempotente, razão, cortesias;
+  e todo o ciclo de ESTORNO (política, pedido com quatro trilhas, execução total ou parcial,
+  cancelamento de evento com devolução em massa).
 - `internal/ticketing` — assinatura Ed25519 dos ingressos + verificador offline (só chave pública) (1.5).
 - `internal/nft` — metadados públicos do ingresso (sem dado pessoal), estado, disputa, reemissão.
 - `internal/attest` — fechamento do evento: registro canônico agregado, assinatura Ed25519,
@@ -86,10 +93,9 @@ make compose-up     # sobe Postgres próprio + binário
 - `internal/dash` — agregações dos painéis (produtor + plataforma) (1.7).
 - `internal/api` — API do produto: guard/withTenant + handlers de catálogo/inventário/checkout/portaria/painel/admin.
 - `internal/chain` — seam de cadeia: interface + Noop/Base e a fila de âncora. Dormente.
-- `internal/ledger` — fechamento de repasse em payouts (D+2, retenção, estorno) (1.8).
+- `internal/payout` — obrigação de repasse por evento: cálculo, vencimento, retenção com motivo e marcação manual de pago. Não executa transferência.
 - `internal/pricing` — preço: face + conveniência, com a taxa de plataforma de 10% flat.
 - `internal/fees` — tabela de tarifas do gateway (nenhum valor de tarifa é chumbado).
-- `internal/subaccount` — conta de recebimento do produtor no gateway (subconta + split).
 - `internal/transfer` — transferência restrita: teto de revenda + royalty + reatribuição de dono (2.1).
 - `internal/market` — mercado secundário: anúncio, compra pública, procedência, receita (2.2).
 - `internal/season` — passe de temporada: emite um ingresso por data, destacável/repassável (2.3).
@@ -119,5 +125,8 @@ make compose-up     # sobe Postgres próprio + binário
 - Não editar `../sapienza-kit`, `../sapienza-core`, `../sapienza-margot` fora do combinado.
 - Não introduzir sqlc nem golang-migrate. Não criar microserviços — módulos são pacotes.
 - Só adicionar migrations **forward**; não reescrever migration já aplicada.
-- **Não reintroduzir** MPC, carteira, mint, Escrow, BaaS, boleto ou programa de níveis. São
-  caminhos descartados por decisão, não pendências.
+- **Não reintroduzir** MPC, carteira, mint, Escrow, BaaS, boleto, programa de níveis, **split
+  por compra nem subconta de produtor no gateway**. São caminhos descartados por decisão, não
+  pendências — e `internal/payout/legacy_test.go` varre o código para garantir que não voltem.
+- **Não implementar** transferência bancária, saque ou validação de titularidade de conta, nem
+  abater crédito a recuperar de repasse futuro automaticamente.

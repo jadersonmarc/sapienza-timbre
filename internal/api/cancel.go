@@ -18,6 +18,7 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/catalog"
 	"github.com/jadersonmarc/sapienza-timbre/internal/checkout"
 	"github.com/jadersonmarc/sapienza-timbre/internal/notify"
+	"github.com/jadersonmarc/sapienza-timbre/internal/payout"
 )
 
 // cancelEvent cancela o evento E devolve o dinheiro de todo mundo.
@@ -53,6 +54,12 @@ func (s *Server) cancelEvent(w http.ResponseWriter, r *http.Request, claims *aut
 		// Evento já fechado: o registro canônico vai mudar. Republicar UMA vez ao fim do
 		// lote, não a cada devolução — senão o atestado vira uma versão por pedido.
 		if e := checkout.MarkAttestationStale(r.Context(), tx, eventID); e != nil {
+			return e
+		}
+		// Não há repasse de evento cancelado. E é aqui que o novo modelo mais ajuda: o
+		// dinheiro está com a plataforma, então a devolução em massa não depende de
+		// recuperar valor de ninguém — basta não repassar.
+		if e := payout.Cancel(r.Context(), tx, eventID); e != nil {
 			return e
 		}
 		// O aviso entra na MESMA transação do cancelamento: ou o evento é cancelado e todo

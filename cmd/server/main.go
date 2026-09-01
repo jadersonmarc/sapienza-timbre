@@ -31,12 +31,11 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/fees"
 	"github.com/jadersonmarc/sapienza-timbre/internal/gateweb"
 	"github.com/jadersonmarc/sapienza-timbre/internal/inventory"
-	"github.com/jadersonmarc/sapienza-timbre/internal/ledger"
 	"github.com/jadersonmarc/sapienza-timbre/internal/notify"
 	"github.com/jadersonmarc/sapienza-timbre/internal/payment"
+	"github.com/jadersonmarc/sapienza-timbre/internal/payout"
 	"github.com/jadersonmarc/sapienza-timbre/internal/producer"
 	"github.com/jadersonmarc/sapienza-timbre/internal/store"
-	"github.com/jadersonmarc/sapienza-timbre/internal/subaccount"
 	"github.com/jadersonmarc/sapienza-timbre/internal/ticketing"
 )
 
@@ -144,15 +143,14 @@ func main() {
 		Payment: pay,
 		Notify:  notifier,
 		Fees:    feeSvc,
-		// Conta de recebimento do produtor: destinatária do split de cada venda.
-		Subaccounts: subaccount.New(pool, pay),
 	}
 	slog.Info("seams", "chain", chainKind, "chain_enabled", chainDriver.Enabled(), "payment", payKind, "notify", notifyKind)
 
 	// Varredura de expiração de holds (motor de reserva) por produtor, em segundo plano.
 	go inventory.NewSweeper(pool).Run(ctx)
-	// Fechamento de repasses (payouts) por produtor, em segundo plano.
-	go ledger.NewSettler(pool).Run(ctx)
+	// Obrigação de repasse por evento: recalcula os valores e move de 'accruing' para
+	// 'pending' quando o evento acontece. NÃO PAGA NADA — a transferência é manual.
+	go payout.NewSettler(pool).Run(ctx)
 
 	// Chave de assinatura dos ingressos (Ed25519). Persistente em produção (a portaria
 	// embarca a pública); efêmera em dev — o QR muda a cada restart.

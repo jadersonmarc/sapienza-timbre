@@ -60,7 +60,6 @@ func setupAttestFull(t *testing.T, anchorer chain.Anchorer, anchorMode chain.Anc
 		Chain: chain.NoopChainDriver{}, Payment: gw, Notify: notify.NewService(pool, ""),
 		Fees: fees.New(pool, gw),
 		// Conta de recebimento: sem espera de validação, para o teste não dormir.
-		Subaccounts: instantSubaccounts(pool, gw),
 	})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)

@@ -11,7 +11,6 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/auth"
 	"github.com/jadersonmarc/sapienza-timbre/internal/catalog"
 	"github.com/jadersonmarc/sapienza-timbre/internal/store"
-	"github.com/jadersonmarc/sapienza-timbre/internal/subaccount"
 )
 
 // ── eventos ──────────────────────────────────────────────────────────────────
@@ -118,34 +117,26 @@ func (s *Server) publishEvent(w http.ResponseWriter, r *http.Request, claims *au
 		writeErr(w, http.StatusBadRequest, "id inválido")
 		return
 	}
-	// Publicar é abrir a venda: sem destino para o dinheiro do produtor, a venda acontece e
-	// o repasse simplesmente não — em silêncio, sem erro nem log. Dois destinos servem: a
-	// subconta no gateway (divisão automática na venda) ou a chave Pix (transferência
-	// nossa depois). Basta um.
-	prod, err := store.GetProducer(r.Context(), s.pool, claims.ProducerID)
+	// Publicar é ABRIR VENDA, e vender sem destino para o dinheiro do produtor deixa o
+	// repasse sem para onde ir — em silêncio, na hora de pagar. Montar e configurar o
+	// evento continua acontecendo em qualquer estado; só a abertura da venda exige a chave.
+	//
+	// Não há mais análise de conta no gateway para esperar: a bilheteria recebe o total e
+	// transfere depois da realização, e o único cadastro necessário é para onde transferir.
+	acc, err := store.GetPayoutAccount(r.Context(), s.pool, claims.ProducerID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// Publicar é ABRIR VENDA, e é só isso que exige conta de recebimento aprovada: montar
-	// e configurar o evento acontece em qualquer estado, para o produtor não ficar parado
-	// enquanto a análise corre.
-	acc, err := s.seams.Subaccounts.Get(r.Context(), claims.ProducerID)
-	if err != nil && !errors.Is(err, subaccount.ErrNotFound) {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if !acc.CanSell() {
+	if acc.PixKey == "" {
 		writeJSON(w, http.StatusConflict, map[string]any{
-			"error":          "conta de recebimento pendente",
-			"needs_wallet":   true,
-			"account_status": statusOrNone(acc.Status),
-			"onboarding_url": acc.OnboardingURL,
-			"error_message":  accountPendingMessage(acc),
+			"error":        "dados de recebimento pendentes",
+			"needs_wallet": true,
+			"error_message": "Antes de abrir a venda, informe a chave Pix de recebimento. " +
+				"O valor dos ingressos fica com a bilheteria e é transferido para você depois que o evento acontece.",
 		})
 		return
 	}
-	_ = prod
 	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
 		return catalog.PublishEvent(r.Context(), tx, claims.ProducerID, id)
 	}); err != nil {
@@ -468,27 +459,4 @@ func (s *Server) listCoupons(w http.ResponseWriter, r *http.Request, claims *aut
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"coupons": out})
-}
-
-// statusOrNone devolve o estado da conta, tratando ausência como sem_conta.
-func statusOrNone(status string) string {
-	if status == "" {
-		return subaccount.StatusNone
-	}
-	return status
-}
-
-// accountPendingMessage explica o que falta em cada estado — o produtor precisa saber se
-// aguarda ele ou aguarda a análise.
-func accountPendingMessage(acc subaccount.Account) string {
-	switch acc.Status {
-	case subaccount.StatusAwaitDocs:
-		return "Sua conta de recebimento foi criada e falta enviar os documentos. Abra o link de verificação para concluir — assim que for aprovada, seu evento entra à venda."
-	case subaccount.StatusAnalysis:
-		return "Seus documentos estão em análise. Assim que a conta for aprovada, você consegue abrir a venda — pode seguir montando o evento enquanto isso."
-	case subaccount.StatusRejected:
-		return "A análise da sua conta de recebimento não foi aprovada. Revise os dados e reenvie os documentos para conseguir vender."
-	default:
-		return "Para vender ingressos precisamos abrir sua conta de recebimento — é para ela que vai o valor dos ingressos, direto, a cada venda."
-	}
 }

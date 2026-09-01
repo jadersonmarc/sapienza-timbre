@@ -39,14 +39,6 @@ const (
 	RefundByAdmin    = "admin"
 )
 
-// De onde saiu o dinheiro devolvido ao comprador (documentado na migration 0022).
-const (
-	SourceNotSettled      = "not_settled"
-	SourcePlatformBalance = "platform_balance"
-	SourceProducer        = "producer"
-	SourcePlatformCovered = "platform_covered"
-)
-
 // webhookEchoWindow é por quanto tempo o aviso de estorno do gateway é lido como ECO de um
 // estorno que nós mesmos originamos, e não como um estorno feito por fora.
 //
@@ -240,14 +232,13 @@ func FailRefund(ctx context.Context, tx pgx.Tx, refundID uuid.UUID, cause string
 }
 
 // CompleteRefund aplica os efeitos do estorno: devolve capacidade ao lote, libera assentos,
-// QUEIMA os ingressos, reflete nos índices públicos, reverte o repasse e lança o razão.
-// Idempotente por status.
+// QUEIMA os ingressos, reflete nos índices públicos e lança o razão. Idempotente por status.
 //
-// coveredByPlatform é o caso em que a subconta do produtor não cobriu a devolução: o
-// comprador foi estornado assim mesmo, e o produtor ficou devendo. Precisa entrar AQUI, e
-// não numa correção posterior, porque é isso que decide o sinal do razão — marcar depois
-// deixaria a dívida invisível em NetDue.
-func CompleteRefund(ctx context.Context, tx pgx.Tx, refundID uuid.UUID, coveredByPlatform bool) error {
+// Devolve o CRÉDITO A RECUPERAR gerado, em centavos, e zero quando não houve. Ele só nasce
+// no caso de exceção: estorno depois de o repasse do evento já ter sido LIQUIDADO. Aí o
+// dinheiro já saiu para o produtor, o comprador é devolvido assim mesmo, e a plataforma
+// passa a ter crédito contra ele — registrado e visível, nunca abatido sozinho.
+func CompleteRefund(ctx context.Context, tx pgx.Tx, refundID uuid.UUID) (int64, error) {
 	var orderID, paymentID uuid.UUID
 	var status, scope string
 	var face, convenience int64
@@ -256,32 +247,31 @@ func CompleteRefund(ctx context.Context, tx pgx.Tx, refundID uuid.UUID, coveredB
 		  FROM refunds WHERE id=$1 FOR UPDATE`, refundID).
 		Scan(&orderID, &paymentID, &status, &scope, &face, &convenience)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if status == "confirmed" {
-		return nil // idempotente
+		return 0, nil // idempotente
 	}
 
 	var eventID uuid.UUID
-	var orderFace int64
-	if err := tx.QueryRow(ctx, `SELECT event_id, face_cents FROM orders WHERE id=$1 FOR UPDATE`, orderID).
-		Scan(&eventID, &orderFace); err != nil {
-		return err
+	if err := tx.QueryRow(ctx, `SELECT event_id FROM orders WHERE id=$1 FOR UPDATE`, orderID).
+		Scan(&eventID); err != nil {
+		return 0, err
 	}
 	// Quem absorve a tarifa que o gateway retém sai da política do evento — é promessa
 	// comercial, não constante.
 	policy, err := ResolvePolicy(ctx, tx, eventID)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	var gatewayFee int64
 	if err := tx.QueryRow(ctx, `SELECT gateway_fee_cents FROM refunds WHERE id=$1`, refundID).Scan(&gatewayFee); err != nil {
-		return err
+		return 0, err
 	}
 
 	tickets, err := refundTicketIDs(ctx, tx, refundID)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	// Ordem lote→assento, a mesma da venda: devolve capacidade ao(s) lote(s) ANTES de
@@ -291,7 +281,7 @@ func CompleteRefund(ctx context.Context, tx pgx.Tx, refundID uuid.UUID, coveredB
 		SELECT lot_id, count(*) FROM tickets
 		 WHERE id = ANY($1) AND status='active' GROUP BY lot_id`, tickets)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	type lotQty struct {
 		lot uuid.UUID
@@ -302,35 +292,35 @@ func CompleteRefund(ctx context.Context, tx pgx.Tx, refundID uuid.UUID, coveredB
 		var lq lotQty
 		if err := byLot.Scan(&lq.lot, &lq.qty); err != nil {
 			byLot.Close()
-			return err
+			return 0, err
 		}
 		refunds = append(refunds, lq)
 	}
 	byLot.Close()
 	if err := byLot.Err(); err != nil {
-		return err
+		return 0, err
 	}
 	for _, lq := range refunds {
 		if err := catalog.RefundFromLot(ctx, tx, lq.lot, lq.qty); err != nil {
-			return err
+			return 0, err
 		}
 	}
 
 	if _, err := tx.Exec(ctx, `
 		UPDATE seat_occupancy SET released = true
 		 WHERE ticket_id IN (SELECT id FROM tickets WHERE id = ANY($1) AND status='active')`, tickets); err != nil {
-		return err
+		return 0, err
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE tickets SET status='burned', updated_at=now()
 		 WHERE id = ANY($1) AND status='active'`, tickets); err != nil {
-		return err
+		return 0, err
 	}
 	// Pontos de escrita do índice público (§3.10): quem procura "por que meu ingresso
 	// sumiu" acha a resposta no histórico, não no vazio.
 	if _, err := tx.Exec(ctx, `
 		UPDATE ticket_directory SET status='refunded' WHERE ticket_id = ANY($1)`, tickets); err != nil {
-		return err
+		return 0, err
 	}
 
 	// A ordem só vira 'refunded' quando não sobra ingresso ativo. Enquanto sobrar, é
@@ -338,61 +328,88 @@ func CompleteRefund(ctx context.Context, tx pgx.Tx, refundID uuid.UUID, coveredB
 	var remaining int
 	if err := tx.QueryRow(ctx, `SELECT count(*) FROM tickets WHERE order_id=$1 AND status='active'`, orderID).
 		Scan(&remaining); err != nil {
-		return err
+		return 0, err
 	}
 	orderStatus := "partially_refunded"
 	if remaining == 0 {
 		orderStatus = "refunded"
 	}
 	if _, err := tx.Exec(ctx, `UPDATE orders SET status=$2, updated_at=now() WHERE id=$1`, orderID, orderStatus); err != nil {
-		return err
+		return 0, err
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE order_directory SET status=$2, refunded_at=COALESCE(refunded_at, now())
 		 WHERE order_id=$1`, orderID, orderStatus); err != nil {
-		return err
+		return 0, err
 	}
 	if remaining == 0 {
 		if _, err := tx.Exec(ctx, `UPDATE payments SET status='refunded', updated_at=now() WHERE id=$1`, paymentID); err != nil {
-			return err
+			return 0, err
 		}
 	}
 
-	// Reversão do repasse: de onde saiu o dinheiro decide quem fica devendo.
-	source, err := reverseSplit(ctx, tx, refundID, orderID, tickets, remaining == 0, coveredByPlatform)
+	if err := writeRefundLedger(ctx, tx, eventID, orderID, paymentID, face, convenience,
+		policy.RefundGatewayFeeBearer, gatewayFee); err != nil {
+		return 0, err
+	}
+
+	// Caso de EXCEÇÃO: o repasse deste evento já foi liquidado. O dinheiro que devolvemos ao
+	// comprador saiu da plataforma e já não está no evento — vira crédito a recuperar,
+	// registrado, e nada é abatido automaticamente (ver a migration 0032 para o porquê).
+	credit, err := recordRecoverableCredit(ctx, tx, refundID, eventID, orderID, face)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
-	if err := writeRefundLedger(ctx, tx, eventID, orderID, paymentID, face, convenience, orderFace,
-		source, policy.RefundGatewayFeeBearer, gatewayFee); err != nil {
-		return err
+	if _, err := tx.Exec(ctx, `UPDATE refunds SET status='confirmed', updated_at=now() WHERE id=$1`, refundID); err != nil {
+		return 0, err
 	}
-
-	_, err = tx.Exec(ctx, `UPDATE refunds SET status='confirmed', updated_at=now() WHERE id=$1`, refundID)
-	return err
+	return credit, nil
 }
 
-// writeRefundLedger lança o estorno no razão. São três linhas, espelhando as três da venda:
-//
-//	estorno      = -face          — o que volta pelo produtor
-//	estorno_taxa = -conveniência  — o que volta pela plataforma
-//	retencao     = -proporcional  — desfaz a reserva de contestação da parte estornada
-//
-// A terceira é a que passa despercebido: NetDue SUBTRAI a retenção enquanto ela está
-// retida. Sem desfazê-la, uma venda estornada dentro dos 60 dias deixaria o produtor com
-// saldo negativo por uma venda que não existe mais. Lançamento negativo com o mesmo
-// available_at zera a soma sem UPDATE destrutivo — o razão continua append-only.
-func writeRefundLedger(ctx context.Context, tx pgx.Tx, eventID, orderID, paymentID uuid.UUID,
-	face, convenience, orderFace int64, source, feeBearer string, gatewayFee int64) error {
-	// settled_by do estorno acompanha de onde o dinheiro saiu: quando ele volta da subconta
-	// do produtor (ou o split nem tinha liquidado), a plataforma não passa a dever nem a
-	// receber nada — as duas pontas se cancelam e a linha fica fora de NetDue. Quando a
-	// plataforma cobre, o produtor fica devendo, e é NetDue que tem de refletir isso.
-	settledBy := "platform"
-	if source == SourceNotSettled || source == SourceProducer {
-		settledBy = "split"
+// recordRecoverableCredit registra o crédito da plataforma contra o produtor quando o
+// estorno chega DEPOIS do repasse pago. Um por estorno (índice único): reprocessar não
+// duplica a dívida.
+func recordRecoverableCredit(ctx context.Context, tx pgx.Tx, refundID, eventID, orderID uuid.UUID,
+	face int64) (int64, error) {
+	var status string
+	err := tx.QueryRow(ctx, `SELECT status FROM event_payouts WHERE event_id=$1`, eventID).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil // evento sem repasse registrado: nada foi pago
 	}
+	if err != nil {
+		return 0, err
+	}
+	if status != "paid" {
+		return 0, nil
+	}
+	// Só o FACE é recuperável: a conveniência sempre foi da plataforma e voltar com ela é
+	// custo dela, não dívida de ninguém.
+	if face <= 0 {
+		return 0, nil
+	}
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO recoverable_credits (event_id, order_id, refund_id, amount_cents, reason)
+		VALUES ($1,$2,$3,$4,$5) ON CONFLICT (refund_id) DO NOTHING`,
+		eventID, orderID, refundID, face, "estorno após o repasse do evento ter sido pago")
+	if err != nil {
+		return 0, err
+	}
+	if tag.RowsAffected() == 0 {
+		return 0, nil
+	}
+	return face, nil
+}
+
+// writeRefundLedger lança o estorno no razão. São duas linhas, espelhando as duas da venda:
+//
+//	estorno      = -face          — o que sai do resultado do produtor
+//	estorno_taxa = -conveniência  — o que sai da receita da plataforma
+//
+// Separadas porque quem devolve cada parte é diferente, e juntá-las foi exatamente o erro
+// que descontava do produtor os 10% que nunca foram dele.
+func writeRefundLedger(ctx context.Context, tx pgx.Tx, eventID, orderID, paymentID uuid.UUID,
+	face, convenience int64, feeBearer string, gatewayFee int64) error {
 	// A tarifa do gateway não volta de ninguém: ela ficou lá. O que a política decide é
 	// quem a absorve. Com o produtor, ela entra no estorno dele — devolver o face e ainda
 	// pagar a tarifa da devolução é uma escolha comercial, e precisa ser declarada antes.
@@ -401,98 +418,18 @@ func writeRefundLedger(ctx context.Context, tx pgx.Tx, eventID, orderID, payment
 		producerBack += gatewayFee
 	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO ledger_entries (event_id, order_id, payment_id, kind, amount_cents, available_at, settled_by)
-		VALUES ($1,$2,$3,'estorno',$4, now(), $5)`, eventID, orderID, paymentID, -producerBack, settledBy); err != nil {
+		INSERT INTO ledger_entries (event_id, order_id, payment_id, kind, amount_cents, available_at)
+		VALUES ($1,$2,$3,'estorno',$4, now())`, eventID, orderID, paymentID, -producerBack); err != nil {
 		return err
 	}
 	if convenience > 0 {
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO ledger_entries (event_id, order_id, payment_id, kind, amount_cents, available_at, settled_by)
-			VALUES ($1,$2,$3,'estorno_taxa',$4, now(), 'platform')`, eventID, orderID, paymentID, -convenience); err != nil {
+			INSERT INTO ledger_entries (event_id, order_id, payment_id, kind, amount_cents, available_at)
+			VALUES ($1,$2,$3,'estorno_taxa',$4, now())`, eventID, orderID, paymentID, -convenience); err != nil {
 			return err
 		}
 	}
-	return neutralizeRetention(ctx, tx, orderID, face, orderFace)
-}
-
-// neutralizeRetention desfaz a fatia da retenção correspondente ao face estornado. Trabalha
-// sobre o SALDO da retenção da ordem (positivos menos negativos já lançados), então
-// estornos parciais sucessivos fecham em zero sem sobra de centavo.
-func neutralizeRetention(ctx context.Context, tx pgx.Tx, orderID uuid.UUID, face, orderFace int64) error {
-	var gross, net int64
-	var availableAt *time.Time
-	var settledBy string
-	err := tx.QueryRow(ctx, `
-		SELECT COALESCE(SUM(amount_cents) FILTER (WHERE amount_cents > 0),0),
-		       COALESCE(SUM(amount_cents),0),
-		       MIN(available_at) FILTER (WHERE amount_cents > 0),
-		       COALESCE(MIN(settled_by) FILTER (WHERE amount_cents > 0),'platform')
-		  FROM ledger_entries WHERE order_id=$1 AND kind='retencao'`, orderID).
-		Scan(&gross, &net, &availableAt, &settledBy)
-	if err != nil || gross == 0 || net <= 0 {
-		return err
-	}
-	undo := net // estorno total (ou o que sobrou): zera o saldo
-	if orderFace > 0 && face < orderFace {
-		undo = min(mulDiv(gross, face, orderFace), net)
-	}
-	if undo <= 0 {
-		return nil
-	}
-	_, err = tx.Exec(ctx, `
-		INSERT INTO ledger_entries (event_id, order_id, kind, amount_cents, available_at, settled_by)
-		SELECT event_id, $1, 'retencao', $2, $3, $4 FROM orders WHERE id=$1`,
-		orderID, -undo, availableAt, settledBy)
-	return err
-}
-
-// reverseSplit reverte o repasse ao produtor pelos ingressos estornados e devolve de onde o
-// dinheiro saiu. Três estados, tratamento diferente em cada — e o parcial NÃO pode
-// sobrescrever split_transfers, que tem uma linha por PEDIDO: um ingresso de quatro
-// derrubaria o repasse inteiro.
-func reverseSplit(ctx context.Context, tx pgx.Tx, refundID, orderID uuid.UUID, tickets []uuid.UUID, whole, covered bool) (string, error) {
-	var splitStatus string
-	var splitRef *string
-	err := tx.QueryRow(ctx, `
-		SELECT split_status, asaas_payment_id FROM split_transfers WHERE order_id=$1 FOR UPDATE`, orderID).
-		Scan(&splitStatus, &splitRef)
-	source := SourcePlatformBalance
-	switch {
-	case errors.Is(err, pgx.ErrNoRows) || splitRef == nil || *splitRef == "":
-		// Venda centralizada: o dinheiro nunca saiu da plataforma. Não há split a reverter,
-		// e o razão simplesmente passa a dever menos.
-		source = SourcePlatformBalance
-	case err != nil:
-		return "", err
-	case splitStatus == SplitPending || splitStatus == SplitAwaitingCredit:
-		// Ainda não liquidou: o estorno da cobrança cancela o split junto. Nada a recuperar.
-		source = SourceNotSettled
-	default:
-		// Liquidado: o gateway puxou o valor da subconta do produtor ao estornar a cobrança.
-		source = SourceProducer
-	}
-	if covered {
-		// A subconta não cobriu. Quem devolveu foi a plataforma, e é ela que passa a ter
-		// crédito contra o produtor.
-		source = SourcePlatformCovered
-	}
-
-	for _, id := range tickets {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO split_refunds (refund_id, order_id, ticket_id, face_cents, source)
-			SELECT $1, $2, ticket_id, face_cents, $3 FROM refund_tickets
-			 WHERE refund_id=$1 AND ticket_id=$4
-			ON CONFLICT (refund_id, ticket_id) DO NOTHING`, refundID, orderID, source, id); err != nil {
-			return "", fmt.Errorf("registrar reversão do repasse: %w", err)
-		}
-	}
-	// split_transfers só vai a REFUNDED quando não sobra face no pedido.
-	if whole && source != SourcePlatformBalance && splitRef != nil {
-		if err := MarkSplitStatus(ctx, tx, *splitRef, "", SplitRefunded, ""); err != nil {
-			return "", err
-		}
-	}
-	return source, nil
+	return nil
 }
 
 // RefundPayment processa o aviso de estorno vindo do gateway (contestação no cartão,
@@ -562,7 +499,10 @@ func RefundPayment(ctx context.Context, tx pgx.Tx, asaasRef string, refundKeys [
 	if err := MarkRefundSent(ctx, tx, prepared.ID, ""); err != nil {
 		return err
 	}
-	return CompleteRefund(ctx, tx, prepared.ID, false)
+	// O webhook não reporta crédito a recuperar a ninguém — ele não tem para quem
+	// responder. A linha fica registrada e aparece no /admin.
+	_, err = CompleteRefund(ctx, tx, prepared.ID)
+	return err
 }
 
 // refundKeyPrefix é o começo da chave que viaja na description do estorno. A identidade de

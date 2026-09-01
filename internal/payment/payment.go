@@ -1,12 +1,15 @@
-// Package payment define o gateway de pagamento (Asaas, com split no ato da venda) e
-// suas implementações: FakeGateway (determinístico, default e usado em testes) e
-// AsaasGateway (HTTP real). Interface trocável, no espírito dos drivers da Margot.
+// Package payment define o gateway de pagamento (Asaas) e suas implementações:
+// FakeGateway (determinístico, default e usado em testes) e AsaasGateway (HTTP real).
+// Interface trocável, no espírito dos drivers da Margot.
+//
+// NÃO EXISTE SPLIT. A cobrança nasce inteira na conta da plataforma e o repasse ao produtor
+// acontece depois da realização do evento — modelo de bilheteria, não de marketplace. Se o
+// evento não acontece, o dinheiro precisa estar com quem vai devolver.
 package payment
 
 import (
 	"context"
 	"errors"
-	"strings"
 	"time"
 )
 
@@ -17,17 +20,6 @@ const (
 	MethodBoleto = "boleto"
 	MethodDebit  = "debit_card"
 )
-
-// SplitItem é uma fatia do split: quanto vai para a carteira de quem recebe.
-//
-// SEMPRE valor fixo, nunca percentual. O gateway calcula percentual sobre o LÍQUIDO, o que
-// faria o produtor absorver parte da tarifa — e a promessa do modelo é face limpo.
-type SplitItem struct {
-	WalletID   string `json:"wallet_id"`
-	FixedCents int64  `json:"fixed_cents"`
-	// ExternalReference identifica o repasse do nosso lado no webhook de liquidação.
-	ExternalReference string `json:"external_reference,omitempty"`
-}
 
 // ChargeRequest descreve uma cobrança (Pix ou cartão com parcelamento).
 type ChargeRequest struct {
@@ -40,10 +32,6 @@ type ChargeRequest struct {
 	BuyerCPF     string
 	BuyerPhone   string
 	DueDate      time.Time
-	// Split: uma fatia por recebedor. O emissor (Timbre) NÃO se declara — recebe
-	// automaticamente o líquido não distribuído, e declarar a própria carteira é exceção
-	// na API.
-	Split []SplitItem
 	// ExternalReference amarra a cobrança ao pedido do nosso lado.
 	ExternalReference string
 	// Card e Holder existem no cartão transparente: o comprador digita na NOSSA tela e os
@@ -88,8 +76,8 @@ type Charge struct {
 // chamador (o checkout ignora um asaas_ref já confirmado/estornado).
 type WebhookEvent struct {
 	// ID é o identificador DO EVENTO. A idempotência é por ele, não pela cobrança: uma
-	// mesma cobrança gera confirmação, liquidação de split e estorno, e deduplicar por
-	// cobrança descartaria eventos legítimos.
+	// mesma cobrança gera confirmação e estorno, e deduplicar por cobrança descartaria
+	// eventos legítimos.
 	ID        string
 	AsaasRef  string
 	Type      string
@@ -99,81 +87,6 @@ type WebhookEvent struct {
 	// volta, quando o gateway a envia. Vazio quando ele não manda: aí a conciliação cai na
 	// janela de tempo, que é o que existia antes de haver identidade alguma.
 	RefundKeys []string
-
-	// ── split ────────────────────────────────────────────────────────────────
-	// SplitID identifica QUAL split do pagamento originou o evento (uma cobrança pode
-	// ter vários recebedores).
-	SplitID       string
-	SplitStatus   string
-	RefusalReason string
-
-	// ── conta (subconta do produtor) ─────────────────────────────────────────
-	// WalletID identifica a subconta quando o evento é de cadastro, não de cobrança.
-	WalletID                string
-	AccountStatus           string
-	CommercialInfoExpiresAt *time.Time
-}
-
-// Kinds de evento que o webhook distingue. Cobrança e cadastro de subconta são fluxos
-// diferentes, com tratamento diferente.
-const (
-	EventKindPayment = "payment"
-	EventKindSplit   = "split"
-	EventKindAccount = "account"
-)
-
-// Kind classifica o evento pelo tipo declarado pelo gateway.
-func (e WebhookEvent) Kind() string {
-	switch {
-	case strings.HasPrefix(e.Type, "PAYMENT_SPLIT_"):
-		return EventKindSplit
-	case strings.HasPrefix(e.Type, "ACCOUNT_STATUS"):
-		return EventKindAccount
-	default:
-		return EventKindPayment
-	}
-}
-
-// AccountInput são os dados que o gateway exige para abrir a conta de recebimento do
-// produtor (subconta). É KYC: o gateway precisa saber de quem é o dinheiro.
-type AccountInput struct {
-	Name          string // nome/razão social
-	Email         string
-	TaxID         string // CPF ou CNPJ (só dígitos)
-	BirthDate     string // AAAA-MM-DD (pessoa física)
-	CompanyType   string // vazio = pessoa física; MEI|LIMITED|INDIVIDUAL|ASSOCIATION
-	MobilePhone   string
-	IncomeCents   int64  // renda/faturamento mensal declarado
-	PostalCode    string // CEP (só dígitos)
-	Address       string
-	AddressNumber string
-	Province      string // bairro
-}
-
-// Account é a conta de recebimento criada no gateway. Guardamos só o WalletID: é o que o
-// split precisa. A chave de API da subconta é devolvida pelo gateway UMA ÚNICA VEZ e é
-// descartada de propósito — não é necessária neste desenho, e custodiar credencial de
-// terceiro é responsabilidade sem contrapartida.
-type Account struct {
-	WalletID string
-	// CommercialInfoExpired e CommercialInfoExpiresAt vêm de commercialInfoExpiration: a
-	// confirmação anual de dados comerciais é exigência regulatória, e sem ela a subconta
-	// perde o uso da API.
-	CommercialInfoExpired   bool
-	CommercialInfoExpiresAt *time.Time
-}
-
-// AccountDocuments são as pendências de documentação de uma subconta e por onde resolvê-las.
-type AccountDocuments struct {
-	Items []AccountDocument
-}
-
-// AccountDocument é uma pendência: o tipo e o link para o titular resolver.
-type AccountDocument struct {
-	ID            string `json:"id"`
-	Type          string `json:"type"`
-	Status        string `json:"status"`
-	OnboardingURL string `json:"onboarding_url"`
 }
 
 // RefundRequest descreve a devolução de uma cobrança já paga.
@@ -206,14 +119,17 @@ type Refund struct {
 	ValueCents  int64
 }
 
-// Erros de estorno que o chamador precisa distinguir. Saldo insuficiente não é falha de
-// programação nem indisponibilidade: é o cenário esperado de produtor que já sacou, e
-// decide se a plataforma cobre a devolução.
+// Erros de estorno que o chamador precisa distinguir: cada um leva a um tratamento
+// diferente, e um erro genérico transformaria "aguarde" em "não deu".
 var (
 	// ErrRefundInProgress é outro estorno da MESMA cobrança ainda em processamento. O
 	// gateway serializa devoluções por cobrança: é espera, não falha — tentar de novo
 	// resolve, e tratar como erro definitivo transformaria um "aguarde" em "não deu".
-	ErrRefundInProgress        = errors.New("já há um estorno em andamento nesta cobrança")
+	ErrRefundInProgress = errors.New("já há um estorno em andamento nesta cobrança")
+	// ErrRefundInsufficientFunds é saldo insuficiente NA CONTA DA PLATAFORMA. Deixou de ser
+	// o cenário do produtor que já sacou — ele não saca antes do evento —, e por isso deixou
+	// de ser rotina: agora é incidente da bilheteria, e o estorno falha em vez de virar
+	// dívida de terceiro.
 	ErrRefundInsufficientFunds = errors.New("saldo insuficiente para o estorno")
 	ErrRefundNotRefundable     = errors.New("cobrança não estornável")
 	ErrRefundAlreadyExists     = errors.New("estorno já existente")
@@ -227,13 +143,8 @@ type PaymentGateway interface {
 	// o gateway recusa por um desses motivos — cada um leva a um tratamento diferente.
 	Refund(ctx context.Context, req RefundRequest) (Refund, error)
 	HandleWebhook(ctx context.Context, payload []byte) (WebhookEvent, error)
-	// CreateAccount abre a conta de recebimento do produtor (subconta da plataforma).
-	CreateAccount(ctx context.Context, in AccountInput) (Account, error)
 	// Fees devolve a tabela de tarifas vigente da conta. O preço do ingresso depende
 	// dela, então quem chama precisa tratar falha com o último valor conhecido.
 	Fees(ctx context.Context) (Fees, error)
-	// AccountDocuments lista as pendências de documentação da subconta recém-criada e o
-	// link de onboarding de cada uma.
-	AccountDocuments(ctx context.Context, walletID string) (AccountDocuments, error)
 	Configured() bool
 }
