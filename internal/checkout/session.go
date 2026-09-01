@@ -99,6 +99,10 @@ type SessionItems struct {
 	HalfPriceQty int         `json:"half_price_qty"`
 	CouponCode   string      `json:"coupon_code"`
 	CampaignID   *uuid.UUID  `json:"campaign_id,omitempty"`
+	// LinkToken é a chave do link exclusivo, quando a categoria escolhida é oculta. Fica na
+	// sessão porque a validade é conferida DE NOVO no pagamento: revogar o link entre a
+	// escolha e a compra precisa barrar a compra.
+	LinkToken string `json:"link_token,omitempty"`
 	// Attendees é a ficha por ingresso (nominal). Fica no jsonb da sessão porque é
 	// rascunho até o pagamento: só vira dado de ingresso quando a compra confirma.
 	Attendees []Attendee `json:"attendees,omitempty"`
@@ -123,6 +127,9 @@ func selectionChanged(items SessionItems, req Request) bool {
 	// Trocar de tipo de ingresso é trocar a seleção. Com lotes simultâneos, quem voltou e
 	// escolheu o camarote não pode retomar a sessão da pista.
 	if req.LotID != uuid.Nil && req.LotID != items.LotID {
+		return true
+	}
+	if req.LinkToken != items.LinkToken {
 		return true
 	}
 	if !strings.EqualFold(items.CouponCode, req.CouponCode) {
@@ -211,6 +218,7 @@ func CreateSession(ctx context.Context, tx pgx.Tx, req Request, anonToken, clien
 	items := SessionItems{
 		LotID: lot.ID, Quantity: req.Quantity, SeatIDs: req.SeatIDs,
 		HalfPriceQty: req.HalfPriceQty, CouponCode: req.CouponCode, CampaignID: req.CampaignID,
+		LinkToken: req.LinkToken,
 	}
 	raw, _ := json.Marshal(items)
 	var s Session
@@ -263,7 +271,7 @@ func UpdateSession(ctx context.Context, tx pgx.Tx, sessionID uuid.UUID, req Requ
 	items := SessionItems{
 		LotID: lot.ID, Quantity: req.Quantity, SeatIDs: req.SeatIDs,
 		HalfPriceQty: req.HalfPriceQty, CouponCode: req.CouponCode, CampaignID: req.CampaignID,
-		Attendees: req.Attendees,
+		LinkToken: req.LinkToken, Attendees: req.Attendees,
 	}
 	// Mudar a quantidade invalida fichas sobrando; as que couberem seguem preenchidas.
 	if len(items.Attendees) > items.Quantity {
@@ -361,6 +369,7 @@ func PaySession(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, prod 
 	req.HalfPriceQty = s.Items.HalfPriceQty
 	req.CouponCode = s.Items.CouponCode
 	req.CampaignID = s.Items.CampaignID
+	req.LinkToken = s.Items.LinkToken
 	lot, err := catalog.GetLot(ctx, tx, s.Items.LotID)
 	if err != nil {
 		return Result{}, err

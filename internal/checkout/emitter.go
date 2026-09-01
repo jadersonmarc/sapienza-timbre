@@ -29,9 +29,21 @@ func (e Emitter) EmitTickets(ctx context.Context, tx pgx.Tx, ticketIDs []uuid.UU
 	return e.emit(ctx, tx, ticketIDs, deliverTo)
 }
 
+// EmitCourtesy é a emissão de cortesia: mesmo ingresso, aviso diferente. Quem recebe não
+// comprou nada, e o e-mail precisa dizer QUEM emitiu — é dado pessoal de terceiro que
+// entrou no sistema pela mão do produtor.
+func (e Emitter) EmitCourtesy(ctx context.Context, tx pgx.Tx, ticketIDs []uuid.UUID, deliverTo, producerName string) error {
+	return e.deliver(ctx, tx, ticketIDs, deliverTo, notify.KindCourtesy, producerName)
+}
+
 // emit assina cada ingresso e, havendo destinatário, entrega o token do QR. A entrega
 // é só para o comprador (o QR é a credencial de entrada — nunca exposto por id público).
 func (e Emitter) emit(ctx context.Context, tx pgx.Tx, ticketIDs []uuid.UUID, deliverTo string) error {
+	return e.deliver(ctx, tx, ticketIDs, deliverTo, notify.KindTicket, "")
+}
+
+// deliver assina e entrega, com o tipo de aviso que couber ao caminho.
+func (e Emitter) deliver(ctx context.Context, tx pgx.Tx, ticketIDs []uuid.UUID, deliverTo, kind, producerName string) error {
 	if e.Signer == nil {
 		return nil // sem chave configurada: ingresso fica sem assinatura (dev)
 	}
@@ -58,13 +70,13 @@ func (e Emitter) emit(ctx context.Context, tx pgx.Tx, ticketIDs []uuid.UUID, del
 		// Na MESMA transação que assina e grava o ingresso: se a venda rolar para trás, o
 		// e-mail vai junto. A chave é o ingresso — reprocessar o webhook não manda dois.
 		_ = e.Notify.Send(ctx, tx, notify.Message{
-			Kind: notify.KindTicket, Channel: "email", To: deliverTo,
+			Kind: kind, Channel: "email", To: deliverTo,
 			IdempotencyKey: "ticket:" + tid.String(),
 			ProducerID:     &e.ProducerID, EventID: &info.eventID, TicketID: &tid,
 			EventName: info.title, EventStarts: info.starts,
 			VenueCity: info.city, Address: info.address,
 			SectorName: info.sector, SeatLabel: info.seat, Notice: info.notice,
-			QRContent: token,
+			ProducerName: producerName, QRContent: token,
 		})
 	}
 	return nil

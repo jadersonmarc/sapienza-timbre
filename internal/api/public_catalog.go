@@ -134,19 +134,21 @@ type publicEvent struct {
 	Subtitle *string   `json:"subtitle,omitempty"`
 	// Description vem em TEXTO com marcação simples. A página renderiza a partir de um
 	// conjunto fechado de elementos — nunca injeta o texto como HTML.
-	Description        *string    `json:"description,omitempty"`
-	Category           string     `json:"category"`
-	CoverURL           *string    `json:"cover_url,omitempty"`
-	StartsAt           *time.Time `json:"starts_at,omitempty"`
-	EndsAt             *time.Time `json:"ends_at,omitempty"`
-	Address            *string    `json:"address,omitempty"`
-	City               *string    `json:"city,omitempty"`
-	Lat                *float64   `json:"lat,omitempty"`
-	Lng                *float64   `json:"lng,omitempty"`
-	AgeRating          *string    `json:"age_rating,omitempty"`
-	CancellationPolicy *string    `json:"cancellation_policy,omitempty"`
-	Terms              *string    `json:"terms,omitempty"`
-	HasSeatMap         bool       `json:"has_seat_map"`
+	Description *string    `json:"description,omitempty"`
+	Category    string     `json:"category"`
+	CoverURL    *string    `json:"cover_url,omitempty"`
+	StartsAt    *time.Time `json:"starts_at,omitempty"`
+	EndsAt      *time.Time `json:"ends_at,omitempty"`
+	Address     *string    `json:"address,omitempty"`
+	// VenueName é o nome do lugar — é ele que o comprador reconhece.
+	VenueName          *string  `json:"venue_name,omitempty"`
+	City               *string  `json:"city,omitempty"`
+	Lat                *float64 `json:"lat,omitempty"`
+	Lng                *float64 `json:"lng,omitempty"`
+	AgeRating          *string  `json:"age_rating,omitempty"`
+	CancellationPolicy *string  `json:"cancellation_policy,omitempty"`
+	Terms              *string  `json:"terms,omitempty"`
+	HasSeatMap         bool     `json:"has_seat_map"`
 }
 
 type publicLot struct {
@@ -233,6 +235,10 @@ func (s *Server) getPublicEvent(w http.ResponseWriter, r *http.Request) {
 			aberto[l.ID] = true
 		}
 		for _, l := range lots {
+			// Categoria oculta não aparece na página: ela existe só para quem tem o link.
+			if l.Hidden {
+				continue
+			}
 			detail.Lots = append(detail.Lots, publicLot{
 				ID: l.ID, Name: l.Name, PriceCents: l.PriceCents,
 				Available: l.Quantity - l.SoldCount - l.HeldCount,
@@ -301,7 +307,7 @@ func toPublicEvent(e catalog.Event) publicEvent {
 	return publicEvent{
 		ID: e.ID, Title: e.Title, Subtitle: e.Subtitle, Description: e.Description, Category: e.Category,
 		CoverURL: e.CoverURL, StartsAt: e.StartsAt, EndsAt: e.EndsAt, Address: e.Address,
-		City: e.City, Lat: e.Lat, Lng: e.Lng, AgeRating: e.AgeRating,
+		VenueName: e.VenueName, City: e.City, Lat: e.Lat, Lng: e.Lng, AgeRating: e.AgeRating,
 		CancellationPolicy: e.CancellationPolicy, Terms: e.Terms, HasSeatMap: e.HasSeatMap,
 	}
 }

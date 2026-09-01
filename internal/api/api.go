@@ -131,6 +131,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/events/{id}/lots", s.authed(s.listLots))
 	mux.HandleFunc("GET /api/v1/events/{id}/lots/current", s.authed(s.currentLot))
 	mux.HandleFunc("PATCH /api/v1/lots/{id}", s.requireOwner(s.patchLot))
+	// Categoria com link oculto: não aparece na página pública e só é alcançada pelo token.
+	mux.HandleFunc("POST /api/v1/lots/{id}/links", s.requireOwner(s.createLotLink))
+	mux.HandleFunc("GET /api/v1/events/{id}/lot-links", s.authed(s.listLotLinks))
+	mux.HandleFunc("POST /api/v1/lot-links/{id}/revoke", s.requireOwner(s.revokeLotLink))
+	mux.HandleFunc("GET /api/v1/public/events/{id}/hidden-lot", s.publicLotByLink)
 	mux.HandleFunc("POST /api/v1/venue-templates", s.requireOwner(s.createVenueTemplate))
 	mux.HandleFunc("GET /api/v1/venue-templates", s.authed(s.listVenueTemplates))
 	mux.HandleFunc("POST /api/v1/events/{id}/coupons", s.requireOwner(s.createCoupon))
@@ -185,6 +190,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/webhooks/asaas", s.asaasWebhook)
 	// Lista de convidados / cortesias — do owner.
 	mux.HandleFunc("POST /api/v1/events/{id}/guests", s.requireOwner(s.createGuest))
+	mux.HandleFunc("POST /api/v1/events/{id}/guests/batch", s.requireOwner(s.createGuestBatch))
 	mux.HandleFunc("GET /api/v1/events/{id}/guests", s.authed(s.listGuests))
 	// Categorias de cortesia (por produtor) — contrapartida e atestação.
 	mux.HandleFunc("GET /api/v1/courtesy-categories", s.authed(s.listCourtesyCategories))

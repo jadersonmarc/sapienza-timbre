@@ -12,10 +12,25 @@ import (
 	"github.com/jadersonmarc/sapienza-timbre/internal/inventory"
 )
 
+// Guest é o destinatário de uma cortesia. O e-mail é o que faz a emissão ENTREGAR: sem ele
+// o produtor reenvia o ingresso na mão, por outro canal.
+type Guest struct {
+	Name  string `json:"name"`
+	CPF   string `json:"cpf,omitempty"`
+	Email string `json:"email,omitempty"`
+	// Phone é opcional e não é usado para entregar nada hoje: fica registrado porque é o
+	// contato que o produtor tem quando o e-mail volta.
+	Phone string `json:"phone,omitempty"`
+}
+
 // IssueCourtesy emite uma cortesia: registra o convidado (com categoria) e emite um
 // ingresso ativo (transferível imediatamente). Com assento específico, ocupa-o para não
 // ser vendido — se já estiver ocupado (hold ou ingresso), falha com ErrSeatUnavailable.
-func IssueCourtesy(ctx context.Context, tx pgx.Tx, em Emitter, eventID uuid.UUID, lotID, seatID *uuid.UUID, categoryID uuid.UUID, name, cpf string) (uuid.UUID, error) {
+//
+// Com e-mail, o destinatário RECEBE o ingresso, num aviso que identifica quem emitiu:
+// producerName não é enfeite — é dado pessoal de terceiro entrando no sistema pela mão do
+// produtor, e quem recebe tem o direito de saber de onde veio.
+func IssueCourtesy(ctx context.Context, tx pgx.Tx, em Emitter, eventID uuid.UUID, lotID, seatID *uuid.UUID, categoryID uuid.UUID, g Guest, producerName string) (uuid.UUID, error) {
 	// Resolve o lote (cortesia precisa de um, para portaria/relatório).
 	var lot uuid.UUID
 	if lotID != nil {
@@ -27,9 +42,11 @@ func IssueCourtesy(ctx context.Context, tx pgx.Tx, em Emitter, eventID uuid.UUID
 
 	var guestID uuid.UUID
 	if err := tx.QueryRow(ctx, `
-		INSERT INTO guest_list_entries (event_id, name, cpf, lot_id, seat_id, courtesy_category_id, status)
-		VALUES ($1,$2,$3,$4,$5,$6,'issued') RETURNING id`,
-		eventID, name, nilIfEmpty(cpf), lot, seatID, categoryID).Scan(&guestID); err != nil {
+		INSERT INTO guest_list_entries (event_id, name, cpf, email, phone, lot_id, seat_id,
+		                                courtesy_category_id, status)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'issued') RETURNING id`,
+		eventID, g.Name, nilIfEmpty(g.CPF), nilIfEmpty(g.Email), nilIfEmpty(g.Phone),
+		lot, seatID, categoryID).Scan(&guestID); err != nil {
 		return uuid.Nil, fmt.Errorf("registrar convidado: %w", err)
 	}
 
@@ -62,8 +79,9 @@ func IssueCourtesy(ctx context.Context, tx pgx.Tx, em Emitter, eventID uuid.UUID
 			return uuid.Nil, fmt.Errorf("ocupar assento da cortesia: %w", err)
 		}
 	}
-	// Assina a cortesia (sem entrega — o convidado recebe por outro canal).
-	if err := em.emit(ctx, tx, []uuid.UUID{ticketID}, ""); err != nil {
+	// Assina e, havendo e-mail, ENTREGA — com quem emitiu identificado. Sem e-mail, o
+	// ingresso fica assinado e o produtor entrega por onde puder, como antes.
+	if err := em.EmitCourtesy(ctx, tx, []uuid.UUID{ticketID}, g.Email, producerName); err != nil {
 		return uuid.Nil, err
 	}
 	return ticketID, nil

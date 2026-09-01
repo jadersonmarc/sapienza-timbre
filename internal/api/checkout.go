@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -212,11 +213,23 @@ func writeCheckoutErr(w http.ResponseWriter, err error) {
 // ── lista de convidados / cortesias ──────────────────────────────────────────
 
 type createGuestReq struct {
-	Name               string  `json:"name"`
-	CPF                string  `json:"cpf"`
+	Name string `json:"name"`
+	CPF  string `json:"cpf"`
+	// Email é o que faz a emissão ENTREGAR. Telefone é opcional e fica só registrado: é o
+	// contato que sobra quando o e-mail volta.
+	Email              string  `json:"email"`
+	Phone              string  `json:"phone"`
 	LotID              *string `json:"lot_id"`
 	SeatID             *string `json:"seat_id"`
 	CourtesyCategoryID string  `json:"courtesy_category_id"`
+}
+
+// batchGuestReq é a emissão em lote por lista. Mesmo tratamento de cada um: categoria
+// obrigatória, aviso identificando quem emitiu, uma linha por convidado.
+type batchGuestReq struct {
+	CourtesyCategoryID string           `json:"courtesy_category_id"`
+	LotID              *string          `json:"lot_id"`
+	Guests             []checkout.Guest `json:"guests"`
 }
 
 // createGuest emite uma cortesia: registra o convidado e emite um ingresso (com
@@ -251,11 +264,18 @@ func (s *Server) createGuest(w http.ResponseWriter, r *http.Request, claims *aut
 		writeErr(w, http.StatusBadRequest, "seat_id inválido")
 		return
 	}
+	producerName, err := s.producerName(r.Context(), claims.ProducerID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	var ticketID uuid.UUID
 	em := s.emitter(claims.ProducerID)
 	if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
 		var e error
-		ticketID, e = checkout.IssueCourtesy(r.Context(), tx, em, eventID, lotID, seatID, categoryID, body.Name, body.CPF)
+		ticketID, e = checkout.IssueCourtesy(r.Context(), tx, em, eventID, lotID, seatID, categoryID,
+			checkout.Guest{Name: body.Name, CPF: body.CPF, Email: body.Email, Phone: body.Phone},
+			producerName)
 		return e
 	}); err != nil {
 		if errors.Is(err, inventory.ErrSeatUnavailable) {
@@ -351,3 +371,90 @@ func (s *Server) firstTimeSeeingEvent(ctx context.Context, eventID, eventType st
 	}
 	return tag.RowsAffected() > 0, nil
 }
+
+// producerName lê o nome da casa. Vai no aviso da cortesia: quem recebe um e-mail com o
+// próprio nome tem o direito de saber quem o enviou.
+func (s *Server) producerName(ctx context.Context, producerID uuid.UUID) (string, error) {
+	var name string
+	err := s.pool.QueryRow(ctx, `SELECT name FROM public.producers WHERE id=$1`, producerID).Scan(&name)
+	return name, err
+}
+
+// createGuestBatch emite cortesias em LOTE, por lista. Uma pessoa por linha, com o mesmo
+// tratamento da emissão individual — categoria obrigatória e aviso identificando quem
+// emitiu.
+//
+// Cada convidado é emitido em sua PRÓPRIA transação: numa lista de cem, um assento ocupado
+// ou um nome vazio não pode derrubar os noventa e nove que deram certo. O resultado diz,
+// linha a linha, o que aconteceu.
+func (s *Server) createGuestBatch(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
+	eventID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "id inválido")
+		return
+	}
+	var body batchGuestReq
+	if err := decode(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, "corpo inválido")
+		return
+	}
+	categoryID, err := uuid.Parse(body.CourtesyCategoryID)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "courtesy_category_id obrigatório")
+		return
+	}
+	if len(body.Guests) == 0 {
+		writeErr(w, http.StatusBadRequest, "informe pelo menos um convidado")
+		return
+	}
+	if len(body.Guests) > maxCourtesyBatch {
+		writeErr(w, http.StatusBadRequest, "no máximo "+strconv.Itoa(maxCourtesyBatch)+" convidados por lista")
+		return
+	}
+	lotID, err := parseUUIDPtr(body.LotID)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "lot_id inválido")
+		return
+	}
+	producerName, err := s.producerName(r.Context(), claims.ProducerID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	em := s.emitter(claims.ProducerID)
+	type linha struct {
+		Name     string     `json:"name"`
+		Email    string     `json:"email,omitempty"`
+		TicketID *uuid.UUID `json:"ticket_id,omitempty"`
+		Error    string     `json:"error,omitempty"`
+	}
+	out := make([]linha, 0, len(body.Guests))
+	emitidos := 0
+	for _, g := range body.Guests {
+		l := linha{Name: g.Name, Email: g.Email}
+		if g.Name == "" {
+			l.Error = "nome obrigatório"
+			out = append(out, l)
+			continue
+		}
+		var ticketID uuid.UUID
+		if err := s.withTenant(r.Context(), claims.ProducerID, func(tx pgx.Tx) error {
+			var e error
+			ticketID, e = checkout.IssueCourtesy(r.Context(), tx, em, eventID, lotID, nil, categoryID, g, producerName)
+			return e
+		}); err != nil {
+			l.Error = err.Error()
+			out = append(out, l)
+			continue
+		}
+		l.TicketID = &ticketID
+		emitidos++
+		out = append(out, l)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"issued": emitidos, "results": out})
+}
+
+// maxCourtesyBatch limita a lista de uma vez. PROVISÓRIO: alto o bastante para uma lista de
+// convidados real, baixo o bastante para a requisição não virar um lote de horas.
+const maxCourtesyBatch = 500

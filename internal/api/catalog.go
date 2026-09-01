@@ -16,14 +16,19 @@ import (
 // ── eventos ──────────────────────────────────────────────────────────────────
 
 type createEventReq struct {
-	Title              string   `json:"title"`
-	Subtitle           *string  `json:"subtitle"`
-	Description        *string  `json:"description"`
-	Category           string   `json:"category"`
-	CoverURL           *string  `json:"cover_url"`
-	StartsAt           *string  `json:"starts_at"` // RFC3339
-	EndsAt             *string  `json:"ends_at"`
-	Address            *string  `json:"address"`
+	Title       string  `json:"title"`
+	Subtitle    *string `json:"subtitle"`
+	Description *string `json:"description"`
+	Category    string  `json:"category"`
+	CoverURL    *string `json:"cover_url"`
+	StartsAt    *string `json:"starts_at"` // RFC3339
+	EndsAt      *string `json:"ends_at"`
+	Address     *string `json:"address"`
+	// VenueName e PlaceID vêm da busca de local. A inserção MANUAL continua completa: sem
+	// place_id o evento existe igual — local sem cadastro no catálogo de mapas precisa
+	// funcionar, e não como fallback escondido.
+	VenueName          *string  `json:"venue_name"`
+	PlaceID            *string  `json:"place_id"`
 	City               *string  `json:"city"`
 	Lat                *float64 `json:"lat"`
 	Lng                *float64 `json:"lng"`
@@ -60,6 +65,7 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request, claims *aut
 		out, e = catalog.CreateEvent(r.Context(), tx, catalog.Event{
 			Title: body.Title, Subtitle: body.Subtitle, Description: body.Description, Category: body.Category,
 			CoverURL: body.CoverURL, StartsAt: starts, EndsAt: ends, Address: body.Address,
+			VenueName: body.VenueName, PlaceID: body.PlaceID,
 			City: body.City, Lat: body.Lat, Lng: body.Lng, Capacity: body.Capacity, AgeRating: body.AgeRating,
 			CancellationPolicy: body.CancellationPolicy, Terms: body.Terms, HasSeatMap: body.HasSeatMap,
 		})
@@ -147,19 +153,23 @@ func (s *Server) publishEvent(w http.ResponseWriter, r *http.Request, claims *au
 }
 
 type patchEventReq struct {
-	Title              *string `json:"title"`
-	Subtitle           *string `json:"subtitle"`
-	Description        *string `json:"description"`
-	Category           *string `json:"category"`
-	CoverURL           *string `json:"cover_url"`
-	StartsAt           *string `json:"starts_at"`
-	EndsAt             *string `json:"ends_at"`
-	Address            *string `json:"address"`
-	City               *string `json:"city"`
-	Capacity           *int    `json:"capacity"`
-	AgeRating          *string `json:"age_rating"`
-	CancellationPolicy *string `json:"cancellation_policy"`
-	Terms              *string `json:"terms"`
+	Title              *string  `json:"title"`
+	Subtitle           *string  `json:"subtitle"`
+	Description        *string  `json:"description"`
+	Category           *string  `json:"category"`
+	CoverURL           *string  `json:"cover_url"`
+	StartsAt           *string  `json:"starts_at"`
+	EndsAt             *string  `json:"ends_at"`
+	Address            *string  `json:"address"`
+	VenueName          *string  `json:"venue_name"`
+	PlaceID            *string  `json:"place_id"`
+	City               *string  `json:"city"`
+	Lat                *float64 `json:"lat"`
+	Lng                *float64 `json:"lng"`
+	Capacity           *int     `json:"capacity"`
+	AgeRating          *string  `json:"age_rating"`
+	CancellationPolicy *string  `json:"cancellation_policy"`
+	Terms              *string  `json:"terms"`
 }
 
 func (s *Server) patchEvent(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
@@ -189,7 +199,8 @@ func (s *Server) patchEvent(w http.ResponseWriter, r *http.Request, claims *auth
 		out, e = catalog.PatchEvent(r.Context(), tx, id, catalog.EventPatch{
 			Title: body.Title, Subtitle: body.Subtitle, Description: body.Description, Category: body.Category,
 			CoverURL: body.CoverURL, StartsAt: starts, EndsAt: ends, Address: body.Address,
-			City: body.City, Capacity: body.Capacity, AgeRating: body.AgeRating,
+			VenueName: body.VenueName, PlaceID: body.PlaceID,
+			City: body.City, Lat: body.Lat, Lng: body.Lng, Capacity: body.Capacity, AgeRating: body.AgeRating,
 			CancellationPolicy: body.CancellationPolicy, Terms: body.Terms,
 		})
 		return e

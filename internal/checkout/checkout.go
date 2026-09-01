@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -84,6 +85,9 @@ type Request struct {
 	// SubjectID identifica o comprador autenticado (preenchido pelo handler a partir do
 	// token de comprador; nunca vem do corpo).
 	SubjectID uuid.UUID `json:"-"`
+	// LinkToken é a chave do link exclusivo, quando a categoria escolhida é oculta. Sem ele
+	// a categoria simplesmente não existe para quem pede.
+	LinkToken string `json:"link_token,omitempty"`
 }
 
 // Result é o retorno do StartCheckout. AmountCents é o TOTAL cobrado (face + conveniência);
@@ -127,7 +131,7 @@ func reserve(ctx context.Context, tx pgx.Tx, req Request) (catalog.Lot, *uuid.UU
 	if req.HalfPriceQty < 0 || req.HalfPriceQty > req.Quantity {
 		return catalog.Lot{}, nil, ErrBadRequest
 	}
-	lot, err := reserveChosenLot(ctx, tx, req.EventID, req.LotID, req.Quantity)
+	lot, _, err := reserveChosenLot(ctx, tx, req)
 	if err != nil {
 		return catalog.Lot{}, nil, err
 	}
@@ -160,6 +164,16 @@ func reserve(ctx context.Context, tx pgx.Tx, req Request) (catalog.Lot, *uuid.UU
 // finalizeOrder precifica e cria ordem/itens/pagamento/cobrança a partir de uma reserva JÁ
 // feita (lote reservado + hold, se houver). Usado pelo StartCheckout e pelo PaySession.
 func finalizeOrder(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, prod Producer, req Request, lot catalog.Lot, holdID *uuid.UUID) (Result, error) {
+	// De qual link exclusivo veio o pedido, quando a categoria é oculta. Guardado na ordem
+	// porque o uso do link é contado na CONFIRMAÇÃO — e lá não há mais token à mão.
+	var linkID *uuid.UUID
+	if lot.Hidden {
+		_, link, e := catalog.ResolveLotLink(ctx, tx, req.EventID, req.LinkToken)
+		if e != nil {
+			return Result{}, fmt.Errorf("%w: esta categoria só é vendida por link exclusivo", ErrBadRequest)
+		}
+		linkID = &link.ID
+	}
 	if req.Method != payment.MethodPix && req.Method != payment.MethodCard {
 		return Result{}, ErrBadRequest
 	}
@@ -215,10 +229,11 @@ func finalizeOrder(ctx context.Context, tx pgx.Tx, gw payment.PaymentGateway, pr
 	}
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO orders (event_id, buyer_subject_id, buyer_email, buyer_cpf, coupon_id, campaign_id, total_cents,
-			face_cents, platform_fee_cents, processing_fee_cents, status, attendees)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending',$11) RETURNING id`,
+			face_cents, platform_fee_cents, processing_fee_cents, status, attendees, lot_link_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending',$11,$12) RETURNING id`,
 		req.EventID, subjectID, nilIfEmpty(req.BuyerEmail), nilIfEmpty(req.BuyerCPF), couponID, req.CampaignID,
 		bd.TotalCents, bd.FaceCents, bd.PlatformFeeCents, bd.ProcessingCents, attendeesJSON(req.Attendees),
+		linkID,
 	).Scan(&orderID); err != nil {
 		return Result{}, fmt.Errorf("criar ordem: %w", err)
 	}
@@ -298,7 +313,7 @@ func Quote(ctx context.Context, tx pgx.Tx, producerID uuid.UUID, req Request) (p
 	if req.HalfPriceQty < 0 || req.HalfPriceQty > req.Quantity {
 		return pricing.Breakdown{}, ErrBadRequest
 	}
-	lot, err := resolveLot(ctx, tx, req.EventID, req.LotID)
+	lot, _, err := resolveLot(ctx, tx, req)
 	if errors.Is(err, catalog.ErrNoCurrentLot) {
 		return pricing.Breakdown{}, ErrLotUnavailable
 	}
@@ -334,40 +349,42 @@ func Quote(ctx context.Context, tx pgx.Tx, producerID uuid.UUID, req Request) (p
 // ReserveFromLot falha por zero linhas (não por CHECK), então a tx segue utilizável e o retry
 // roda DENTRO dela. Converge quando re-resolver devolve o MESMO lote (esgotamento genuíno
 // para a quantidade pedida) ou pelo limite de tentativas.
-func reserveChosenLot(ctx context.Context, tx pgx.Tx, eventID, lotID uuid.UUID, qty int) (catalog.Lot, error) {
+func reserveChosenLot(ctx context.Context, tx pgx.Tx, req Request) (catalog.Lot, *catalog.LotLink, error) {
 	var lastID uuid.UUID
 	for attempt := 0; attempt < maxLotResolveAttempts; attempt++ {
-		lot, err := resolveLot(ctx, tx, eventID, lotID)
+		lot, link, err := resolveLot(ctx, tx, req)
 		if errors.Is(err, catalog.ErrNoCurrentLot) {
-			return catalog.Lot{}, ErrLotUnavailable
+			return catalog.Lot{}, nil, ErrLotUnavailable
 		}
 		if err != nil {
-			return catalog.Lot{}, err
+			return catalog.Lot{}, nil, err
 		}
-		rErr := catalog.ReserveFromLot(ctx, tx, lot.ID, qty)
+		rErr := catalog.ReserveFromLot(ctx, tx, lot.ID, req.Quantity)
 		if rErr == nil {
-			return lot, nil
+			return lot, link, nil
 		}
 		if !errors.Is(rErr, catalog.ErrInsufficientStock) {
-			return catalog.Lot{}, rErr
+			return catalog.Lot{}, nil, rErr
 		}
 		// Esgotou entre resolver e reservar. Mesmo lote duas vezes = esgotamento
 		// genuíno (não cabe a quantidade neste lote); lote diferente = virou, tenta o próximo.
 		// Com lote escolhido não há próximo: o comprador pediu aquele.
-		if lot.ID == lastID || lotID != uuid.Nil {
-			return catalog.Lot{}, ErrInsufficientStock
+		if lot.ID == lastID || req.LotID != uuid.Nil {
+			return catalog.Lot{}, nil, ErrInsufficientStock
 		}
 		lastID = lot.ID
 	}
-	return catalog.Lot{}, ErrInsufficientStock
+	return catalog.Lot{}, nil, ErrInsufficientStock
 }
 
-// resolveLot devolve o lote escolhido (se ainda estiver disponível) ou o vigente.
-func resolveLot(ctx context.Context, tx pgx.Tx, eventID, lotID uuid.UUID) (catalog.Lot, error) {
-	if lotID != uuid.Nil {
-		return catalog.EligibleLot(ctx, tx, eventID, lotID)
+// resolveLot devolve o lote escolhido (se ainda estiver disponível) ou o vigente. Devolve
+// também o link, quando a categoria é oculta e foi aberta por ele.
+func resolveLot(ctx context.Context, tx pgx.Tx, req Request) (catalog.Lot, *catalog.LotLink, error) {
+	if req.LotID != uuid.Nil {
+		return catalog.EligibleLot(ctx, tx, req.EventID, req.LotID, req.LinkToken)
 	}
-	return catalog.CurrentLot(ctx, tx, eventID)
+	lot, err := catalog.CurrentLot(ctx, tx, req.EventID)
+	return lot, nil, err
 }
 
 // ConfirmPayment confirma um pagamento (idempotente): emite ingressos, marca ordem
@@ -393,10 +410,12 @@ func ConfirmPayment(ctx context.Context, tx pgx.Tx, em Emitter, producerID uuid.
 
 	// Dados da ordem e do item (lote/quantidade).
 	var eventID uuid.UUID
-	var couponID *uuid.UUID
+	var couponID, linkID *uuid.UUID
 	var buyerEmail *string
 	var orderStatus string
-	if err := tx.QueryRow(ctx, `SELECT event_id, coupon_id, buyer_email, status FROM orders WHERE id=$1`, orderID).Scan(&eventID, &couponID, &buyerEmail, &orderStatus); err != nil {
+	if err := tx.QueryRow(ctx, `
+		SELECT event_id, coupon_id, buyer_email, status, lot_link_id FROM orders WHERE id=$1`, orderID).
+		Scan(&eventID, &couponID, &buyerEmail, &orderStatus, &linkID); err != nil {
 		return nil, err
 	}
 	// Ordem já cancelada/estornada (ex.: varredura de abandono liberou a reserva antes do
@@ -408,6 +427,19 @@ func ConfirmPayment(ctx context.Context, tx pgx.Tx, em Emitter, producerID uuid.
 	var quantity int
 	if err := tx.QueryRow(ctx, `SELECT lot_id, COALESCE(SUM(quantity),0) FROM order_items WHERE order_id=$1 GROUP BY lot_id LIMIT 1`, orderID).Scan(&lotID, &quantity); err != nil {
 		return nil, err
+	}
+	// O uso do link exclusivo é contado AQUI, na confirmação: um Pix aberto e abandonado
+	// não pode gastar a vaga de ninguém. Link estourado ou revogado entre a compra e a
+	// confirmação não desfaz o pagamento — o dinheiro entrou, e recusar aqui deixaria o
+	// comprador pago e sem ingresso. Fica no log.
+	if linkID != nil {
+		if err := catalog.ConsumeLotLink(ctx, tx, *linkID, quantity); err != nil {
+			if !errors.Is(err, catalog.ErrLinkInvalid) {
+				return nil, err
+			}
+			slog.Warn("link exclusivo estourou entre a compra e a confirmação — ingresso emitido assim mesmo",
+				"pedido", orderID, "link", *linkID, "quantidade", quantity)
+		}
 	}
 
 	transferableAfter := time.Now()

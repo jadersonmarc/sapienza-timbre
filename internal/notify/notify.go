@@ -28,6 +28,11 @@ const (
 	// KindEventCancelled sai na TRANSIÇÃO do evento, não no fim da devolução: quem tinha
 	// ingresso para amanhã precisa saber hoje, mesmo que o dinheiro leve dias para voltar.
 	KindEventCancelled = "event_cancelled"
+	// KindCourtesy é o ingresso de CORTESIA. Existe separado do ticket_issued porque quem
+	// recebe não comprou nada: o aviso precisa dizer de onde ele veio, e QUEM o emitiu.
+	// Dado pessoal de terceiro entrou no sistema pela mão do produtor — quem recebe um
+	// e-mail com o próprio nome tem o direito de saber por quê.
+	KindCourtesy = "courtesy_issued"
 )
 
 // Message é uma mensagem estruturada a entregar por algum canal. O worker renderiza o
@@ -51,6 +56,8 @@ type Message struct {
 	Address     string
 	SectorName  string
 	SeatLabel   string
+	// ProducerName identifica QUEM emitiu. Obrigatório na cortesia.
+	ProducerName string
 	// Notice é o aviso da categoria comprada. Vai no e-mail porque é lá que a pessoa volta
 	// para conferir na véspera — a página do evento pode já ter mudado.
 	Notice          string

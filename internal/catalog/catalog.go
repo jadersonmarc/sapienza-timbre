@@ -43,33 +43,40 @@ type Event struct {
 	// Description é o texto do produtor sobre o evento. Guardado como TEXTO com marcação
 	// simples (negrito, itálico, lista, link), nunca HTML — a renderização é nossa, a
 	// partir de um conjunto fechado de elementos.
-	Description        *string    `json:"description,omitempty"`
-	Category           string     `json:"category"`
-	CoverURL           *string    `json:"cover_url,omitempty"`
-	StartsAt           *time.Time `json:"starts_at,omitempty"`
-	EndsAt             *time.Time `json:"ends_at,omitempty"`
-	Address            *string    `json:"address,omitempty"`
-	City               *string    `json:"city,omitempty"`
-	Lat                *float64   `json:"lat,omitempty"`
-	Lng                *float64   `json:"lng,omitempty"`
-	Capacity           *int       `json:"capacity,omitempty"`
-	AgeRating          *string    `json:"age_rating,omitempty"`
-	CancellationPolicy *string    `json:"cancellation_policy,omitempty"`
-	Terms              *string    `json:"terms,omitempty"`
-	HasSeatMap         bool       `json:"has_seat_map"`
-	Status             string     `json:"status"`
-	CreatedAt          time.Time  `json:"created_at"`
-	UpdatedAt          time.Time  `json:"updated_at"`
+	Description *string    `json:"description,omitempty"`
+	Category    string     `json:"category"`
+	CoverURL    *string    `json:"cover_url,omitempty"`
+	StartsAt    *time.Time `json:"starts_at,omitempty"`
+	EndsAt      *time.Time `json:"ends_at,omitempty"`
+	Address     *string    `json:"address,omitempty"`
+	// VenueName é o nome do estabelecimento — "Circo Voador", não "Rua dos Arcos, s/n". É o
+	// que o comprador procura, e é o que a busca de local preenche.
+	VenueName *string `json:"venue_name,omitempty"`
+	// PlaceID é o identificador estável do lugar no catálogo de mapas. Guardado junto das
+	// coordenadas; o endereço formatado NÃO é cacheado por tempo indeterminado — o que fica
+	// gravado é o que o produtor confirmou, editável por ele.
+	PlaceID            *string   `json:"place_id,omitempty"`
+	City               *string   `json:"city,omitempty"`
+	Lat                *float64  `json:"lat,omitempty"`
+	Lng                *float64  `json:"lng,omitempty"`
+	Capacity           *int      `json:"capacity,omitempty"`
+	AgeRating          *string   `json:"age_rating,omitempty"`
+	CancellationPolicy *string   `json:"cancellation_policy,omitempty"`
+	Terms              *string   `json:"terms,omitempty"`
+	HasSeatMap         bool      `json:"has_seat_map"`
+	Status             string    `json:"status"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 const eventCols = `id, title, subtitle, description, category, cover_url, starts_at, ends_at,
-	address, city, lat, lng, capacity, age_rating, cancellation_policy, terms, has_seat_map,
-	status, created_at, updated_at`
+	address, venue_name, place_id, city, lat, lng, capacity, age_rating, cancellation_policy,
+	terms, has_seat_map, status, created_at, updated_at`
 
 func scanEvent(row pgx.Row) (Event, error) {
 	var e Event
 	err := row.Scan(&e.ID, &e.Title, &e.Subtitle, &e.Description, &e.Category, &e.CoverURL, &e.StartsAt,
-		&e.EndsAt, &e.Address, &e.City, &e.Lat, &e.Lng, &e.Capacity, &e.AgeRating,
+		&e.EndsAt, &e.Address, &e.VenueName, &e.PlaceID, &e.City, &e.Lat, &e.Lng, &e.Capacity, &e.AgeRating,
 		&e.CancellationPolicy, &e.Terms, &e.HasSeatMap, &e.Status, &e.CreatedAt, &e.UpdatedAt)
 	return e, err
 }
@@ -89,11 +96,13 @@ func CreateEvent(ctx context.Context, tx pgx.Tx, e Event) (Event, error) {
 	e.Description = SanitizeRich(e.Description, MaxDescriptionLen)
 	row := tx.QueryRow(ctx, `
 		INSERT INTO events (title, subtitle, description, category, category_id, cover_url, starts_at, ends_at,
-			address, city, lat, lng, capacity, age_rating, cancellation_policy, terms, has_seat_map)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+			address, venue_name, place_id, city, lat, lng, capacity, age_rating, cancellation_policy,
+			terms, has_seat_map)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
 		RETURNING `+eventCols,
 		e.Title, e.Subtitle, e.Description, slug, catID, e.CoverURL, e.StartsAt, e.EndsAt, e.Address,
-		e.City, e.Lat, e.Lng, e.Capacity, e.AgeRating, e.CancellationPolicy, e.Terms, e.HasSeatMap)
+		e.VenueName, e.PlaceID, e.City, e.Lat, e.Lng, e.Capacity, e.AgeRating, e.CancellationPolicy,
+		e.Terms, e.HasSeatMap)
 	out, err := scanEvent(row)
 	if err != nil {
 		return Event{}, fmt.Errorf("criar evento: %w", err)
@@ -201,15 +210,20 @@ func PatchEvent(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, p EventPatch)
 			starts_at = COALESCE($6, starts_at),
 			ends_at = COALESCE($7, ends_at),
 			address = COALESCE($8, address),
-			city = COALESCE($9, city),
-			capacity = COALESCE($10, capacity),
-			age_rating = COALESCE($11, age_rating),
-			cancellation_policy = COALESCE($12, cancellation_policy),
-			terms = COALESCE($13, terms),
+			venue_name = COALESCE($9, venue_name),
+			place_id = COALESCE($10, place_id),
+			city = COALESCE($11, city),
+			lat = COALESCE($12, lat),
+			lng = COALESCE($13, lng),
+			capacity = COALESCE($14, capacity),
+			age_rating = COALESCE($15, age_rating),
+			cancellation_policy = COALESCE($16, cancellation_policy),
+			terms = COALESCE($17, terms),
 			updated_at = now()
 		WHERE id = $1`,
 		eventID, p.Title, p.Subtitle, p.Description, p.CoverURL, p.StartsAt, p.EndsAt, p.Address,
-		p.City, p.Capacity, p.AgeRating, p.CancellationPolicy, p.Terms); err != nil {
+		p.VenueName, p.PlaceID, p.City, p.Lat, p.Lng, p.Capacity, p.AgeRating,
+		p.CancellationPolicy, p.Terms); err != nil {
 		return Event{}, fmt.Errorf("atualizar evento: %w", err)
 	}
 	return GetEvent(ctx, tx, eventID)
@@ -225,7 +239,11 @@ type EventPatch struct {
 	StartsAt           *time.Time
 	EndsAt             *time.Time
 	Address            *string
+	VenueName          *string
+	PlaceID            *string
 	City               *string
+	Lat                *float64
+	Lng                *float64
 	Capacity           *int
 	AgeRating          *string
 	CancellationPolicy *string
@@ -277,6 +295,8 @@ type Lot struct {
 	// Notice é o aviso do produtor para ESTA categoria — "acomodações por ordem de
 	// chegada", "não recomendado para menores de 12". Texto puro, sanitizado na escrita.
 	Notice *string `json:"notice,omitempty"`
+	// Hidden tira a categoria da página pública: ela só é alcançada por link exclusivo.
+	Hidden bool `json:"hidden"`
 	// Availability: 'sequential' entra na fila de virada (só o primeiro elegível é
 	// oferecido); 'always' é oferecido por conta própria — é o lote simultâneo e a
 	// categoria avulsa.
@@ -308,13 +328,13 @@ func (l Lot) CheckPurchaseQuantity(qty int) error {
 
 const lotCols = `id, event_id, name, price_cents, quantity, sold_count, held_count,
 	starts_at, ends_at, sort_order, min_purchase_quantity, max_purchase_quantity, notice,
-	availability, turn_trigger, created_at, updated_at`
+	hidden, availability, turn_trigger, created_at, updated_at`
 
 func scanLot(row pgx.Row) (Lot, error) {
 	var l Lot
 	err := row.Scan(&l.ID, &l.EventID, &l.Name, &l.PriceCents, &l.Quantity, &l.SoldCount,
 		&l.HeldCount, &l.StartsAt, &l.EndsAt, &l.SortOrder,
-		&l.MinPurchaseQuantity, &l.MaxPurchaseQuantity, &l.Notice,
+		&l.MinPurchaseQuantity, &l.MaxPurchaseQuantity, &l.Notice, &l.Hidden,
 		&l.Availability, &l.TurnTrigger, &l.CreatedAt, &l.UpdatedAt)
 	return l, err
 }
@@ -339,11 +359,12 @@ func CreateLot(ctx context.Context, tx pgx.Tx, l Lot) (Lot, error) {
 	l.Notice = SanitizeNotice(l.Notice)
 	row := tx.QueryRow(ctx, `
 		INSERT INTO lots (event_id, name, price_cents, quantity, starts_at, ends_at, sort_order,
-		                  min_purchase_quantity, max_purchase_quantity, notice, availability, turn_trigger)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+		                  min_purchase_quantity, max_purchase_quantity, notice, hidden,
+		                  availability, turn_trigger)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 		RETURNING `+lotCols,
 		l.EventID, l.Name, l.PriceCents, l.Quantity, l.StartsAt, l.EndsAt, l.SortOrder,
-		l.MinPurchaseQuantity, l.MaxPurchaseQuantity, l.Notice, l.Availability, l.TurnTrigger)
+		l.MinPurchaseQuantity, l.MaxPurchaseQuantity, l.Notice, l.Hidden, l.Availability, l.TurnTrigger)
 	out, err := scanLot(row)
 	if err != nil {
 		return Lot{}, fmt.Errorf("criar lote: %w", err)
@@ -446,6 +467,11 @@ func AvailableLots(ctx context.Context, tx pgx.Tx, eventID uuid.UUID) ([]Lot, er
 	var out []Lot
 	filaResolvida := false
 	for _, l := range all {
+		// Categoria oculta não entra na oferta pública nem ocupa lugar na fila: ela só
+		// existe para quem tem o link.
+		if l.Hidden {
+			continue
+		}
 		if l.Availability == AvailabilityAlways {
 			if l.aberto(now) && l.temSaldo() {
 				out = append(out, l)
@@ -486,17 +512,31 @@ func CurrentLot(ctx context.Context, tx pgx.Tx, eventID uuid.UUID) (Lot, error) 
 // EligibleLot devolve o lote ESCOLHIDO pelo comprador, se ele estiver disponível agora.
 // Existe porque com lotes simultâneos a escolha é do comprador, e aceitar qualquer id
 // deixaria vender de um lote encerrado por quem chamasse a API direto.
-func EligibleLot(ctx context.Context, tx pgx.Tx, eventID, lotID uuid.UUID) (Lot, error) {
+//
+// Categoria OCULTA só passa com o token do link — e a validade dele é conferida aqui, a cada
+// compra: link revogado para de funcionar na hora.
+func EligibleLot(ctx context.Context, tx pgx.Tx, eventID, lotID uuid.UUID, linkToken string) (Lot, *LotLink, error) {
 	lots, err := AvailableLots(ctx, tx, eventID)
 	if err != nil {
-		return Lot{}, err
+		return Lot{}, nil, err
 	}
 	for _, l := range lots {
 		if l.ID == lotID {
-			return l, nil
+			return l, nil, nil
 		}
 	}
-	return Lot{}, ErrNoCurrentLot
+	// Não está na oferta pública. Pode ser oculta — e aí o link decide.
+	lot, link, err := ResolveLotLink(ctx, tx, eventID, linkToken)
+	if err != nil {
+		if errors.Is(err, ErrLinkInvalid) {
+			return Lot{}, nil, ErrNoCurrentLot
+		}
+		return Lot{}, nil, err
+	}
+	if lot.ID != lotID || !lot.aberto(time.Now()) || !lot.temSaldo() {
+		return Lot{}, nil, ErrNoCurrentLot
+	}
+	return lot, &link, nil
 }
 
 // UpdateLot altera um lote. Os campos nulos preservam o que está gravado — salvar o nome não
@@ -534,6 +574,9 @@ func UpdateLot(ctx context.Context, tx pgx.Tx, id uuid.UUID, p LotPatch) (Lot, e
 	if p.Notice != nil {
 		next.Notice = SanitizeNotice(p.Notice)
 	}
+	if p.Hidden != nil {
+		next.Hidden = *p.Hidden
+	}
 	if p.Availability != nil {
 		next.Availability = *p.Availability
 	}
@@ -558,10 +601,11 @@ func UpdateLot(ctx context.Context, tx pgx.Tx, id uuid.UUID, p LotPatch) (Lot, e
 	row := tx.QueryRow(ctx, `
 		UPDATE lots SET name=$2, price_cents=$3, quantity=$4, starts_at=$5, ends_at=$6,
 		                sort_order=$7, min_purchase_quantity=$8, max_purchase_quantity=$9,
-		                notice=$10, availability=$11, turn_trigger=$12, updated_at=now()
+		                notice=$10, hidden=$11, availability=$12, turn_trigger=$13, updated_at=now()
 		 WHERE id=$1 RETURNING `+lotCols,
 		id, next.Name, next.PriceCents, next.Quantity, next.StartsAt, next.EndsAt, next.SortOrder,
-		next.MinPurchaseQuantity, next.MaxPurchaseQuantity, next.Notice, next.Availability, next.TurnTrigger)
+		next.MinPurchaseQuantity, next.MaxPurchaseQuantity, next.Notice, next.Hidden,
+		next.Availability, next.TurnTrigger)
 	out, err := scanLot(row)
 	if err != nil {
 		return Lot{}, fmt.Errorf("atualizar lote: %w", err)
@@ -580,6 +624,7 @@ type LotPatch struct {
 	MinPurchaseQuantity *int       `json:"min_purchase_quantity"`
 	MaxPurchaseQuantity *int       `json:"max_purchase_quantity"`
 	Notice              *string    `json:"notice"`
+	Hidden              *bool      `json:"hidden"`
 	Availability        *string    `json:"availability"`
 	TurnTrigger         *string    `json:"turn_trigger"`
 }

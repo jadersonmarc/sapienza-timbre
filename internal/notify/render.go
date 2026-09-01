@@ -38,6 +38,8 @@ func render(m Message, publicBaseURL string) RenderedMessage {
 		return renderRefundRejected(m)
 	case KindEventCancelled:
 		return renderEventCancelled(m)
+	case KindCourtesy:
+		return renderCourtesy(m, publicBaseURL)
 	case KindWaitlist:
 		return RenderedMessage{To: m.To, Subject: m.Subject, Text: m.Body, HTML: "<p>" + htmlEscape(m.Body) + "</p>"}
 	default:
@@ -159,6 +161,26 @@ func renderTicket(m Message, publicBaseURL string) RenderedMessage {
 		}
 		// Falha na geração do QR: envia mesmo assim com o link (nunca deixa de enviar).
 	}
+	return rm
+}
+
+// renderCourtesy é o ingresso de cortesia. Reusa o corpo do ingresso — os dados que a
+// pessoa precisa na porta são os mesmos — e troca o começo: quem recebe não comprou nada,
+// e o primeiro que precisa aparecer é QUEM enviou.
+func renderCourtesy(m Message, publicBaseURL string) RenderedMessage {
+	rm := renderTicket(m, publicBaseURL)
+	quem := m.ProducerName
+	if quem == "" {
+		quem = "o produtor do evento"
+	}
+	rm.Subject = "Você recebeu um ingresso de cortesia: " + m.EventName
+	intro := fmt.Sprintf("%s enviou um ingresso de cortesia para você.\n\n", quem)
+	rm.Text = intro + rm.Text +
+		"\n\nVocê recebeu este e-mail porque " + quem + " informou o seu endereço ao emitir a cortesia."
+	rm.HTML = fmt.Sprintf(`<p><strong>%s</strong> enviou um ingresso de cortesia para você.</p>`,
+		htmlEscape(quem)) + rm.HTML +
+		fmt.Sprintf(`<p style="color:#666;font-size:12px">Você recebeu este e-mail porque %s informou o seu endereço ao emitir a cortesia.</p>`,
+			htmlEscape(quem))
 	return rm
 }
 
