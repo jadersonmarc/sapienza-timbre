@@ -308,10 +308,25 @@ Corpo vazio estorna o pedido inteiro; `{"ticket_ids": [...]}` estorna os escolhi
 
 ### Cota de meia (Lei 12.933/2013)
 
-A cota de **40% dos ingressos disponíveis** vale mesmo sem o produtor declarar nada: a
-obrigação é da lei, não da declaração. O compromisso `meia_entrada_cota`, que até aqui só
-era reportado no atestado, passa a **valer na venda** — uma cota que não barra nada é uma
-promessa sem consequência. Declarar acima de 40% é direito do produtor; abaixo é recusado.
+A cota de **40% dos ingressos disponíveis** é o **default**, não uma trava. Sem declaração
+nenhuma, vale a lei. Com declaração, vale o que o produtor escolheu — **inclusive abaixo de
+40%**.
+
+A obrigação legal é do PRODUTOR. Recusar a configuração dele não o faz cumprir a lei: só o
+impede de operar e coloca a plataforma no lugar de fiscal. O que o sistema faz é o que um
+sistema pode fazer — mostrar a regra, avisar quando a escolha fica abaixo dela
+(`half_price.below_legal`, com `legal_quota` ao lado para o aviso ter número) e **registrar a
+escolha** em `audit_events` com valor, data e usuário. O termo de responsabilidade no
+cadastro do produtor tem o gancho pronto no aceite e **texto nenhum**: depende de revisão
+jurídica, e um termo que ninguém revisou tem a aparência de proteção sem ser proteção.
+
+O compromisso `meia_entrada_cota` **vale na venda**: uma cota que não barra nada é promessa
+sem consequência. `PUT /events/{id}/half-price` grava modo e cota de uma vez — os dois são a
+mesma decisão, e trocar o modo sem mexer na cota deixaria uma cota órfã valendo depois.
+
+**Modo vinculado** (`half_price_mode='linked'`): a meia não tem cota própria e sai enquanto
+houver ingresso, seguindo o estoque do tipo pai. Ela continua **consumindo esse estoque** —
+estoque separado que SOMA fica fora, porque é o que faz a casa ser vendida duas vezes.
 
 Esgotada a cota, a meia sai de venda e a **inteira continua**: acabou a meia, não o evento.
 A checagem acontece em dois pontos, de propósito: na seleção (para a pessoa não preencher a
@@ -323,6 +338,52 @@ consumir dois da cota.
 `GET /public/events/{id}` publica `half_price` com cota, concedido e restante. Não é
 enfeite: o art. 1º, §1º obriga a informar a disponibilidade de meia em todos os pontos de
 venda.
+
+### Tipos de ingresso: fila, simultâneos e avulsos
+
+Um evento vende de três formas, e elas convivem na mesma tela:
+
+| `availability` | `turn_trigger` | comportamento |
+|---|---|---|
+| `sequential` | `either` | lote clássico: encerra ao esgotar **ou** na data, o que vier primeiro |
+| `sequential` | `sellout` | encerra só ao esgotar; a data de fim não fecha |
+| `sequential` | `date` | encerra só na data — esgotar antes **não** adianta a virada |
+| `always` | — | vendido por conta própria: simultâneo, ou categoria avulsa (sem datas) |
+
+A virada continua **derivada**: não há estado a escrever, e `AvailableLots` resolve a fila e
+os independentes numa varredura só. Com mais de um tipo à venda, a escolha é do comprador —
+`lot_id` no checkout —, porque resolver sempre o primeiro venderia o ingresso errado.
+
+### Categoria com link oculto
+
+`lots.hidden` tira a categoria da página pública; `lot_links` é o acesso. O token vem de 32
+bytes de `crypto/rand`: não é sequencial, não é derivado do id do lote e não dá para chegar
+nele a partir de outro. Criar o link já esconde a categoria — link privado para algo que
+aparece na página não é privado.
+
+Limite de usos e validade são opcionais, e a revogação vale **na hora**: a validade é
+conferida a cada uso, não numa virada de cache. Link desconhecido, revogado, vencido e
+esgotado devolvem a MESMA resposta — distinguir os casos para quem só tem o token é entregar
+informação a quem está tentando adivinhar.
+
+O uso é contado na **confirmação do pagamento**, não na visita: abrir o link para ver o preço
+não gasta a vaga de ninguém. Se o link estourar entre a compra e a confirmação, o ingresso é
+emitido assim mesmo e fica no log — o dinheiro entrou, e recusar aí deixaria o comprador pago
+e sem ingresso.
+
+### Cortesia
+
+Nome, e-mail e telefone (opcional), com **categoria obrigatória** — sem default silencioso,
+porque é a categoria que a comprovação de público publica. Com e-mail, a emissão **entrega**;
+sem, o ingresso é assinado e a entrega fica com o produtor.
+
+O aviso é de um tipo próprio (`courtesy_issued`) e identifica **quem emitiu**: é dado pessoal
+de terceiro entrando no sistema pela mão do produtor, e quem recebe um e-mail com o próprio
+nome tem o direito de saber de onde ele veio.
+
+A emissão em lote trata cada linha por si, em transação própria: numa lista de cem, um assento
+ocupado ou um nome vazio não derruba as noventa e nove que deram certo, e o resultado diz
+linha a linha o que aconteceu.
 
 ### Combo (duplo, trio, grupo)
 

@@ -125,6 +125,9 @@ make compose-up     # sobe Postgres próprio + binário
 - Não editar `../sapienza-kit`, `../sapienza-core`, `../sapienza-margot` fora do combinado.
 - Não introduzir sqlc nem golang-migrate. Não criar microserviços — módulos são pacotes.
 - Só adicionar migrations **forward**; não reescrever migration já aplicada.
+- **Meia-entrada: 40% é DEFAULT, não trava.** O produtor pode definir menos; o sistema avisa e
+  registra a escolha na trilha. A meia sempre consome o estoque do tipo pai — estoque próprio
+  que soma continua fora.
 - **Não reintroduzir** MPC, carteira, mint, Escrow, BaaS, boleto, programa de níveis, **split
   por compra nem subconta de produtor no gateway**. São caminhos descartados por decisão, não
   pendências — e `internal/payout/legacy_test.go` varre o código para garantir que não voltem.
